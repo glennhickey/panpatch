@@ -13,6 +13,7 @@
 #include "bdsg/hash_graph.hpp"
 #include "bdsg/snarl_distance_index.hpp"
 #include "bdsg/overlays/overlay_helper.hpp"
+#include "panpatch.hpp"
 
 //#define debug
 
@@ -117,6 +118,15 @@ int main(int argc, char** argv) {
     if (progress && dynamic_cast<PathPositionHandleGraph*>(base_graph.get()) == nullptr) {
         cerr << "[panpatch]: Applied position overlay" << endl;
     }
+
+    graph->for_each_path_of_sample(sample_names.front(), [&](path_handle_t ref_path) {
+        auto coverage = compute_overlap_identity(graph, ref_path);
+        for (auto path_overlap : coverage) {
+            cout << graph->get_path_name(ref_path) << "\t"
+                 << graph->get_path_name(path_overlap.first) << "\t"
+                 << path_overlap.second << endl;
+        }
+    });
 
     return 0;
 }
