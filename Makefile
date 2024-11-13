@@ -68,13 +68,14 @@ clean :
 panpatch_main.o : panpatch_main.cpp ${libbdsgPath}/lib/libbdsg.a 
 	${CXX} ${CXXFLAGS} -I . panpatch_main.cpp -c
 
+panpatch.o : panpatch.cpp ${libbdsgPath}/lib/libbdsg.a 
+	${CXX} ${CXXFLAGS} -I . panpatch.cpp -c
 
 ${libbdsgPath}/lib/libbdsg.a:
 	cd deps/libbdsg-easy && ${MAKE}
 
-
-panpatch : panpatch_main.o  ${libbdsgPath}/lib/libbdsg.a 
-	${CXX} ${CXXFLAGS} panpatch_main.o  ${libbdsgLibs}  -lcurl -lm -lz -llzma -lbz2 -ldeflate -fopenmp -pthread -o panpatch
+panpatch : panpatch_main.o panpatch.o ${libbdsgPath}/lib/libbdsg.a 
+	${CXX} ${CXXFLAGS} panpatch_main.o panpatch.o ${libbdsgLibs}  -lcurl -lm -lz -llzma -lbz2 -ldeflate -fopenmp -pthread -o panpatch
 
 all : panpatch
 

@@ -31,14 +31,16 @@ void help(char** argv) {
        << "Use a pangenome alignment (of single sample and reference) to make patched assembly" << endl
        << endl
        << "options: " << endl
-       << "    -p, --progress            Print progress" << endl
-       << "    -s, --sample FILE         Input sample. Multiple allowed.  The order they are specified in defines their priority" << endl
-       << "    -t, --threads N           Number of threads to use [default: all available]" << endl      
+       << "    -p, --progress           Print progress" << endl
+       << "    -r, --reference STRING   Reference sample" << endl
+       << "    -s, --sample STRING      Input sample. Multiple allowed. Order specifies priority" << endl
+       << "    -t, --threads N          Number of threads to use [default: all available]" << endl      
        << endl;
 }    
 
 int main(int argc, char** argv) {
 
+    string ref_sample;
     vector<string> sample_names;
     bool progress = false;
     int c;
@@ -48,6 +50,7 @@ int main(int argc, char** argv) {
         static const struct option long_options[] = {
             {"help", no_argument, 0, 'h'},
             {"progress", no_argument, 0, 'p'},
+            {"reference", required_argument, 0, 'r'},
             {"sample", required_argument, 0, 's'},
             {"threads", required_argument, 0, 't'},            
             {0, 0, 0, 0}
@@ -55,7 +58,7 @@ int main(int argc, char** argv) {
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hps:t:",
+        c = getopt_long (argc, argv, "hpr:s:t:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -66,6 +69,9 @@ int main(int argc, char** argv) {
         {
         case 'p':
             progress = true;
+            break;
+        case 'r':
+            ref_sample = optarg;
             break;
         case 's':
             sample_names.push_back(optarg);
@@ -99,6 +105,10 @@ int main(int argc, char** argv) {
         cerr << "[panpatch] error: -s must be used to specify at least one sample name to prioritize" << endl;
         return 1;
     }
+    if (ref_sample.empty()) {
+        cerr << "[panpatch] error: -r must be used to specify a reference sample" << endl;
+        return 1;
+    }
     string graph_filename = argv[optind++];
     ifstream graph_stream(graph_filename);
     if (!graph_stream) {
@@ -119,14 +129,43 @@ int main(int argc, char** argv) {
         cerr << "[panpatch]: Applied position overlay" << endl;
     }
 
-    graph->for_each_path_of_sample(sample_names.front(), [&](path_handle_t ref_path) {
-        auto coverage = compute_overlap_identity(graph, ref_path);
-        for (auto path_overlap : coverage) {
-            cout << graph->get_path_name(ref_path) << "\t"
-                 << graph->get_path_name(path_overlap.first) << "\t"
-                 << path_overlap.second << endl;
-        }
+    // pull out the (one and only) reference path
+    vector<path_handle_t> ref_paths;
+    graph->for_each_path_of_sample(ref_sample, [&](path_handle_t ref_path) {
+        ref_paths.push_back(ref_path);
     });
+    if (ref_paths.size() != 1) {
+        cerr << "[panpatch]: Exactly 1 path for reference sample " << ref_sample << " expected. " << ref_paths.size()
+             << " found. panpatch only works when there's 1 for now..." << endl;
+        return 1;        
+    }
+    path_handle_t ref_path = ref_paths.front();
+
+    // pull out all other paths selected by -s
+    vector<path_handle_t> other_paths;
+    for (const string& sample : sample_names) {
+        graph->for_each_path_of_sample(sample, [&](path_handle_t path_handle) {
+            other_paths.push_back(path_handle);
+        });
+    }
+
+    // pull out the target paths (the ones we want to patch) and sort them by haplotype
+    unordered_map<int64_t, vector<path_handle_t>> target_paths;
+    graph->for_each_path_of_sample(sample_names.front(), [&](path_handle_t path_handle) {
+        target_paths[graph->get_haplotype(path_handle)].push_back(path_handle);
+    });
+
+    // we patch each target haplotype independently, greedily selecting other haplotypes
+    // up front using this simple coverage calculation
+    for (const auto& hap_tgts : target_paths) {
+        // break out the best-covering haplotype of each other sample
+        unordered_map<path_handle_t, double> coverage_map = compute_overlap_identity(graph, hap_tgts.second, other_paths);
+        unordered_map<string, vector<path_handle_t>> sample_covers = select_sample_covers(graph, coverage_map);
+
+        // run the patching on the given target haplotype, using seleted haplotypes of the
+        // other paths
+        greedy_patch(graph, ref_path, hap_tgts.second, sample_names, sample_covers);
+    }
 
     return 0;
 }
