@@ -27,6 +27,52 @@ unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHand
 multimap<pair<int64_t, int64_t>, path_handle_t> sort_overlapping_paths(const PathHandleGraph* graph,
                                                                        const path_handle_t& ref_path,
                                                                        const vector<path_handle_t>& other_paths);
+
+// quick and dirty telomere checker!!
+// returns position of left and right telomere (wrt to respective ends)
+pair<int64_t, int64_t> find_telomeres(const PathHandleGraph* graph,
+                                      const path_handle_t path,
+                                      double threshold=0.95);
+
+// find a series of anchors along the reference path
+// anchors have this property:
+// 1) they overlap other path(s)
+// 2) they are not redundant (ie there are never more than two consecutive anchors)
+//    that overlap the same paths
+// these anchors will be the basis of the cover search
+// maps reference position to anchor
+unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
+                                             const path_handle_t& ref_path,
+                                             const unordered_set<path_handle_t>& path_set);
+
+// search along a path to the next anchor
+// the bool flag returned is true if search went backwards on path
+pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
+                                                   const unordered_map<int64_t, int64_t>& anchors,
+                                                   step_handle_t step,
+                                                   int64_t pos);
+
+// thread the anchors using the paths
+// return a set of intervals that represent the patched genome
+// the bool flag is true if the interval is reversed on the path
+// algorithm:
+// for every interval, scan along the input paths (in order of priority) until one is found that hits a
+// subsequent anchor.  add the interval found and repeat. 
+vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHandleGraph* graph,
+                                                                   const path_handle_t& ref_path,
+                                                                   const unordered_map<int64_t, int64_t>& ref_anchors,
+                                                                   const vector<path_handle_t>& tgt_paths,
+                                                                   const vector<path_handle_t>& other_paths);
+
+// smooth out the threaded intervals
+vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHandleGraph* graph,
+                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
+
+// print the intervals
+void print_intervals(const PathHandleGraph* graph,
+                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
+
+
 // 
 void greedy_patch(const PathHandleGraph* graph,
                   const path_handle_t& ref_path,
