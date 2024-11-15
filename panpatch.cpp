@@ -540,7 +540,8 @@ void greedy_patch(const PathHandleGraph* graph,
                                                                                            other_paths);
 
     if (patched_intervals.empty()) {
-        cerr << "[panpatch] warning: unable to patch assembly for " << graph->get_sample_name(tgt_paths.front()) << "#"
+        cerr << "[panpatch] warning: unable to patch assembly on " << graph->get_locus_name(ref_path)
+             << " for " << graph->get_sample_name(tgt_paths.front()) << "#"
          << graph->get_haplotype(tgt_paths.front()) << ":" << endl;
         return;
     }
@@ -553,7 +554,8 @@ void greedy_patch(const PathHandleGraph* graph,
 #ifdef debug
     cerr << "number of smoothed intervals found " << smoothed_intervals.size() << endl;
 #endif
-    cout << "Patched assembly for " << graph->get_sample_name(tgt_paths.front()) << "#"
+    cout << "Patched assembly on " << graph->get_locus_name(ref_path) << " for "
+         << graph->get_sample_name(tgt_paths.front()) << "#"
          << graph->get_haplotype(tgt_paths.front()) << ":" << endl;
     print_intervals(graph, smoothed_intervals);
     cout << endl;

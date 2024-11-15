@@ -63,6 +63,9 @@ PAN028-verkko#1#haplotype1-0000046#0	0	682357
 Patched assembly for PAN028-verkko#2:
 PAN028-verkko#2#haplotype2-0000073#0	1	65910828
 ```
+### Running time
+
+The above example takes about 2 hours on the cluster to run `cactus-pangenome`.  Running `panpatch` on each chromsome in series takes about 2 minutes total on my desktop. 
 
 ### Algorithm
 
@@ -83,7 +86,7 @@ Finally a path through the anchors is searched in the graph that connects the fi
 * Just a proof of concept, tuning certainly required to avoid spurious patches etc.
 * Not well-tested (see above)
 * Entirely reference-based.  If graph doesn't align contigs to reference, then no anchors will be found.  This could happen in acrocentric short arms, for example.
-
+* Telomere-checker, which would be informative, isn't quite finished. 
 
 
 
