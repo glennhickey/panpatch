@@ -68,16 +68,20 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
 vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHandleGraph* graph,
                                                                    const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
 
-// print the intervals
+// print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
 
+// get the dna sequence of a list of intervals (ie the patched assembly for a contig)
+string intervals_to_sequence(const PathHandleGraph* graph,
+                             const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
 
-// 
-void greedy_patch(const PathHandleGraph* graph,
-                  const path_handle_t& ref_path,
-                  const vector<path_handle_t>& tgt_paths,
-                  const vector<string>& sample_names,
-                  const unordered_map<string, vector<path_handle_t>>& sample_covers);
+// run the patching for a single chromosome (ref_path) for a given haplotype (tgt_paths)
+// returns the intervals forming the patched assembly
+vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleGraph* graph,
+                                                               const path_handle_t& ref_path,
+                                                               const vector<path_handle_t>& tgt_paths,
+                                                               const vector<string>& sample_names,
+                                                               const unordered_map<string, vector<path_handle_t>>& sample_covers);
                   
                   

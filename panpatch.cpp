@@ -463,16 +463,37 @@ void print_intervals(const PathHandleGraph* graph,
         int64_t pos_1 = path_index[path][get<0>(interval)];
         int64_t pos_2 = path_index[path][get<1>(interval)];
         pos_2 += graph->get_length(graph->get_handle_of_step(get<1>(interval)));
-        cout << graph->get_path_name(path) << "\t" << pos_1 << "\t" << pos_2 << endl;
+        cout << graph->get_path_name(path) << "\t" << pos_1 << "\t" << pos_2
+             << "\t" << (get<2>(interval) ? '-' : '+') << endl;
+        
     }
 }
 
+string intervals_to_sequence(const PathHandleGraph* graph,
+                             const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals) {
+    
+    string seq;
+    for (const auto& interval : intervals) {
+        if (get<2>(interval) == false) {
+            step_handle_t last_step = graph->get_next_step(get<1>(interval));
+            for (step_handle_t step = get<0>(interval); step != last_step; step = graph->get_next_step(step)) {
+                seq += graph->get_sequence(graph->get_handle_of_step(step));
+            }
+        } else {
+            step_handle_t last_step = graph->get_previous_step(get<1>(interval));
+            for (step_handle_t step = get<0>(interval); step != last_step; step = graph->get_next_step(step)) {
+                seq += graph->get_sequence(graph->flip(graph->get_handle_of_step(step)));
+            }            
+        }
+    }
+    return seq;
+}
 
-void greedy_patch(const PathHandleGraph* graph,
-                  const path_handle_t& ref_path,
-                  const vector<path_handle_t>& tgt_paths,                  
-                  const vector<string>& sample_names,
-                  const unordered_map<string, vector<path_handle_t>>& sample_covers) {
+vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleGraph* graph,
+                                                               const path_handle_t& ref_path,
+                                                               const vector<path_handle_t>& tgt_paths,                  
+                                                               const vector<string>& sample_names,
+                                                               const unordered_map<string, vector<path_handle_t>>& sample_covers) {
 
        
 #ifdef debug
@@ -543,7 +564,7 @@ void greedy_patch(const PathHandleGraph* graph,
         cerr << "[panpatch] warning: unable to patch assembly on " << graph->get_locus_name(ref_path)
              << " for " << graph->get_sample_name(tgt_paths.front()) << "#"
          << graph->get_haplotype(tgt_paths.front()) << ":" << endl;
-        return;
+        return patched_intervals;
     }
 
 #ifdef debug
@@ -554,11 +575,7 @@ void greedy_patch(const PathHandleGraph* graph,
 #ifdef debug
     cerr << "number of smoothed intervals found " << smoothed_intervals.size() << endl;
 #endif
-    cout << "Patched assembly on " << graph->get_locus_name(ref_path) << " for "
-         << graph->get_sample_name(tgt_paths.front()) << "#"
-         << graph->get_haplotype(tgt_paths.front()) << ":" << endl;
-    print_intervals(graph, smoothed_intervals);
-    cout << endl;
-    
+
+    return smoothed_intervals;
 }
                   

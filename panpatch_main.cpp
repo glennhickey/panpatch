@@ -34,6 +34,7 @@ void help(char** argv) {
        << "    -p, --progress           Print progress" << endl
        << "    -r, --reference STRING   Reference sample" << endl
        << "    -s, --sample STRING      Input sample. Multiple allowed. Order specifies priority" << endl
+       << "    -f, --fasta FILE         Output the patched assembly to this fasta file" << endl
        << "    -t, --threads N          Number of threads to use [default: all available]" << endl      
        << endl;
 }    
@@ -43,6 +44,7 @@ int main(int argc, char** argv) {
     string ref_sample;
     vector<string> sample_names;
     bool progress = false;
+    string out_fasta_filename;
     int c;
     optind = 1; 
     while (true) {
@@ -52,13 +54,14 @@ int main(int argc, char** argv) {
             {"progress", no_argument, 0, 'p'},
             {"reference", required_argument, 0, 'r'},
             {"sample", required_argument, 0, 's'},
+            {"fasta", required_argument, 0, 'f'},
             {"threads", required_argument, 0, 't'},            
             {0, 0, 0, 0}
         };
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hpr:s:t:",
+        c = getopt_long (argc, argv, "hpr:s:f:t:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -75,6 +78,9 @@ int main(int argc, char** argv) {
             break;
         case 's':
             sample_names.push_back(optarg);
+            break;
+        case 'f':
+            out_fasta_filename = optarg;
             break;
         case 't':
         {
@@ -108,13 +114,22 @@ int main(int argc, char** argv) {
     if (ref_sample.empty()) {
         cerr << "[panpatch] error: -r must be used to specify a reference sample" << endl;
         return 1;
-    }
+    }    
     string graph_filename = argv[optind++];
     ifstream graph_stream(graph_filename);
     if (!graph_stream) {
         cerr << "[panpatch] error: Unable to open input graph " << graph_filename << endl;
         return 1;
     }
+    ofstream out_fasta_file;
+    if (!out_fasta_filename.empty()) {
+        out_fasta_file.open(out_fasta_filename);
+        if (!out_fasta_file) {
+            cerr << "[panpatch] error: Unable to open fasta file for writing: " << out_fasta_filename << endl;
+            return 1;
+        }
+    }
+    
     if (progress) {
         cerr << "[panpatch]: Using " << get_thread_count() << (get_thread_count() > 1 ? " threads" : " thread") << endl;
     }
@@ -164,9 +179,27 @@ int main(int argc, char** argv) {
 
         // run the patching on the given target haplotype, using seleted haplotypes of the
         // other paths
-        greedy_patch(graph, ref_path, hap_tgts.second, sample_names, sample_covers);
-    }
+        vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
+            graph, ref_path, hap_tgts.second, sample_names, sample_covers);
 
+        // print the intervals to cout
+        cout << "Patched assembly on " << graph->get_locus_name(ref_path) << " for "
+             << graph->get_sample_name(hap_tgts.second.front()) << "#"
+             << graph->get_haplotype(hap_tgts.second.front()) << ":" << endl;
+        print_intervals(graph, patched_intervals);
+        cout << endl;
+
+        // save the intervals to the fasta
+        if (!out_fasta_filename.empty()) {
+            string contig_name = graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first);
+            string sequence = intervals_to_sequence(graph, patched_intervals);
+            out_fasta_file << ">" << contig_name << endl;
+            static const size_t width = 80;
+            for (size_t written = 0; written < sequence.length(); written += width) {
+                out_fasta_file << sequence.substr(written, min(width, sequence.length() - written)) << "\n";
+            }
+        }
+    }
     return 0;
 }
 

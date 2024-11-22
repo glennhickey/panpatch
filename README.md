@@ -33,6 +33,16 @@ And the `.vg` files that can be used to patch each chromosome will be found in `
 
 This is a work in progress towards a proof of concept....
 
+### Building Panpatch
+
+Clone it with submodules then `make`.  The `panpatch` binary should be built in the same directory if all went well.
+
+```
+git clone --recursive https://github.com/glennhickey/panpatch.git --branch development
+cd panpatch
+make
+```
+
 ### Interface
 
 You specify the graph and sample names in order of priority (first column of the above input file, excluding `.1/2` suffixes)
@@ -49,6 +59,8 @@ panpatch chr20.full.vg -r hs1 -s PAN028-verkko -s PAN028-hifiasm -s PAN028-duple
 will patch the `PAN028-verkko` assembly, using `PAN028-hifiasm` where possible, then `PAN028-duplex` as a backup.
 
 The output will be a list of contig intervals (BED format), for each haplotype, that span the reference chromosome from telomere to telomere, which form the patched T2T assembly.
+
+You can write a FASTA file for the patched contigs with `--fasta FILE`. 
 
 Note: small intervals should probably be filtered out, there's not such logic yet in `panpatch`.  The output of the above is
 
