@@ -43,6 +43,8 @@ cd panpatch
 make
 ```
 
+If you are missing system dependencies, you can try following the [Install Dependencies](https://github.com/vgteam/vg?tab=readme-ov-file#linux-install-dependencies) section from vg -- `panpatch` uses a subset of these so they will be more than sufficient. 
+
 ### Interface
 
 You specify the graph and sample names in order of priority (first column of the above input file, excluding `.1/2` suffixes)
