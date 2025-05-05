@@ -481,7 +481,7 @@ string intervals_to_sequence(const PathHandleGraph* graph,
             }
         } else {
             step_handle_t last_step = graph->get_previous_step(get<1>(interval));
-            for (step_handle_t step = get<0>(interval); step != last_step; step = graph->get_next_step(step)) {
+            for (step_handle_t step = get<0>(interval); step != last_step; step = graph->get_previous_step(step)) {
                 seq += graph->get_sequence(graph->flip(graph->get_handle_of_step(step)));
             }            
         }
