@@ -165,7 +165,7 @@ int main(int argc, char** argv) {
     }
 
     // pull out the target paths (the ones we want to patch) and sort them by haplotype
-    unordered_map<int64_t, vector<path_handle_t>> target_paths;
+    map<int64_t, vector<path_handle_t>> target_paths;
     graph->for_each_path_of_sample(sample_names.front(), [&](path_handle_t path_handle) {
         target_paths[graph->get_haplotype(path_handle)].push_back(path_handle);
     });

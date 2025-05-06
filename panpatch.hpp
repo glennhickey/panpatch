@@ -68,6 +68,10 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
 vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHandleGraph* graph,
                                                                    const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
 
+// extend the intervals to the telomeres where appropriate
+vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHandleGraph* graph,
+                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
+
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);

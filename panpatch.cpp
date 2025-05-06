@@ -407,6 +407,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
             break;
         }
     }
+
     return interval_cover;
 }
 
@@ -439,6 +440,35 @@ vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHan
     smoothed_intervals.push_back(make_tuple(get<0>(intervals[i]), get<1>(intervals[j-1]), get<2>(intervals[i])));
 
     return smoothed_intervals;    
+}
+
+vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHandleGraph* graph,
+                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals) {
+    vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = intervals;
+
+    // extend the front
+    step_handle_t first_step = get<0>(extended_intervals[0]);
+    bool first_backward = get<2>(extended_intervals[0]);
+    if (!first_backward) {
+        first_step = graph->path_begin(graph->get_path_handle_of_step(first_step));
+    } else {
+        first_step = graph->path_end(graph->get_path_handle_of_step(first_step));
+        first_step = graph->get_previous_step(first_step);
+    }
+    extended_intervals[0] = make_tuple(first_step, get<1>(extended_intervals[0]), first_backward);
+
+    // extend the back
+    step_handle_t last_step = get<1>(extended_intervals.back());
+    bool last_backward = get<2>(extended_intervals.back());
+    if (!last_backward) {
+        last_step = graph->path_end(graph->get_path_handle_of_step(last_step));
+        last_step = graph->get_previous_step(last_step);        
+    } else {
+        last_step = graph->path_begin(graph->get_path_handle_of_step(last_step));
+    }
+    extended_intervals.back() = make_tuple(get<0>(extended_intervals.back()), last_step, last_backward);
+    
+    return extended_intervals;
 }
 
 void print_intervals(const PathHandleGraph* graph,
@@ -576,6 +606,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     cerr << "number of smoothed intervals found " << smoothed_intervals.size() << endl;
 #endif
 
-    return smoothed_intervals;
+    vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = extend_intervals(graph, smoothed_intervals);
+
+    return extended_intervals;
 }
                   
