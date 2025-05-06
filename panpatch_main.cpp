@@ -35,6 +35,7 @@ void help(char** argv) {
        << "    -r, --reference STRING   Reference sample" << endl
        << "    -s, --sample STRING      Input sample. Multiple allowed. Order specifies priority" << endl
        << "    -f, --fasta FILE         Output the patched assembly to this fasta file" << endl
+       << "    -w, --window SIZE        Size of window used for computing identity for haplotype matching [1000]" << endl
        << "    -t, --threads N          Number of threads to use [default: all available]" << endl      
        << endl;
 }    
@@ -46,6 +47,7 @@ int main(int argc, char** argv) {
     bool progress = false;
     string out_fasta_filename;
     int c;
+    int64_t window_size = 1000;
     optind = 1; 
     while (true) {
 
@@ -55,13 +57,14 @@ int main(int argc, char** argv) {
             {"reference", required_argument, 0, 'r'},
             {"sample", required_argument, 0, 's'},
             {"fasta", required_argument, 0, 'f'},
+            {"window", required_argument, 0, 'w'},
             {"threads", required_argument, 0, 't'},            
             {0, 0, 0, 0}
         };
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hpr:s:f:t:",
+        c = getopt_long (argc, argv, "hpr:s:f:w:t:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -81,6 +84,9 @@ int main(int argc, char** argv) {
             break;
         case 'f':
             out_fasta_filename = optarg;
+            break;
+        case 'w':
+            window_size = atoi(optarg);
             break;
         case 't':
         {
@@ -174,11 +180,39 @@ int main(int argc, char** argv) {
     // up front using this simple coverage calculation
     for (const auto& hap_tgts : target_paths) {
         // break out the best-covering haplotype of each other sample
-        unordered_map<path_handle_t, double> coverage_map = compute_overlap_identity(graph, hap_tgts.second, other_paths);
+        unordered_map<path_handle_t, double> coverage_map = compute_overlap_identity(graph, hap_tgts.second, other_paths, window_size);
+        if (progress) {
+            cerr << "[panpatch]: Computed coverage for hap " << hap_tgts.first << " paths:";
+            for (const auto& tgt_path : hap_tgts.second) {
+                cerr << " " << graph->get_path_name(tgt_path);
+            }
+            cerr << ":" << endl;
+
+            for (const auto& cov : coverage_map) {
+                if (graph->get_sample_name(cov.first) != graph->get_sample_name(target_paths.begin()->second.front())) {
+                    cerr << "[panpatch]:    " << graph->get_path_name(cov.first) << " " << cov.second << endl;
+                }
+            }
+        }
+
         unordered_map<string, vector<path_handle_t>> sample_covers = select_sample_covers(graph, coverage_map);
 
+        if (progress) {
+            cerr << "[panpatch]: Sample cover selection:" << endl;
+            for (const auto& sc : sample_covers) {
+                cerr << "[panpatch]:    " << sc.first;
+                for (const auto& p : sc.second) {
+                    cerr << " " << graph->get_path_name(p);
+                }
+                cerr << endl;
+            }
+        }
+                
         // run the patching on the given target haplotype, using seleted haplotypes of the
         // other paths
+        if (progress) {
+            cerr << "[panpatch]: Running greedy patch selection" << endl;
+        }
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers);
 
@@ -191,6 +225,9 @@ int main(int argc, char** argv) {
 
         // save the intervals to the fasta
         if (!out_fasta_filename.empty()) {
+            if (progress) {
+                cerr << "[panpatch]: Writing patched contig to FASTA" << endl;
+            }
             string contig_name = graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first);
             string sequence = intervals_to_sequence(graph, patched_intervals);
             out_fasta_file << ">" << contig_name << endl;

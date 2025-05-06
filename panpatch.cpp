@@ -335,7 +335,7 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
             return make_pair(next_step, true);
         }
     }
-
+    
     return make_pair(graph->path_end(path), false);
 }
 
