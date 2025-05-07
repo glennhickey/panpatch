@@ -314,6 +314,13 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    step_handle_t step,
                                                    int64_t pos) {
 
+    // NOTE:
+    // As currently implemented, anchors are all on the reference genome.  This means
+    // we can take simplifying steps by making sure we're going in the right direction
+    // by looking at the reference positions.
+    //
+    // Relaxing this assumption (which should be done) would require moving to
+    // a slightly less trivial graph search. 
     path_handle_t path = graph->get_path_handle_of_step(step);
     
     // search forward
@@ -391,7 +398,11 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
         bool found_next = false;
         for (const auto& rank_step : sorted_steps) {
             const step_handle_t& step = rank_step.second;
-
+#ifdef debug
+            cerr << "cur_pos " << cur_pos << " cur step " << graph->get_path_name(graph->get_path_handle_of_step(step))
+                 << " " << graph->get_id(graph->get_handle_of_step(step)) << ":"
+                 << graph->get_is_reverse(graph->get_handle_of_step(step)) << endl;
+#endif
             pair<step_handle_t, bool> next_anchor = find_next_anchor_on_path(graph, ref_anchors, step, cur_pos);
             if (next_anchor.first != graph->path_end(graph->get_path_handle_of_step(step))) {
                 interval_cover.push_back(make_tuple(step, next_anchor.first, next_anchor.second));
