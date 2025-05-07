@@ -327,9 +327,12 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
     step_handle_t next_step = graph->get_next_step(step);
     for (; next_step != graph->path_end(path); next_step = graph->get_next_step(next_step)) {
         handle_t next_handle = graph->get_handle_of_step(next_step);
-        if (anchors.count(graph->get_id(next_handle)) &&
-            anchors.at(graph->get_id(next_handle)) > pos) {
-            return make_pair(next_step, false);
+        if (anchors.count(graph->get_id(next_handle))) {
+            if (anchors.at(graph->get_id(next_handle)) > pos) {
+                return make_pair(next_step, false);
+            } else {
+                break;
+            }
         }
     }
 
@@ -337,9 +340,12 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
     next_step = graph->get_previous_step(step);
     for (; next_step != graph->path_front_end(path); next_step = graph->get_previous_step(next_step)) {
         handle_t next_handle = graph->get_handle_of_step(next_step);
-        if (anchors.count(graph->get_id(next_handle)) &&
-            anchors.at(graph->get_id(next_handle)) > pos) {
-            return make_pair(next_step, true);
+        if (anchors.count(graph->get_id(next_handle))) {
+            if (anchors.at(graph->get_id(next_handle)) > pos) {
+                return make_pair(next_step, false);
+            } else {
+                break;
+            }
         }
     }
     
