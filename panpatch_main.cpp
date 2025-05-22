@@ -216,8 +216,16 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers);
 
+        vector<tuple<step_handle_t, step_handle_t, bool>> input_intervals;
+        bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
+                                         patched_intervals, input_intervals);
+        if (reverted) {
+            cout << "#Reverting failed patch" << endl;
+            patched_intervals = input_intervals;
+        }
+
         // print the intervals to cout
-        cout << "Patched assembly on " << graph->get_locus_name(ref_path) << " for "
+        cout << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "
              << graph->get_sample_name(hap_tgts.second.front()) << "#"
              << graph->get_haplotype(hap_tgts.second.front()) << ":" << endl;
         print_intervals(graph, patched_intervals);

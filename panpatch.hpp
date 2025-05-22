@@ -88,4 +88,11 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const vector<string>& sample_names,
                                                                const unordered_map<string, vector<path_handle_t>>& sample_covers);
                   
-                  
+// return the input intervals unmodified if it failed to find a reasonable patch
+bool revert_bad_patch(const PathHandleGraph* graph,
+                      const path_handle_t& ref_path,
+                      const vector<path_handle_t>& tgt_paths,
+                      const vector<string>& sample_names,
+                      const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,                      
+                      vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
+                      double threshold = 0.95);

@@ -5,6 +5,7 @@
 #include <limits>
 
 //#define debug
+//#define ultra_debug
 
 unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGraph* graph,
                                                               const vector<path_handle_t>& tgt_paths,
@@ -23,7 +24,7 @@ unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGr
              step != graph->path_end(tgt_path);) {
             handle_t handle = graph->get_handle_of_step(step);
             int64_t len = graph->get_length(handle);
-#ifdef debug
+#ifdef ultra_debug
             cerr << " node " << graph->get_id(handle) << " has len " << len << endl;        
             cerr << "starting step at " << graph->get_id(handle) << " offset " << start_offset << endl;
 #endif
@@ -40,7 +41,7 @@ unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGr
                 if (cur_win_length + room >= w) {
                     // we can cover our window by ending in this node
                     next_offset = w - cur_win_length;
-#ifdef debug
+#ifdef ultra_debug
                     cerr << "room " << room << endl;
                     cerr << "next offset = " << w << " - " << cur_win_length << " = " << next_offset << endl;
 #endif
@@ -49,7 +50,7 @@ unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGr
                     }
                     cur_win_length = w;
                     assert(next_offset <= next_len);
-#ifdef debug
+#ifdef ultra_debug
                     cerr << "cutting window scan at " << graph->get_id(graph->get_handle_of_step(next_step))
                          << " offset " << next_offset << endl;
 #endif
@@ -567,19 +568,6 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     cerr << endl;
 #endif
 
-/*
-    // start by snapping the target to the reference
-    multimap<pair<int64_t, int64_t>, path_handle_t> snapped_target = sort_overlapping_paths(graph, ref_path, tgt_paths);
-
-#ifdef debug
-    cerr << "snapped target" << endl;
-    for (const auto& region_path : snapped_target) {
-        cerr << region_path.first.first << "-" << region_path.first.second << ": "
-             << graph->get_path_name(region_path.second) << endl;
-    }
-    cerr << endl;
-#endif
-*/
     // find the anchors along the reference path using the relevant paths
     unordered_set<path_handle_t> relevant_paths = {ref_path};
     for (const auto& sample_paths : sample_covers) {
@@ -632,4 +620,36 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
 
     return extended_intervals;
 }
-                  
+
+bool revert_bad_patch(const PathHandleGraph* graph,
+                      const path_handle_t& ref_path,
+                      const vector<path_handle_t>& tgt_paths,
+                      const vector<string>& sample_names,
+                      const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,
+                      vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
+                      double threshold) {
+
+
+    vector<path_handle_t> first_tgt_paths;
+    int64_t tgt_length = 0;
+    for (const path_handle_t& tgt_path : tgt_paths) {
+        if (graph->get_sample_name(tgt_path) == sample_names[0]) {
+            graph->for_each_step_in_path(tgt_path, [&](step_handle_t step) {
+                tgt_length += graph->get_length(graph->get_handle_of_step(step));
+            });
+            first_tgt_paths.push_back(tgt_path);
+        }
+    }
+
+    int64_t patch_length = intervals_to_sequence(graph, in_intervals).length();
+
+    out_intervals.clear();
+    if ((double)patch_length / (double)tgt_length < threshold) {
+        for (const path_handle_t& tgt_path : first_tgt_paths) {
+            out_intervals.push_back(make_tuple(graph->path_begin(tgt_path), graph->path_back(tgt_path), false));
+        }        
+        return true;
+    }
+    return false;
+}
+
