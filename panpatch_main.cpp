@@ -25,6 +25,9 @@ using namespace bdsg;
 // from hal2vg/clip-vg.cpp
 static unique_ptr<PathHandleGraph> load_graph(istream& graph_stream);
 
+// if the patched contig isn't at least this much as big as the set of input
+// contigs to patch, then consider the patch failed
+static const double fail_threshold = 0.95;
 
 void help(char** argv) {
   cerr << "usage: " << argv[0] << " [options] <graph> " << endl
@@ -36,6 +39,7 @@ void help(char** argv) {
        << "    -s, --sample STRING      Input sample. Multiple allowed. Order specifies priority" << endl
        << "    -f, --fasta FILE         Output the patched assembly to this fasta file" << endl
        << "    -w, --window SIZE        Size of window used for computing identity for haplotype matching [1000]" << endl
+       << "    -e, --ref-default        If unable to patch, write reference contig (instead of first sample)" << endl
        << "    -t, --threads N          Number of threads to use [default: all available]" << endl      
        << endl;
 }    
@@ -48,6 +52,7 @@ int main(int argc, char** argv) {
     string out_fasta_filename;
     int c;
     int64_t window_size = 1000;
+    bool ref_default = false;
     optind = 1; 
     while (true) {
 
@@ -58,13 +63,14 @@ int main(int argc, char** argv) {
             {"sample", required_argument, 0, 's'},
             {"fasta", required_argument, 0, 'f'},
             {"window", required_argument, 0, 'w'},
+            {"ref-default", no_argument, 0, 'e'},
             {"threads", required_argument, 0, 't'},            
             {0, 0, 0, 0}
         };
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hpr:s:f:w:t:",
+        c = getopt_long (argc, argv, "hpr:s:f:w:et:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -87,6 +93,9 @@ int main(int argc, char** argv) {
             break;
         case 'w':
             window_size = atoi(optarg);
+            break;
+        case 'e':
+            ref_default = true;
             break;
         case 't':
         {
@@ -218,11 +227,13 @@ int main(int argc, char** argv) {
 
         vector<tuple<step_handle_t, step_handle_t, bool>> input_intervals;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
-                                         patched_intervals, input_intervals);
+                                         patched_intervals, input_intervals, 
+                                         ref_default, fail_threshold);
         if (reverted) {
             cout << "#Reverting failed patch" << endl;
             patched_intervals = input_intervals;
         }
+        
 
         // print the intervals to cout
         cout << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "

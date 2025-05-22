@@ -95,4 +95,5 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<string>& sample_names,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,                      
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
-                      double threshold = 0.95);
+                      bool ref_default,
+                      double threshold);

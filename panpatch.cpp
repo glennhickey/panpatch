@@ -627,9 +627,11 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<string>& sample_names,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
+                      bool ref_default,
                       double threshold) {
 
-
+    out_intervals.clear();    
+    
     vector<path_handle_t> first_tgt_paths;
     int64_t tgt_length = 0;
     for (const path_handle_t& tgt_path : tgt_paths) {
@@ -643,11 +645,29 @@ bool revert_bad_patch(const PathHandleGraph* graph,
 
     int64_t patch_length = intervals_to_sequence(graph, in_intervals).length();
 
-    out_intervals.clear();
-    if ((double)patch_length / (double)tgt_length < threshold) {
-        for (const path_handle_t& tgt_path : first_tgt_paths) {
-            out_intervals.push_back(make_tuple(graph->path_begin(tgt_path), graph->path_back(tgt_path), false));
-        }        
+    // we replace the patch with the input because it was too short
+    bool to_revert = (double)patch_length / (double)tgt_length < threshold;
+
+    if (ref_default && !to_revert) {
+        bool patch_happened = false;
+        for (const auto& interval : in_intervals) {
+            if (graph->get_sample_name(graph->get_path_handle_of_step(get<0>(interval))) != sample_names[0]) {
+                patch_happened = true;
+                break;
+            }
+        }
+        // we replace the patch with the reference because there was no patch
+        to_revert = !patch_happened;
+    }
+
+    if (to_revert) {
+        if (ref_default) {
+            out_intervals.push_back(make_tuple(graph->path_begin(ref_path), graph->path_back(ref_path), false));
+        } else {
+            for (const path_handle_t& tgt_path : first_tgt_paths) {
+                out_intervals.push_back(make_tuple(graph->path_begin(tgt_path), graph->path_back(tgt_path), false));
+            }
+        }
         return true;
     }
     return false;
