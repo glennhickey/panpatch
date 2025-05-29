@@ -506,15 +506,22 @@ void print_intervals(const PathHandleGraph* graph,
         });
     }
 
-    for (const auto& interval : intervals) {
+    // hack:  all intervals are open-ended except the last
+    // todo:  fix upstream!
+    for (int64_t i = 0; i < intervals.size(); ++i) {
+        const auto& interval = intervals[i];
         path_handle_t path = graph->get_path_handle_of_step(get<0>(interval));
         int64_t pos_1 = path_index[path][get<0>(interval)];
         int64_t pos_2 = path_index[path][get<1>(interval)];
         if (get<2>(interval)) {
             swap(pos_1, pos_2);
-            pos_2 += graph->get_length(graph->get_handle_of_step(get<0>(interval)));
+            if (i == intervals.size() - 1) {
+                pos_2 += graph->get_length(graph->get_handle_of_step(get<0>(interval)));
+            } 
         } else {
-            pos_2 += graph->get_length(graph->get_handle_of_step(get<1>(interval)));
+            if (i == intervals.size() - 1) {
+                pos_2 += graph->get_length(graph->get_handle_of_step(get<1>(interval)));
+            }  
         }
         cout << graph->get_path_name(path) << "\t" << pos_1 << "\t" << pos_2
              << "\t" << (get<2>(interval) ? '-' : '+') << endl;
@@ -526,14 +533,23 @@ string intervals_to_sequence(const PathHandleGraph* graph,
                              const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals) {
     
     string seq;
-    for (const auto& interval : intervals) {
+    // hack:  all intervals are open-ended except the last
+    // todo:  fix upstream!
+    for (int64_t i = 0; i < intervals.size(); ++i) {
+        const auto& interval = intervals[i];
         if (get<2>(interval) == false) {
-            step_handle_t last_step = graph->get_next_step(get<1>(interval));
+            step_handle_t last_step = get<1>(interval);
+            if (i == intervals.size() - 1) {
+                last_step = graph->get_next_step(last_step);
+            }
             for (step_handle_t step = get<0>(interval); step != last_step; step = graph->get_next_step(step)) {
                 seq += graph->get_sequence(graph->get_handle_of_step(step));
             }
         } else {
-            step_handle_t last_step = graph->get_previous_step(get<1>(interval));
+            step_handle_t last_step = get<1>(interval);
+            if (i == intervals.size() - 1) {
+                last_step = graph->get_previous_step(last_step);
+            }
             for (step_handle_t step = get<0>(interval); step != last_step; step = graph->get_previous_step(step)) {
                 seq += graph->get_sequence(graph->flip(graph->get_handle_of_step(step)));
             }            
