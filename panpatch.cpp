@@ -343,7 +343,7 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
         handle_t next_handle = graph->get_handle_of_step(next_step);
         if (anchors.count(graph->get_id(next_handle))) {
             if (anchors.at(graph->get_id(next_handle)) > pos) {
-                return make_pair(next_step, false);
+                return make_pair(next_step, true);
             } else {
                 break;
             }
@@ -413,6 +413,15 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
             pair<step_handle_t, bool> next_anchor = find_next_anchor_on_path(graph, ref_anchors, step, cur_pos);
             if (next_anchor.first != graph->path_end(graph->get_path_handle_of_step(step))) {
                 interval_cover.push_back(make_tuple(step, next_anchor.first, next_anchor.second));
+#ifdef debug
+                const auto& interval = interval_cover.back();
+                cerr << "Adding interval " << graph->get_id(graph->get_handle_of_step(get<0>(interval))) << ":"
+                     << graph->get_is_reverse(graph->get_handle_of_step(get<0>(interval))) << " - "
+                     << graph->get_id(graph->get_handle_of_step(get<1>(interval))) << ":"
+                     << graph->get_is_reverse(graph->get_handle_of_step(get<1>(interval)))
+                     << " rev=" <<get<2>(interval) << endl;
+                check_intervals(graph, {interval});
+#endif
                 found_next = true;
                 // slide position to the next anchor
                 cur_handle = graph->get_handle_of_step(next_anchor.first);
@@ -538,6 +547,13 @@ string intervals_to_sequence(const PathHandleGraph* graph,
     for (int64_t i = 0; i < intervals.size(); ++i) {
         const auto& interval = intervals[i];
         if (get<2>(interval) == false) {
+#ifdef debug
+            cerr << "Interval " << graph->get_id(graph->get_handle_of_step(get<0>(interval))) << ":"
+                 << graph->get_is_reverse(graph->get_handle_of_step(get<0>(interval))) << " - "
+                 << graph->get_id(graph->get_handle_of_step(get<1>(interval))) << ":"
+                 << graph->get_is_reverse(graph->get_handle_of_step(get<1>(interval)))
+                 << " rev=" <<get<2>(interval) << endl;
+#endif
             step_handle_t last_step = get<1>(interval);
             if (i == intervals.size() - 1) {
                 last_step = graph->get_next_step(last_step);
@@ -623,16 +639,22 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
         return patched_intervals;
     }
 
+    check_intervals(graph, patched_intervals);
+
 #ifdef debug
     cerr << "number of patched intervals found " << patched_intervals.size() << endl;
 #endif
     vector<tuple<step_handle_t, step_handle_t, bool>> smoothed_intervals = smooth_intervals(graph, patched_intervals);
+
+    check_intervals(graph, smoothed_intervals);
 
 #ifdef debug
     cerr << "number of smoothed intervals found " << smoothed_intervals.size() << endl;
 #endif
 
     vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = extend_intervals(graph, smoothed_intervals);
+
+    check_intervals(graph, extended_intervals);
 
     return extended_intervals;
 }
@@ -687,5 +709,22 @@ bool revert_bad_patch(const PathHandleGraph* graph,
         return true;
     }
     return false;
+}
+
+void check_intervals(const PathHandleGraph* graph,
+                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals) {
+    for (const auto& interval : intervals) {
+        if (get<2>(interval) == false) {
+            for (step_handle_t step = get<0>(interval); step != get<1>(interval); step = graph->get_next_step(step)) {
+                assert(step != graph->path_end(graph->get_path_handle_of_step(step)) &&
+                       step != graph->path_front_end(graph->get_path_handle_of_step(step)));
+            }
+        } else {
+            for (step_handle_t step = get<1>(interval); step != get<0>(interval); step = graph->get_next_step(step)) {
+                assert(step != graph->path_end(graph->get_path_handle_of_step(step)) &&
+                       step != graph->path_front_end(graph->get_path_handle_of_step(step)));
+            }            
+        }
+    }    
 }
 
