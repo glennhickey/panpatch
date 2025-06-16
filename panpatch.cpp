@@ -665,7 +665,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<string>& sample_names,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
-                      bool ref_default,
+                      string default_sample,
                       double threshold) {
 
     out_intervals.clear();    
@@ -685,8 +685,12 @@ bool revert_bad_patch(const PathHandleGraph* graph,
 
     // we replace the patch with the input because it was too short
     bool to_revert = (double)patch_length / (double)tgt_length < threshold;
+    if (to_revert) {
+        cout << "#Reverting failed patch as it covers only " << ((double)patch_length / (double)tgt_length)
+             << " of target" << endl;
+    }
 
-    if (ref_default && !to_revert) {
+    if (!default_sample.length() && !to_revert) {
         bool patch_happened = false;
         for (const auto& interval : in_intervals) {
             if (graph->get_sample_name(graph->get_path_handle_of_step(get<0>(interval))) != sample_names[0]) {
@@ -699,7 +703,17 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     }
 
     if (to_revert) {
-        if (ref_default) {
+        if (!default_sample.empty()) {
+            vector<path_handle_t> default_paths;
+            graph->for_each_path_of_sample(default_sample, [&](path_handle_t path_handle) {
+                size_t hap = graph->get_haplotype(path_handle);
+                if (hap == 0 || hap == PathMetadata::NO_HAPLOTYPE ||
+                    hap == graph->get_haplotype(first_tgt_paths.front())) {
+                    default_paths.push_back(path_handle);
+                }
+            });
+            assert(default_paths.size() == 1); // todo: can relax but want to be 1 in all current use cases
+            const path_handle_t& ref_path = default_paths[0];
             out_intervals.push_back(make_tuple(graph->path_begin(ref_path), graph->path_back(ref_path), false));
         } else {
             for (const path_handle_t& tgt_path : first_tgt_paths) {

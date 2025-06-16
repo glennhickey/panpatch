@@ -34,13 +34,13 @@ void help(char** argv) {
        << "Use a pangenome alignment (of single sample and reference) to make patched assembly" << endl
        << endl
        << "options: " << endl
-       << "    -p, --progress           Print progress" << endl
-       << "    -r, --reference STRING   Reference sample" << endl
-       << "    -s, --sample STRING      Input sample. Multiple allowed. Order specifies priority" << endl
-       << "    -f, --fasta FILE         Output the patched assembly to this fasta file" << endl
-       << "    -w, --window SIZE        Size of window used for computing identity for haplotype matching [1000]" << endl
-       << "    -e, --ref-default        If unable to patch, write reference contig (instead of first sample)" << endl
-       << "    -t, --threads N          Number of threads to use [default: all available]" << endl      
+       << "    -p, --progress               Print progress" << endl
+       << "    -r, --reference STRING       Reference sample" << endl
+       << "    -s, --sample STRING          Input sample. Multiple allowed. Order specifies priority" << endl
+       << "    -f, --fasta FILE             Output the patched assembly to this fasta file" << endl
+       << "    -w, --window SIZE            Size of window used for computing identity for haplotype matching [1000]" << endl
+       << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
+       << "    -t, --threads N              Number of threads to use [default: all available]" << endl      
        << endl;
 }    
 
@@ -50,6 +50,7 @@ int main(int argc, char** argv) {
     vector<string> sample_names;
     bool progress = false;
     string out_fasta_filename;
+    string default_sample;
     int c;
     int64_t window_size = 1000;
     bool ref_default = false;
@@ -63,14 +64,14 @@ int main(int argc, char** argv) {
             {"sample", required_argument, 0, 's'},
             {"fasta", required_argument, 0, 'f'},
             {"window", required_argument, 0, 'w'},
-            {"ref-default", no_argument, 0, 'e'},
+            {"default-sample", required_argument, 0, 'e'},
             {"threads", required_argument, 0, 't'},            
             {0, 0, 0, 0}
         };
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hpr:s:f:w:et:",
+        c = getopt_long (argc, argv, "hpr:s:f:w:e:t:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -95,7 +96,7 @@ int main(int argc, char** argv) {
             window_size = atoi(optarg);
             break;
         case 'e':
-            ref_default = true;
+            default_sample = optarg;
             break;
         case 't':
         {
@@ -170,6 +171,9 @@ int main(int argc, char** argv) {
         return 1;        
     }
     path_handle_t ref_path = ref_paths.front();
+    if (progress) {
+        cerr << "[panpatch]: Selected reference path " << graph->get_path_name(ref_path) << endl;
+    }
 
     // pull out all other paths selected by -s
     vector<path_handle_t> other_paths;
@@ -178,12 +182,19 @@ int main(int argc, char** argv) {
             other_paths.push_back(path_handle);
         });
     }
+    if (progress) {
+        cerr << "[panpatch]: Selected " << other_paths.size() << " (non-reference) paths" << endl;
+    }
 
     // pull out the target paths (the ones we want to patch) and sort them by haplotype
     map<int64_t, vector<path_handle_t>> target_paths;
     graph->for_each_path_of_sample(sample_names.front(), [&](path_handle_t path_handle) {
         target_paths[graph->get_haplotype(path_handle)].push_back(path_handle);
     });
+    if (progress) {
+        cerr << "[panpatch]: Target sample " << sample_names.front() << " has " << target_paths.size() << " paths" << endl;
+    }
+    assert(!target_paths.empty());
 
     // we patch each target haplotype independently, greedily selecting other haplotypes
     // up front using this simple coverage calculation
@@ -228,9 +239,8 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> input_intervals;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
                                          patched_intervals, input_intervals, 
-                                         ref_default, fail_threshold);
+                                         default_sample, fail_threshold);
         if (reverted) {
-            cout << "#Reverting failed patch" << endl;
             patched_intervals = input_intervals;
         }
         
