@@ -50,7 +50,8 @@ unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
 pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    const unordered_map<int64_t, int64_t>& anchors,
                                                    step_handle_t step,
-                                                   int64_t pos);
+                                                   int64_t pos,
+                                                   bool cross_Ns);
 
 // thread the anchors using the paths
 // return a set of intervals that represent the patched genome
