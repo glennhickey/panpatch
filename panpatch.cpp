@@ -114,6 +114,9 @@ unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGr
     unordered_map<path_handle_t, double> coverage_map;
     for (const auto& path_overlaps : total_window_overlaps) {
         coverage_map[path_overlaps.first] = (double)path_overlaps.second / (double)total_window_counts[path_overlaps.first];
+#ifdef debug
+        cerr << " COV MAP " << graph->get_path_name(path_overlaps.first) << " -> " << coverage_map[path_overlaps.first] << endl;
+#endif
     }
     
     return coverage_map;
@@ -127,8 +130,12 @@ unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHand
     for (const auto& path_cov : coverage_map) {
         string sample = graph->get_sample_name(path_cov.first);
         int64_t haplotype = graph->get_haplotype(path_cov.first);
-        sample_hap_coverage[sample][haplotype] += path_cov.second;
-        sample_hap_count[sample][haplotype] += 1;
+        int64_t path_length = 0;
+        graph->for_each_step_in_path(path_cov.first, [&](const step_handle_t& step) {
+            path_length += graph->get_length(graph->get_handle_of_step(step));
+        });        
+        sample_hap_coverage[sample][haplotype] += (double)path_length * path_cov.second;
+        sample_hap_count[sample][haplotype] += path_length;
     }
 
     // todo: this is prety unsophistacated and could be tricked by some weird edge cases
