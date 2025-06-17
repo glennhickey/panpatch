@@ -53,7 +53,7 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    int64_t pos,
                                                    bool backwards,
                                                    bool cross_Ns,
-                                                   int64_t bound=100000);
+                                                   int64_t bound=10000000);
 
 // thread the anchors using the paths
 // return a set of intervals that represent the patched genome
