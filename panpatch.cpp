@@ -253,8 +253,9 @@ pair<int64_t, int64_t> find_telomeres(const PathHandleGraph* graph,
 }
 
 unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
-                                              const path_handle_t& ref_path,
-                                              const unordered_set<path_handle_t>& path_set) {
+                                             const path_handle_t& ref_path,
+                                             const vector<path_handle_t>& tgt_paths,
+                                             const unordered_set<path_handle_t>& path_set) {
     unordered_map<int64_t, int64_t> anchors;
     int64_t pos = 0;
     
@@ -262,6 +263,13 @@ unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
     pair<int64_t, int64_t> prev_prev_anchor;
     unordered_set<path_handle_t> prev_anchor_paths;
     unordered_set<path_handle_t> prev_prev_anchor_paths;
+    bool ref_is_target = false;
+    for (const path_handle_t& tgt_path : tgt_paths) {
+        if (tgt_path == ref_path) {
+            ref_is_target = true;
+            break;
+        }
+    }
 
     // todo: we can optimise this a lot by targeting edges of tgt paths, assembly gaps etc...
     // but for now we just return everything
@@ -274,9 +282,16 @@ unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
                 covered_paths.insert(graph->get_path_handle_of_step(other_step));
             }
         });
-        // we currently have no use for ref-only anchors
-        if (!covered_paths.empty()) {
-            anchors.insert(make_pair(graph->get_id(handle), pos));
+        // we currently have no use for ref-only anchors unless they are endpoints
+        if (!covered_paths.empty() || step == graph->path_begin(ref_path) || step == graph->path_back(ref_path)) {
+            // we currently restrict anchors to target paths.
+            // todo: this prevents nested patches (but supporting nesting requires more logic than just removing this check)
+            for (const path_handle_t& tgt_path : tgt_paths) {
+                if (covered_paths.count(tgt_path) || ref_is_target) {
+                    anchors.insert(make_pair(graph->get_id(handle), pos));
+                    break;
+                }
+            }
         }
         pos += graph->get_length(handle);
     });
@@ -287,7 +302,7 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    const unordered_map<int64_t, int64_t>& anchors,
                                                    step_handle_t step,
                                                    int64_t pos,
-                                                   bool backwards,
+                                                   int64_t direction,
                                                    bool cross_Ns,
                                                    int64_t bound) {
 
@@ -319,7 +334,7 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
     // search forward
     int64_t fcount = 0;
     int64_t bcount = 0;
-    if (!backwards) {
+    if (direction >= 0) {
         step_handle_t next_step = graph->get_next_step(step);
         for (; next_step != graph->path_end(path); next_step = graph->get_next_step(next_step)) {
             handle_t next_handle = graph->get_handle_of_step(next_step);
@@ -343,8 +358,9 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                 }
             }
         }
-    } else {
-        // search backward
+    }
+    // search backward
+    if (direction <= 0) {
         step_handle_t next_step = graph->get_previous_step(step);
         for (; next_step != graph->path_front_end(path); next_step = graph->get_previous_step(next_step)) {
             handle_t next_handle = graph->get_handle_of_step(next_step);
@@ -439,8 +455,14 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
 #endif
                 bool cross_gaps = iteration > 0;
                 bool step_backward = graph->get_is_reverse(graph->get_handle_of_step(step));
+                int64_t direction = 0;
+                if (!interval_cover.empty() && graph->get_path_handle_of_step(get<0>(interval_cover.back())) ==
+                    graph->get_path_handle_of_step(step)) {
+                    // we constrain the direction if we're already following the path, otherwise it can go either way
+                    direction = get<2>(interval_cover.back()) ? -1 : 1;
+                }
                 pair<step_handle_t, bool> next_anchor = find_next_anchor_on_path(graph, ref_anchors, step, cur_pos,
-                                                                                 cur_backward != step_backward, cross_gaps);
+                                                                                 direction, cross_gaps);
                 if (next_anchor.first != graph->path_end(graph->get_path_handle_of_step(step))) {
                     interval_cover.push_back(make_tuple(step, next_anchor.first, next_anchor.second));
 #ifdef debug
@@ -640,7 +662,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
             relevant_paths.insert(path);
         }
     }
-    unordered_map<int64_t, int64_t> ref_anchors = find_anchors(graph, ref_path, relevant_paths);
+    unordered_map<int64_t, int64_t> ref_anchors = find_anchors(graph, ref_path, tgt_paths, relevant_paths);
 
 #ifdef debug
 

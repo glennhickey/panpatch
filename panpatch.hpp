@@ -43,17 +43,19 @@ pair<int64_t, int64_t> find_telomeres(const PathHandleGraph* graph,
 // maps reference position to anchor
 unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
                                              const path_handle_t& ref_path,
+                                             const vector<path_handle_t>& tgt_paths,
                                              const unordered_set<path_handle_t>& path_set);
 
 // search along a path to the next anchor
 // the bool flag returned is true if search went backwards on path
+// direction: -1 backward, 0 both, 1 forward
 pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    const unordered_map<int64_t, int64_t>& anchors,
                                                    step_handle_t step,
                                                    int64_t pos,
-                                                   bool backwards,
+                                                   int64_t direction,
                                                    bool cross_Ns,
-                                                   int64_t bound=10000000);
+                                                   int64_t bound=10000);
 
 // thread the anchors using the paths
 // return a set of intervals that represent the patched genome
