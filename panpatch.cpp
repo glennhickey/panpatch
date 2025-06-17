@@ -269,30 +269,32 @@ unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
         unordered_set<path_handle_t> covered_paths;
         graph->for_each_step_on_handle(handle, [&](step_handle_t other_step) {
             path_handle_t other_path = graph->get_path_handle_of_step(other_step);
-            if (path_set.count(other_path)) {
+            if (path_set.count(other_path) && other_path != ref_path) {
                 covered_paths.insert(graph->get_path_handle_of_step(other_step));
             }
         });
-        assert(!covered_paths.empty());
-        if (prev_prev_anchor_paths.empty()) {
-            prev_prev_anchor_paths = covered_paths;
-            prev_prev_anchor = make_pair(graph->get_id(handle), pos);
-        } else if (prev_anchor_paths.empty()) {
-            prev_anchor_paths = covered_paths;
-            prev_anchor = make_pair(graph->get_id(handle), pos);
-        } else {
-            bool p_same = covered_paths == prev_anchor_paths;
-            bool pp_same = prev_prev_anchor_paths == prev_anchor_paths;
-            if (p_same && pp_same) {
-                // we have three anchors the same, don't do anything but slide prev_anchor to here
+        // we currently have no use for ref-only anchors
+        if (!covered_paths.empty()) {            
+            if (prev_prev_anchor_paths.empty()) {
+                prev_prev_anchor_paths = covered_paths;
+                prev_prev_anchor = make_pair(graph->get_id(handle), pos);
+            } else if (prev_anchor_paths.empty()) {
+                prev_anchor_paths = covered_paths;
                 prev_anchor = make_pair(graph->get_id(handle), pos);
             } else {
-                // save the first anchor and update the other two
-                anchors.insert(prev_prev_anchor);
-                prev_prev_anchor = prev_anchor;
-                prev_prev_anchor_paths = prev_anchor_paths;
-                prev_anchor = make_pair(graph->get_id(handle), pos);
-                prev_anchor_paths = covered_paths;
+                bool p_same = covered_paths == prev_anchor_paths;
+                bool pp_same = prev_prev_anchor_paths == prev_anchor_paths;
+                if (p_same && pp_same) {
+                    // we have three anchors the same, don't do anything but slide prev_anchor to here
+                    prev_anchor = make_pair(graph->get_id(handle), pos);
+                } else {
+                    // save the first anchor and update the other two
+                    anchors.insert(prev_prev_anchor);
+                    prev_prev_anchor = prev_anchor;
+                    prev_prev_anchor_paths = prev_anchor_paths;
+                    prev_anchor = make_pair(graph->get_id(handle), pos);
+                    prev_anchor_paths = covered_paths;
+                }
             }
         }
         pos += graph->get_length(handle);
