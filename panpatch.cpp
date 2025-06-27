@@ -582,17 +582,19 @@ void print_intervals(const PathHandleGraph* graph,
     for (int64_t i = 0; i < intervals.size(); ++i) {
         const auto& interval = intervals[i];
         path_handle_t path = graph->get_path_handle_of_step(get<0>(interval));
-        int64_t pos_1 = path_index[path][get<0>(interval)];
-        int64_t pos_2 = path_index[path][get<1>(interval)];
-        if (get<2>(interval)) {
-            swap(pos_1, pos_2);
-            if (i == intervals.size() - 1) {
-                pos_2 += graph->get_length(graph->get_handle_of_step(get<0>(interval)));
-            } 
-        } else {
+        int64_t pos_1, pos_2;
+        if (get<2>(interval) == false) {
+            pos_1 = path_index[path][get<0>(interval)];
+            pos_2 = path_index[path][get<1>(interval)];
             if (i == intervals.size() - 1) {
                 pos_2 += graph->get_length(graph->get_handle_of_step(get<1>(interval)));
-            }  
+            }
+        } else {
+            pos_1 = path_index[path][get<1>(interval)] + graph->get_length(graph->get_handle_of_step(get<1>(interval)));
+            pos_2 = path_index[path][get<0>(interval)] + graph->get_length(graph->get_handle_of_step(get<0>(interval)));
+            if (i == intervals.size() -1) {
+                pos_2 -= graph->get_length(graph->get_handle_of_step(get<0>(interval)));
+            }
         }
         cout << graph->get_path_name(path) << "\t" << pos_1 << "\t" << pos_2
              << "\t" << (get<2>(interval) ? '-' : '+') << endl;
@@ -608,14 +610,14 @@ string intervals_to_sequence(const PathHandleGraph* graph,
     // todo:  fix upstream!
     for (int64_t i = 0; i < intervals.size(); ++i) {
         const auto& interval = intervals[i];
-        if (get<2>(interval) == false) {
 #ifdef debug
-            cerr << "Interval " << graph->get_id(graph->get_handle_of_step(get<0>(interval))) << ":"
-                 << graph->get_is_reverse(graph->get_handle_of_step(get<0>(interval))) << " - "
-                 << graph->get_id(graph->get_handle_of_step(get<1>(interval))) << ":"
-                 << graph->get_is_reverse(graph->get_handle_of_step(get<1>(interval)))
-                 << " rev=" <<get<2>(interval) << endl;
+        cerr << "Interval " << graph->get_id(graph->get_handle_of_step(get<0>(interval))) << ":"
+             << graph->get_is_reverse(graph->get_handle_of_step(get<0>(interval))) << " - "
+             << graph->get_id(graph->get_handle_of_step(get<1>(interval))) << ":"
+             << graph->get_is_reverse(graph->get_handle_of_step(get<1>(interval)))
+             << " rev=" <<get<2>(interval) << endl;
 #endif
+        if (get<2>(interval) == false) {            
             step_handle_t last_step = get<1>(interval);
             if (i == intervals.size() - 1) {
                 last_step = graph->get_next_step(last_step);
