@@ -29,6 +29,8 @@ static unique_ptr<PathHandleGraph> load_graph(istream& graph_stream);
 // contigs to patch, then consider the patch failed
 static const double fail_threshold = 0.95;
 
+static const size_t fasta_width = 80;
+
 void help(char** argv) {
   cerr << "usage: " << argv[0] << " [options] <graph> " << endl
        << "Use a pangenome alignment (of single sample and reference) to make patched assembly" << endl
@@ -254,15 +256,33 @@ int main(int argc, char** argv) {
 
         // save the intervals to the fasta
         if (!out_fasta_filename.empty()) {
-            if (progress) {
-                cerr << "[panpatch]: Writing patched contig to FASTA" << endl;
-            }
-            string contig_name = graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first);
-            string sequence = intervals_to_sequence(graph, patched_intervals);
-            out_fasta_file << ">" << contig_name << endl;
-            static const size_t width = 80;
-            for (size_t written = 0; written < sequence.length(); written += width) {
-                out_fasta_file << sequence.substr(written, min(width, sequence.length() - written)) << "\n";
+            if (reverted) {
+                // note: we have two modes, either we've reverted to the original contigs and
+                // we just write them out one by one.  Or we made a single t2t patch.
+                // todo: what isn't supported (and probably should be!!!) is partial patching
+                // where we patch a few contigs but output is not single t2t contig.
+                if (progress) {
+                    cerr << "[panpatch]: Writing input contig(s) to FASTA" << endl;
+                }
+                for (const auto& interval : patched_intervals) {
+                    path_handle_t interval_path = graph->get_path_handle_of_step(get<0>(interval));
+                    string contig_name = graph->get_path_name(interval_path);
+                    string sequence = intervals_to_sequence(graph, {interval});
+                    out_fasta_file << ">" << contig_name << endl;
+                    for (size_t written = 0; written < sequence.length(); written += fasta_width) {
+                        out_fasta_file << sequence.substr(written, min(fasta_width, sequence.length() - written)) << "\n";
+                    }
+                }
+            } else {
+                if (progress) {
+                    cerr << "[panpatch]: Writing patched contig to FASTA" << endl;
+                }         
+                string contig_name = graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first);
+                string sequence = intervals_to_sequence(graph, patched_intervals);
+                out_fasta_file << ">" << contig_name << endl;
+                for (size_t written = 0; written < sequence.length(); written += fasta_width) {
+                    out_fasta_file << sequence.substr(written, min(fasta_width, sequence.length() - written)) << "\n";
+                }
             }
         }
     }

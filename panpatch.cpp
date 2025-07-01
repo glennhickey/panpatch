@@ -410,11 +410,11 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
     
     unordered_map<path_handle_t, int64_t> path_rank;
     for (int64_t i = 0; i < tgt_paths.size(); ++i) {
-        path_rank[tgt_paths[i]] = i;
+        path_rank[tgt_paths[i]] = i + 1;
     }
     // important note: these must be already sorted in order of sample priortiy    
     for (int64_t i = 0; i < other_paths.size(); ++i) {
-        path_rank[other_paths[i]] = i + tgt_paths.size();
+        path_rank[other_paths[i]] = i + 1 + tgt_paths.size();
     }
 
     vector<tuple<step_handle_t, step_handle_t, bool>> interval_cover;
@@ -436,6 +436,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
     });
     bool cur_backward = false;
     assert(cur_backward == graph->get_is_reverse(cur_handle));
+    path_handle_t cur_path;
         
     while (true) {
         // find the steps on the handle and sort them using the path priority
@@ -446,7 +447,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
         graph->for_each_step_on_handle(cur_handle, [&](step_handle_t step) {
             path_handle_t path = graph->get_path_handle_of_step(step);
             if (path_rank.count(path)) {
-                sorted_steps.insert(make_pair(path_rank.at(path), step));
+                int64_t rank = path == cur_path ? 0 : path_rank.at(path);
+                sorted_steps.insert(make_pair(rank, step));
             }
         });
 
@@ -488,6 +490,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                     cur_handle = graph->get_handle_of_step(next_anchor.first);
                     cur_pos = ref_anchors.at(graph->get_id(cur_handle));
                     cur_backward = graph->get_is_reverse(cur_handle);
+                    cur_path = graph->get_path_handle_of_step(next_anchor.first);
                     break;
                 }
             }
@@ -528,6 +531,17 @@ vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHan
     int64_t j = intervals.size();
     smoothed_intervals.push_back(make_tuple(get<0>(intervals[i]), get<1>(intervals[j-1]), get<2>(intervals[i])));
 
+#ifdef debug
+    for (const auto& interval : smoothed_intervals) {
+        cerr << "Smoothed interval " << graph->get_path_name(graph->get_path_handle_of_step(get<0>(interval))) << " " 
+             << graph->get_id(graph->get_handle_of_step(get<0>(interval))) << ":"
+             << graph->get_is_reverse(graph->get_handle_of_step(get<0>(interval))) << " - "
+             << graph->get_id(graph->get_handle_of_step(get<1>(interval))) << ":"
+             << graph->get_is_reverse(graph->get_handle_of_step(get<1>(interval)))
+             << " rev=" <<get<2>(interval) << endl;
+    }
+#endif
+    
     return smoothed_intervals;    
 }
 
@@ -556,6 +570,17 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHan
         last_step = graph->path_begin(graph->get_path_handle_of_step(last_step));
     }
     extended_intervals.back() = make_tuple(get<0>(extended_intervals.back()), last_step, last_backward);
+
+#ifdef debug
+    for (const auto& interval : extended_intervals) {
+        cerr << "Extended interval " << graph->get_path_name(graph->get_path_handle_of_step(get<0>(interval))) << " " 
+             << graph->get_id(graph->get_handle_of_step(get<0>(interval))) << ":"
+             << graph->get_is_reverse(graph->get_handle_of_step(get<0>(interval))) << " - "
+             << graph->get_id(graph->get_handle_of_step(get<1>(interval))) << ":"
+             << graph->get_is_reverse(graph->get_handle_of_step(get<1>(interval)))
+             << " rev=" <<get<2>(interval) << endl;
+    }
+#endif
     
     return extended_intervals;
 }
@@ -762,6 +787,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                 break;
             }
         }
+        cout << "#Reverting to input assembly because no patches from other assemblies were found" << endl;
         // we replace the patch with the reference because there was no patch
         to_revert = !patch_happened;
     }
