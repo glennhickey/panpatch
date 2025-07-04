@@ -490,7 +490,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                     cur_handle = graph->get_handle_of_step(next_anchor.first);
                     cur_pos = ref_anchors.at(graph->get_id(cur_handle));
                     cur_backward = graph->get_is_reverse(cur_handle);
-                    if (!tgt_ranks.count(graph->get_path_handle_of_step(next_anchor.first))) {
+                    if (path_rank[graph->get_path_handle_of_step(next_anchor.first)] < tgt_ranks.size() &&
+                        !tgt_ranks.count(graph->get_path_handle_of_step(next_anchor.first))) {
                         // preference for first-visited target paths when choosing fork
                         tgt_ranks[graph->get_path_handle_of_step(next_anchor.first)] = tgt_ranks.size();
                     }
