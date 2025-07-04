@@ -622,7 +622,7 @@ void print_intervals(const PathHandleGraph* graph,
             pos_1 = path_index[path][get<1>(interval)] + graph->get_length(graph->get_handle_of_step(get<1>(interval)));
             pos_2 = path_index[path][get<0>(interval)] + graph->get_length(graph->get_handle_of_step(get<0>(interval)));
             if (i == intervals.size() -1) {
-                pos_2 -= graph->get_length(graph->get_handle_of_step(get<0>(interval)));
+                pos_1 -= graph->get_length(graph->get_handle_of_step(get<1>(interval)));
             }
         }
         cout << graph->get_path_name(path) << "\t" << pos_1 << "\t" << pos_2
