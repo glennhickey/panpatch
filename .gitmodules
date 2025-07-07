@@ -1,0 +1,3 @@
+[submodule "deps/libbdsg-easy"]
+	path = deps/libbdsg-easy
+	url = https://github.com/vgteam/libbdsg-easy.git

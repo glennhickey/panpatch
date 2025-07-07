@@ -1,0 +1,7 @@
+#Patched assembly on chrX for verkko#1:
+verkko#1#chrX#0	0	12	+
+duplex#2#chrX#0	32	34	-
+verkko#1#chrX#0	14	32	+
+duplex#2#chrX#0	10	14	-
+verkko#1#chrX#0	36	46	+
+
