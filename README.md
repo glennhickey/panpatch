@@ -1,10 +1,15 @@
 # panpatch
 
-Use a pangenome graph to patch (slightly) fragmented assemblies into T2T chromosomes
+Use a pangenome graph to patch (slightly) fragmented assemblies into T2T chromosomes.
+
+Panpatch supports two types of patches:
+
+1) Gaps inside scaffolds (`N`s)
+2) Scaffolding disconnected contigs
 
 ## Input Pangenome Alignment
 
-The input to `panpatch` is a chromosome graph in `.vg` format that includes a (single) reference (ideally CHM13) contig. The alignment should include both the assembly you want to patch (ex verkko) and additional assemblies to use for patching (ex ont, hifiasm). 
+The input to `panpatch` is a chromosome graph in `.vg` format that includes a (single) reference contig (ex CHM13). The alignment should include both the assembly you want to patch (ex verkko) and additional assemblies to use for patching (ex ont, hifiasm). 
 
 This alignment could be made with [minigraph-cactus](https://github.com/ComparativeGenomicsToolkit/cactus/blob/master/doc/pangenome.md).  An example input file, `pan28.hs1.seqfile`, is
 
@@ -24,16 +29,12 @@ PAN028-duplex.2  PAN028.haplotype2.duplex.verkko2.0.scaff.fa
 The alignment is then done with
 
 ```
-cactus-pangenome ./js ./pan028.hs1.seqfile --outName pan028-mc-hs1 --outDir pan028-mc-hs1 --logFile pan028-mc-hs1.log --batchSystem slurm --gbz --reference hs1 --consCores 65 --mgCores 64 --indexCores 64 --mapCores 16 --xg full --chrom-vg full
+cactus-pangenome ./js ./pan028.hs1.seqfile --outName pan028-mc-hs1 --outDir pan028-mc-hs1 --logFile pan028-mc-hs1.log --batchSystem slurm --gbz --reference hs1 --consCores 65 --mgCores 64 --indexCores 64 --mapCores 16 ---chrom-vg full
 ```
 
-And the `.vg` files that can be used to patch each chromosome will be found in `pan028-mc-hs1/pan028-mc-hs1.chroms`
+And the `.full.vg` files that can be used to patch each chromosome will be found in `pan028-mc-hs1/pan028-mc-hs1.chroms`.  **Important**: the `--chrom-vg full` option is essential: `panpatch` only works on unclipped, chromosome-level `.vg` files. 
 
-## PanPatch
-
-This is a work in progress towards a proof of concept....
-
-### Building Panpatch
+## Building Panpatch
 
 Clone it with submodules then `make`.  The `panpatch` binary should be built in the same directory if all went well.
 
@@ -45,7 +46,7 @@ make
 
 If you are missing system dependencies, you can try following the [Install Dependencies](https://github.com/vgteam/vg?tab=readme-ov-file#linux-install-dependencies) section from vg -- `panpatch` uses a subset of these so they will be more than sufficient. 
 
-### Interface
+## PanPatch Interface
 
 You specify the graph and sample names in order of priority (first column of the above input file, excluding `.1/2` suffixes)
 ```
@@ -83,7 +84,7 @@ The above example takes about 2 hours on the cluster to run `cactus-pangenome`. 
 
 ### Algorithm
 
-All contigs are first binned by haplotype.  Since input not necessarily trio-phased, this determines whether, for example, haplotype 1 from verkko corresponds to haplotype 1 or haplotype 2 from hifasm, etc.
+All contigs are first binned by haplotype.  Since the input not necessarily trio-phased, this determines whether, for example, haplotype 1 from verkko corresponds to haplotype 1 or haplotype 2 from hifasm, etc.
 
 This is accomplished by looking at the average alignment identity in the graph between pairs of haplotypes, over windows of `1000bp`.
 
@@ -97,10 +98,13 @@ Finally a path through the anchors is searched in the graph that connects the fi
 
 ### Limitations and future work
 
-* Just a proof of concept, tuning certainly required to avoid spurious patches etc.
-* Not well-tested (see above)
+* Needs better checking for obviously bad patches:
+     * Do telomeres get swallowed up?
+     * Are the supporting alignments sketchy?
+     * Are sequences being patched in unreasonably long?
+     * Etc.
 * Entirely reference-based.  If graph doesn't align contigs to reference, then no anchors will be found.  This could happen in acrocentric short arms, for example.
-* Telomere-checker, which would be informative, isn't quite finished. 
+* Left-to-right reference-based graph search is very simplistic, and some cases could probably be improved with more general search.
 
 
 

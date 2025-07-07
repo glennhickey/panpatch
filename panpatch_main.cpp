@@ -196,7 +196,11 @@ int main(int argc, char** argv) {
     if (progress) {
         cerr << "[panpatch]: Target sample " << sample_names.front() << " has " << target_paths.size() << " paths" << endl;
     }
-    assert(!target_paths.empty());
+    if (target_paths.empty()) {
+        cerr << "[panpatch]: Error: No paths found for target sample " << sample_names.front()
+             << " in graph containing reference path " << graph->get_path_name(ref_path) << endl;
+        return 1;
+    }
 
     // we patch each target haplotype independently, greedily selecting other haplotypes
     // up front using this simple coverage calculation
