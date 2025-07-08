@@ -1,0 +1,10 @@
+hs1 https://hgdownload.soe.ucsc.edu/goldenPath/hs1/bigZips/hs1.fa.gz
+
+PAN010-verkko.1 /private/groups/migalab/mcechova/pedigree_assemblies/verkko2.0/assemblies/unified/PAN010.haplotype1.full.verkko2.0.scaff.unifiedAssembly.fa
+PAN010-verkko.2 /private/groups/migalab/mcechova/pedigree_assemblies/verkko2.0/assemblies/unified/PAN010.haplotype2.full.verkko2.0.scaff.unifiedAssembly.fa
+
+PAN010-hifiasm.1 /private/groups/migalab/mcechova/pedigree_assemblies/verkko2.0/assemblies/unified/PAN010.hifiasm.20240417.hic.hap1.p_ctg.gfa.unifiedAssembly.fa
+PAN010-hifiasm.2 /private/groups/migalab/mcechova/pedigree_assemblies/verkko2.0/assemblies/unified/PAN010.hifiasm.20240417.hic.hap2.p_ctg.gfa.unifiedAssembly.fa
+
+PAN010-duplex.1 /private/groups/migalab/mcechova/pedigree_assemblies/verkko2.0/assemblies/unified/PAN010.haplotype1.duplex.verkko2.0.scaff.unifiedAssembly.fa
+PAN010-duplex.2 /private/groups/migalab/mcechova/pedigree_assemblies/verkko2.0/assemblies/unified/PAN010.haplotype2.duplex.verkko2.0.scaff.unifiedAssembly.fa
