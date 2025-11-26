@@ -833,8 +833,86 @@ void check_intervals(const PathHandleGraph* graph,
             for (step_handle_t step = get<1>(interval); step != get<0>(interval); step = graph->get_next_step(step)) {
                 assert(step != graph->path_end(graph->get_path_handle_of_step(step)) &&
                        step != graph->path_front_end(graph->get_path_handle_of_step(step)));
-            }            
+            }
         }
-    }    
+    }
+}
+
+bool validate_telomeres(const PathHandleGraph* graph,
+                        const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                        double threshold,
+                        bool verbose) {
+
+    if (intervals.empty()) {
+        if (verbose) {
+            cerr << "[panpatch] Telomere validation: no intervals to validate" << endl;
+        }
+        return false;
+    }
+
+    // Get the full sequence
+    string sequence = intervals_to_sequence(graph, intervals);
+    int64_t seq_len = sequence.length();
+
+    if (seq_len < 100) {
+        if (verbose) {
+            cerr << "[panpatch] Telomere validation: sequence too short (" << seq_len << "bp)" << endl;
+        }
+        return false;
+    }
+
+    // Define regions to check
+    // We'll check the first and last 10kb for telomeres at tips
+    // And check the middle region (excluding first/last 10kb) for absence of telomeres
+    int64_t tip_check_len = min((int64_t)10000, seq_len / 3);
+
+    // Helper function to check for telomere repeats in a region
+    auto has_telomere = [&](int64_t start, int64_t end) -> bool {
+        int64_t fw_count = 0;
+        int64_t r_count = 0;
+        int64_t region_len = 0;
+
+        for (int64_t pos = start; pos < end - 6 && pos < seq_len - 6; ++pos) {
+            if (sequence.substr(pos, 6) == "TTAGGG") {
+                ++fw_count;
+                pos += 5;
+            } else if (sequence.substr(pos, 6) == "CCCTAA") {
+                ++r_count;
+                pos += 5;
+            }
+            ++region_len;
+        }
+
+        if (region_len < 50) {
+            return false;
+        }
+
+        double fw_density = 6. * ((double)fw_count / (double)region_len);
+        double r_density = 6. * ((double)r_count / (double)region_len);
+
+        return (fw_density >= threshold || r_density >= threshold);
+    };
+
+    // Check for telomeres at the start
+    bool has_start_telomere = has_telomere(0, tip_check_len);
+
+    // Check for telomeres at the end
+    bool has_end_telomere = has_telomere(max((int64_t)0, seq_len - tip_check_len), seq_len);
+
+    // Check for telomeres in the middle (internal telomeres - should NOT exist)
+    bool has_internal_telomere = false;
+    if (seq_len > 2 * tip_check_len) {
+        has_internal_telomere = has_telomere(tip_check_len, seq_len - tip_check_len);
+    }
+
+    if (verbose) {
+        cerr << "[panpatch] Telomere validation (threshold=" << threshold << "):" << endl;
+        cerr << "[panpatch]   Sequence length: " << seq_len << "bp" << endl;
+        cerr << "[panpatch]   Start telomere: " << (has_start_telomere ? "FOUND" : "NOT FOUND") << endl;
+        cerr << "[panpatch]   End telomere: " << (has_end_telomere ? "FOUND" : "NOT FOUND") << endl;
+        cerr << "[panpatch]   Internal telomeres: " << (has_internal_telomere ? "FOUND (BAD)" : "NOT FOUND (GOOD)") << endl;
+    }
+
+    return has_start_telomere && has_end_telomere && !has_internal_telomere;
 }
 
