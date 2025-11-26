@@ -870,9 +870,8 @@ bool validate_telomeres(const PathHandleGraph* graph,
     auto has_telomere = [&](int64_t start, int64_t end) -> bool {
         int64_t fw_count = 0;
         int64_t r_count = 0;
-        int64_t region_len = 0;
 
-        for (int64_t pos = start; pos < end - 6 && pos < seq_len - 6; ++pos) {
+        for (int64_t pos = start; pos < end - 6; ++pos) {
             if (sequence.substr(pos, 6) == "TTAGGG") {
                 ++fw_count;
                 pos += 5;
@@ -880,9 +879,9 @@ bool validate_telomeres(const PathHandleGraph* graph,
                 ++r_count;
                 pos += 5;
             }
-            ++region_len;
         }
 
+        int64_t region_len = end - start;
         if (region_len < 50) {
             return false;
         }
