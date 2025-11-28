@@ -79,5 +79,6 @@ panpatch : panpatch_main.o panpatch.o ${libbdsgPath}/lib/libbdsg.a
 
 all : panpatch
 
+.PHONY: test
 test : panpatch
 	cd test && python3 panpatchTest.py

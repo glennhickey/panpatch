@@ -1,6 +1,7 @@
 #include <unordered_set>
 #include <cassert>
 #include <map>
+#include <iomanip>
 #include "panpatch.hpp"
 #include <limits>
 
@@ -913,5 +914,81 @@ bool validate_telomeres(const PathHandleGraph* graph,
     }
 
     return has_start_telomere && has_end_telomere && !has_internal_telomere;
+}
+
+void log_contig_telomeres(const PathHandleGraph* graph,
+                          const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                          double threshold) {
+
+    if (intervals.empty()) {
+        return;
+    }
+
+    // Helper function to check for telomere density in a region
+    auto check_telomere_density = [](const string& sequence, int64_t start, int64_t end) -> pair<double, double> {
+        int64_t fw_count = 0;
+        int64_t r_count = 0;
+
+        for (int64_t pos = start; pos < end - 6; ++pos) {
+            if (sequence.substr(pos, 6) == "TTAGGG") {
+                ++fw_count;
+                pos += 5;
+            } else if (sequence.substr(pos, 6) == "CCCTAA") {
+                ++r_count;
+                pos += 5;
+            }
+        }
+
+        int64_t region_len = end - start;
+        if (region_len < 50) {
+            return make_pair(0.0, 0.0);
+        }
+
+        double fw_density = 6. * ((double)fw_count / (double)region_len);
+        double r_density = 6. * ((double)r_count / (double)region_len);
+
+        return make_pair(fw_density, r_density);
+    };
+
+    // Group intervals by path to analyze each contig separately
+    unordered_map<path_handle_t, vector<tuple<step_handle_t, step_handle_t, bool>>> path_intervals;
+    for (const auto& interval : intervals) {
+        path_handle_t path = graph->get_path_handle_of_step(get<0>(interval));
+        path_intervals[path].push_back(interval);
+    }
+
+    // Analyze each contig
+    for (const auto& path_int : path_intervals) {
+        path_handle_t path = path_int.first;
+        const auto& path_ints = path_int.second;
+
+        string sequence = intervals_to_sequence(graph, path_ints);
+        int64_t seq_len = sequence.length();
+
+        if (seq_len < 50) {
+            continue;  // Too short to analyze
+        }
+
+        // Check tip regions
+        int64_t tip_check_len = min((int64_t)10000, seq_len / 3);
+
+        auto left_densities = check_telomere_density(sequence, 0, tip_check_len);
+        auto right_densities = check_telomere_density(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len);
+
+        double left_max_density = max(left_densities.first, left_densities.second);
+        double right_max_density = max(right_densities.first, right_densities.second);
+
+        bool has_left = left_max_density >= threshold;
+        bool has_right = right_max_density >= threshold;
+
+        // Log all contigs with telomere information
+        cout << "#Contig " << graph->get_path_name(path)
+             << " len=" << seq_len << "bp"
+             << " left=" << (has_left ? "YES" : "NO")
+             << "(" << fixed << setprecision(3) << left_max_density << ")"
+             << " right=" << (has_right ? "YES" : "NO")
+             << "(" << fixed << setprecision(3) << right_max_density << ")"
+             << endl;
+    }
 }
 

@@ -299,6 +299,9 @@ int main(int argc, char** argv) {
         }
         
 
+        // log telomere information for contigs
+        log_contig_telomeres(graph, patched_intervals);
+
         // print the intervals to cout
         cout << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "
              << graph->get_sample_name(hap_tgts.second.front()) << "#"

@@ -1,0 +1,5 @@
+#Reverting to input assembly because no patches from other assemblies were found
+#Contig verkko#1#chrX#0 len=1233bp left=YES(0.993) right=YES(0.978)
+#Patched assembly on chrX for verkko#1:
+verkko#1#chrX#0	0	1233	+
+
