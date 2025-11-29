@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
             if (progress) {
                 cerr << "[panpatch]: Validating telomeres" << endl;
             }
-            bool telomeres_valid = validate_telomeres(graph, patched_intervals, 0.95, progress);
+            bool telomeres_valid = validate_telomeres(graph, patched_intervals, 0.8, progress);
             if (!telomeres_valid) {
                 telomere_validation_failed = true;
                 cout << "#Telomere validation failed: assembly does not meet telomere requirements" << endl;

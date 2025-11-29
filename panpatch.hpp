@@ -112,11 +112,11 @@ void check_intervals(const PathHandleGraph* graph,
 // if verbose is true, prints diagnostic messages
 bool validate_telomeres(const PathHandleGraph* graph,
                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
-                        double threshold=0.95,
+                        double threshold=0.8,
                         bool verbose=false);
 
 // log telomere information for each contig in the intervals
 // outputs to cout with # prefix showing which contigs have telomeres and where
 void log_contig_telomeres(const PathHandleGraph* graph,
                           const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
-                          double threshold=0.95);
+                          double threshold=0.8);
