@@ -7,7 +7,7 @@ VERSION=$2
 
 mkdir -p hs1-patches.${VERSION}
 for VG in ${SAMPLE}-mc-hs1/${SAMPLE}-mc-hs1.chroms/chr*.full.vg; do
-    $PANPATCH $VG -t 4 -r hs1 -s ${SAMPLE}-verkko -s ${SAMPLE} -f hs1-patches.${VERSION}/${SAMPLE}.$(basename $VG).patch.fa -p > hs1-patches.${VERSION}/${SAMPLE}.$(basename $VG).patch.bed 2> hs1-patches.${VERSION}/${SAMPLE}.$(basename $VG).patch.fa.stderr && bgzip -f hs1-patches.${VERSION}/${SAMPLE}.$(basename $VG).patch.fa &
+    $PANPATCH $VG -t 4 -T -r hs1 -s ${SAMPLE}-verkko -s ${SAMPLE} -f hs1-patches.${VERSION}/${SAMPLE}.$(basename $VG).patch.fa -p > hs1-patches.${VERSION}/${SAMPLE}.$(basename $VG).patch.bed 2> hs1-patches.${VERSION}/${SAMPLE}.$(basename $VG).patch.fa.stderr && bgzip -f hs1-patches.${VERSION}/${SAMPLE}.$(basename $VG).patch.fa &
 done
 wait
 rm -f hs1-patches.${VERSION}/${SAMPLE}.patch.fa.gz hs1-patches.${VERSION}/${SAMPLE}.patch.bed hs1-patches.${VERSION}/${SAMPLE}.patch.stderr
