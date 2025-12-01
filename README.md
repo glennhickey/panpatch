@@ -78,6 +78,11 @@ PAN028-verkko#1#haplotype1-0000046#0	0	682357
 Patched assembly for PAN028-verkko#2:
 PAN028-verkko#2#haplotype2-0000073#0	1	65910828
 ```
+
+## Check Telomeres
+
+In some cases, the best alignment / patch can place a telomere inside the output assembly (as opposed to at the tip).  Use the `-T` option to check for these cases and reject patches that do not begin and and with telomeres. 
+
 ### Running time
 
 The above example takes about 2 hours on the cluster to run `cactus-pangenome`.  Running `panpatch` on each chromsome in series takes about 2 minutes total on my desktop. 

@@ -1,0 +1,6 @@
+#Telomere validation failed: assembly does not meet telomere requirements
+#Reverting to input assembly because no patches from other assemblies were found
+#Contig verkko#1#chrX#0 len=1233bp left=YES(0.990) right=YES(0.990)
+#Patched assembly on chrX for verkko#1:
+verkko#1#chrX#0	0	1233	+
+

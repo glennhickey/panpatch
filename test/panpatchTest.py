@@ -63,6 +63,17 @@ run('diff tiny.longo.duplex.bed tiny.longo.duplex.bed.truth')
 run('diff tiny.longo.duplex.fa tiny.longo.truth.fa')
 temp_files += ['tiny.longo.duplex.bed', 'tiny.longo.duplex.fa']
 
+# Telomere tests
+run('vg convert telomere.gfa > telomere.vg')
+temp_files += ['telomere.vg']
+
+run('panpatch telomere.vg -r x -s verkko -s hifi > telomere.hifi.bed')
+run('diff telomere.hifi.bed telomere.hifi.bed.truth')
+temp_files += ['telomere.hifi.bed']
+
+run('panpatch telomere.vg -r x -s verkko -s noTelo -T > telomere.noTelo.T.bed')
+run('diff telomere.noTelo.T.bed telomere.noTelo.T.bed.truth')
+temp_files += ['telomere.noTelo.T.bed']
 
 
 for f in temp_files:

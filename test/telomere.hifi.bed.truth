@@ -1,0 +1,6 @@
+#Contig verkko#1#chrX#0 len=1207bp left=YES(0.990) right=YES(0.990)
+#Patched assembly on chrX for verkko#1:
+verkko#1#chrX#0	0	602	+
+hifi#1#chrX#0	602	628	+
+verkko#1#chrX#0	628	1233	+
+

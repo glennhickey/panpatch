@@ -42,7 +42,8 @@ void help(char** argv) {
        << "    -f, --fasta FILE             Output the patched assembly to this fasta file" << endl
        << "    -w, --window SIZE            Size of window used for computing identity for haplotype matching [1000]" << endl
        << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
-       << "    -t, --threads N              Number of threads to use [default: all available]" << endl      
+       << "    -t, --threads N              Number of threads to use [default: all available]" << endl
+       << "    -T, --require-telomeres      Require assemblies to have telomeres at both ends and no internal telomeres" << endl
        << endl;
 }    
 
@@ -56,6 +57,7 @@ int main(int argc, char** argv) {
     int c;
     int64_t window_size = 1000;
     bool ref_default = false;
+    bool require_telomeres = false;
     optind = 1; 
     while (true) {
 
@@ -67,13 +69,14 @@ int main(int argc, char** argv) {
             {"fasta", required_argument, 0, 'f'},
             {"window", required_argument, 0, 'w'},
             {"default-sample", required_argument, 0, 'e'},
-            {"threads", required_argument, 0, 't'},            
+            {"threads", required_argument, 0, 't'},
+            {"require-telomeres", no_argument, 0, 'T'},
             {0, 0, 0, 0}
         };
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hpr:s:f:w:e:t:",
+        c = getopt_long (argc, argv, "hpr:s:f:w:e:t:T",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -109,7 +112,10 @@ int main(int argc, char** argv) {
             }
             omp_set_num_threads(num_threads);
             break;
-        }                                    
+        }
+        case 'T':
+            require_telomeres = true;
+            break;
         case 'h':
         case '?':
             /* getopt_long already printed an error message. */
@@ -242,14 +248,59 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers);
 
+        // Check telomere validation if required
+        bool telomere_validation_failed = false;
+        if (require_telomeres && !patched_intervals.empty()) {
+            if (progress) {
+                cerr << "[panpatch]: Validating telomeres" << endl;
+            }
+            bool telomeres_valid = validate_telomeres(graph, patched_intervals, 0.8, progress);
+            if (!telomeres_valid) {
+                telomere_validation_failed = true;
+                cout << "#Telomere validation failed: assembly does not meet telomere requirements" << endl;
+            }
+        }
+
         vector<tuple<step_handle_t, step_handle_t, bool>> input_intervals;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
-                                         patched_intervals, input_intervals, 
+                                         patched_intervals, input_intervals,
                                          default_sample, fail_threshold);
+
+        // Also revert if telomere validation failed
+        if (!reverted && telomere_validation_failed) {
+            reverted = true;
+            // Generate input intervals if not already done
+            if (input_intervals.empty()) {
+                if (!default_sample.empty()) {
+                    vector<path_handle_t> default_paths;
+                    graph->for_each_path_of_sample(default_sample, [&](path_handle_t path_handle) {
+                        size_t hap = graph->get_haplotype(path_handle);
+                        if (hap == 0 || hap == PathMetadata::NO_HAPLOTYPE ||
+                            hap == graph->get_haplotype(hap_tgts.second.front())) {
+                            default_paths.push_back(path_handle);
+                        }
+                    });
+                    if (!default_paths.empty()) {
+                        const path_handle_t& def_path = default_paths[0];
+                        input_intervals.push_back(make_tuple(graph->path_begin(def_path),
+                                                            graph->path_back(def_path), false));
+                    }
+                } else {
+                    for (const path_handle_t& tgt_path : hap_tgts.second) {
+                        input_intervals.push_back(make_tuple(graph->path_begin(tgt_path),
+                                                            graph->path_back(tgt_path), false));
+                    }
+                }
+            }
+        }
+
         if (reverted) {
             patched_intervals = input_intervals;
         }
         
+
+        // log telomere information for contigs
+        log_contig_telomeres(graph, patched_intervals);
 
         // print the intervals to cout
         cout << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "

@@ -106,3 +106,17 @@ bool revert_bad_patch(const PathHandleGraph* graph,
 // make sure all intervals have the correct orientation (and assert fail if not)
 void check_intervals(const PathHandleGraph* graph,
                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
+
+// validate that intervals have telomeres at both ends and no internal telomeres
+// returns true if valid, false otherwise
+// if verbose is true, prints diagnostic messages
+bool validate_telomeres(const PathHandleGraph* graph,
+                        const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                        double threshold=0.8,
+                        bool verbose=false);
+
+// log telomere information for each contig in the intervals
+// outputs to cout with # prefix showing which contigs have telomeres and where
+void log_contig_telomeres(const PathHandleGraph* graph,
+                          const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                          double threshold=0.8);
