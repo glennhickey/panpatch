@@ -17,7 +17,7 @@ In this scenario, let's say you have a diploid assembly, `PAN028-verkko`, with c
 
 Because the reference assembly is diploid, you need to make two graphs and patch the two haplotypes separately.  Below is an example for haplotype 1 (you'd have to repeat the process for haplotype 2).
 
-Begin by making the graph. You specify the inputs to Cactus with a two-column file  `pan28.hs1.seqfile`:
+Begin by making the graph. You specify the inputs to Cactus with a two-column file  `pan028.verkko1.seqfile`:
 
 ```
 PAN028-verkko_1  PAN028.haplotype1.full.verkko2.fa
@@ -31,18 +31,18 @@ The `.1/.2` suffixes specify the haplotype, but because diploid references aren'
 
 Now make the graph.  The `--reference` and `--chrom-vg full` options are essential. You may need to adapt the others for your computing environment. 
 ```
-cactus-pangenome ./js ./pan028.hs1.seqfile --outName pan028-mc-verkko-1 --outDir pan028-mc-verkko-1 --logFile pan028-mc-hs1.log --reference PAN028-verkko_1 --chrom-vg full --batchSystem slurm --consCores 65 --mgCores 64 --indexCores 64 --mapCores 16
+cactus-pangenome ./js ./pan028.verkko1.seqfile --outName pan028-mc-verkko-1 --outDir pan028-mc-verkko-1 --logFile pan028-mc-verkko1.log --reference PAN028-verkko_1 --chrom-vg full --batchSystem slurm --consCores 65 --mgCores 64 --indexCores 64 --mapCores 16
 ```
 
 Now you can run `panpatch` individually on each `.vg` file in `pan028-mc-verkko-1/pan028-mc-verkko-1.chroms/` :
 ```
 cd pan028-mc-verkko-1/pan028-mc-verkko-1.chroms/
 for CHR in *.vg; do \
-    panpatch $CHR -r PAN028-verkko_1 -p -s PAN028-verkko_1 -s PAN028-hifiasm -s PAN028-duplex -f ${CHR::-3}-patched.fa > ${CHR::-3}-patched.bed 2>${CHR::-3}-patched.stderr ; \
+    panpatch "$CHR" -r PAN028-verkko_1 -p -s PAN028-verkko_1 -s PAN028-hifiasm -s PAN028-duplex -f "${CHR::-3}-patched.fa" > "${CHR::-3}-patched.bed" 2>"${CHR::-3}-patched.stderr" ; \
 done 
 ```
 
-This will produce a FASTA file for each chromosome, as well as a BED file listing the patched regions.  IF a chromosome couldn't be patched, the FASTA output will be the same as the input.  The `.stderr` files will contain additional information about what wasn't patched and why.
+This will produce a FASTA file for each chromosome, as well as a BED file listing the patched regions.  If a chromosome couldn't be patched, the FASTA output will be the same as the input.  The `.stderr` files will contain additional information about what wasn't patched and why.
 
 Note that even though the `hifiasm` and `duplex` assemblies are diploid, only the most relevant haplotype for each will be selected for each chromosome.
 
@@ -50,7 +50,7 @@ When running on the second haplotype, the only difference is the first line of t
 
 ## Scaffolding
 
-If the assembly you want to patch does not have chromosome-scale scaffolds, you must use a reference that does.  Here is an example of using T2T-CHM13 (aka `hs1`) as the reference to patch `PAN028-verkko`.  In this case, since we only have one reference we can do all the patching at once, with a single graph.  For example, use `pan28.hs1.seqfile`:
+If the assembly you want to patch does not have chromosome-scale scaffolds, you must use a reference that does.  Here is an example of using T2T-CHM13 (aka `hs1`) as the reference to patch `PAN028-verkko`.  In this case, since we only have one reference we can do all the patching at once, with a single graph.  For example, use `pan028.hs1.seqfile`:
 
 ```
 hs1              https://hgdownload.soe.ucsc.edu/goldenPath/hs1/bigZips/hs1.fa.gz
@@ -74,7 +74,7 @@ Now you can run `panpatch` individually on each `.vg` file in `pan028-mc-hs1/pan
 ```
 cd pan028-mc-hs1/pan028-mc-hs1.chroms/
 for CHR in *.vg; do \
-    panpatch $CHR -r hs1 -p -s PAN028-verkko -s PAN028-hifiasm -s PAN028-duplex -f ${CHR::-3}-patched.fa > ${CHR::-3}-patched.bed 2>${CHR::-3}-patched.stderr ; \
+    panpatch "$CHR" -r hs1 -p -s PAN028-verkko -s PAN028-hifiasm -s PAN028-duplex -f "${CHR::-3}-patched.fa" > "${CHR::-3}-patched.bed" 2>"${CHR::-3}-patched.stderr" ; \
 done 
 ```
 
@@ -113,7 +113,7 @@ The output will be a list of contig intervals (BED format), for each haplotype, 
 
 You can write a FASTA file for the patched contigs with `--fasta FILE`. 
 
-Note: small intervals should probably be filtered out, there's not such logic yet in `panpatch`.  The output of the above is
+Note: small intervals should probably be filtered out, there's no such logic yet in `panpatch`.  The output of the above is
 
 ```
 Patched assembly for PAN028-verkko#1:
@@ -133,7 +133,7 @@ In some cases, the best alignment / patch can place a telomere inside the output
 
 ### Running time
 
-The above examples takes about 2 hours on the cluster to run `cactus-pangenome`.  Running `panpatch` on each chromsome in series takes about 2 minutes total on my desktop. 
+The above examples takes about 2 hours on the cluster to run `cactus-pangenome`.  Running `panpatch` on each chromosome in series takes about 2 minutes total on my desktop. 
 
 ### Algorithm
 
@@ -143,7 +143,7 @@ This is accomplished by looking at the average alignment identity in the graph b
 
 <img src="panpatch-1.png" height=60% width=60%>
 
-Next, the reference path of the chromosome (ie CHM13) is scanned left to right for potential anchors.  An anchor is a node in on the reference path that where one more paths either starts, ends or branches off from another.
+Next, the reference path of the chromosome (ie CHM13) is scanned left to right for potential anchors.  An anchor is a node on the reference path where one or more paths either starts, ends or branches off from another.
 
 Finally a path through the anchors is searched in the graph that connects the first and last anchors (tips of the reference path), giving a T2T assembly of the contig (if possible).  The path stays on the highest priority path at every junction (verkko, then hifiasm, then duplex in our example). 
 
