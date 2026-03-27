@@ -44,6 +44,7 @@ void help(char** argv) {
        << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
        << "    -T, --require-telomeres      Require assemblies to have telomeres at both ends and no internal telomeres" << endl
+       << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << endl;
 }    
 
@@ -54,6 +55,7 @@ int main(int argc, char** argv) {
     bool progress = false;
     string out_fasta_filename;
     string default_sample;
+    string bed_filename;
     int c;
     int64_t window_size = 1000;
     bool ref_default = false;
@@ -71,12 +73,13 @@ int main(int argc, char** argv) {
             {"default-sample", required_argument, 0, 'e'},
             {"threads", required_argument, 0, 't'},
             {"require-telomeres", no_argument, 0, 'T'},
+            {"exclude-bed", required_argument, 0, 'b'},
             {0, 0, 0, 0}
         };
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hpr:s:f:w:e:t:T",
+        c = getopt_long (argc, argv, "hpr:s:f:w:e:t:Tb:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -116,6 +119,9 @@ int main(int argc, char** argv) {
         case 'T':
             require_telomeres = true;
             break;
+        case 'b':
+            bed_filename = optarg;
+            break;
         case 'h':
         case '?':
             /* getopt_long already printed an error message. */
@@ -154,6 +160,17 @@ int main(int argc, char** argv) {
         }
     }
     
+    BedRegions bed_regions;
+    if (!bed_filename.empty()) {
+        bed_regions = parse_bed_file(bed_filename);
+        if (progress) {
+            int64_t total_regions = 0;
+            for (const auto& br : bed_regions) total_regions += br.second.size();
+            cerr << "[panpatch]: Loaded " << total_regions << " regions from " << bed_regions.size()
+                 << " contigs in BED exclusion file" << endl;
+        }
+    }
+
     if (progress) {
         cerr << "[panpatch]: Using " << get_thread_count() << (get_thread_count() > 1 ? " threads" : " thread") << endl;
     }
@@ -246,7 +263,7 @@ int main(int argc, char** argv) {
             cerr << "[panpatch]: Running greedy patch selection" << endl;
         }
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
-            graph, ref_path, hap_tgts.second, sample_names, sample_covers);
+            graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions);
 
         // Check telomere validation if required
         bool telomere_validation_failed = false;
