@@ -2,6 +2,8 @@
 #include <cassert>
 #include <map>
 #include <iomanip>
+#include <algorithm>
+#include <sstream>
 #include "panpatch.hpp"
 #include <limits>
 
@@ -260,6 +262,130 @@ pair<int64_t, int64_t> find_telomeres(const PathHandleGraph* graph,
     return make_pair(pos, r_pos);
 }
 
+BedRegions parse_bed_file(const string& bed_filename) {
+    BedRegions regions;
+    ifstream bed_file(bed_filename);
+    if (!bed_file) {
+        cerr << "[panpatch] error: Unable to open BED file " << bed_filename << endl;
+        exit(1);
+    }
+    string line;
+    int64_t line_num = 0;
+    while (getline(bed_file, line)) {
+        ++line_num;
+        if (line.empty() || line[0] == '#' || line.substr(0, 5) == "track" || line.substr(0, 7) == "browser") {
+            continue;
+        }
+        istringstream ss(line);
+        string contig;
+        int64_t start, end;
+        if (ss >> contig >> start >> end) {
+            if (start < 0 || end < 0 || start >= end) {
+                cerr << "[panpatch] warning: skipping malformed BED line " << line_num << ": " << line << endl;
+                continue;
+            }
+            regions[contig].push_back(make_pair(start, end));
+        } else {
+            cerr << "[panpatch] warning: skipping malformed BED line " << line_num << ": " << line << endl;
+        }
+    }
+    return regions;
+}
+
+static bool interval_overlaps_excluded(int64_t start, int64_t end, const ExcludedRefRegions& excluded) {
+    if (excluded.empty()) return false;
+    // find first excluded region where region.end > start
+    auto it = upper_bound(excluded.begin(), excluded.end(), make_pair(start, start),
+                          [](const pair<int64_t, int64_t>& a, const pair<int64_t, int64_t>& b) {
+                              return a.second < b.second;
+                          });
+    // check if this region overlaps [start, end)
+    if (it != excluded.end() && it->first < end) {
+        return true;
+    }
+    return false;
+}
+
+ExcludedRefRegions bed_to_ref_regions(const PathHandleGraph* graph,
+                                      const vector<path_handle_t>& tgt_paths,
+                                      const unordered_map<int64_t, int64_t>& ref_anchors,
+                                      const BedRegions& bed_regions) {
+    ExcludedRefRegions excluded;
+
+    for (const path_handle_t& tgt_path : tgt_paths) {
+        string path_name = graph->get_path_name(tgt_path);
+
+        // check if this path has any BED regions
+        if (!bed_regions.count(path_name)) {
+            continue;
+        }
+        const vector<pair<int64_t, int64_t>>& bed_intervals = bed_regions.at(path_name);
+
+        // walk the target path, building ordered map of target_pos -> ref_pos for anchor nodes
+        map<int64_t, int64_t> tgt_pos_to_ref_pos;
+        int64_t tgt_pos = 0;
+        graph->for_each_step_in_path(tgt_path, [&](step_handle_t step) {
+            handle_t handle = graph->get_handle_of_step(step);
+            int64_t node_id = graph->get_id(handle);
+            if (ref_anchors.count(node_id)) {
+                tgt_pos_to_ref_pos[tgt_pos] = ref_anchors.at(node_id);
+            }
+            tgt_pos += graph->get_length(handle);
+        });
+
+        if (tgt_pos_to_ref_pos.empty()) {
+            cerr << "[panpatch] warning: no anchor mapping found for BED contig " << path_name << endl;
+            continue;
+        }
+
+        // for each BED interval, find the corresponding ref-position range
+        for (const auto& bed_interval : bed_intervals) {
+            int64_t bed_start = bed_interval.first;
+            int64_t bed_end = bed_interval.second;
+
+            // find anchors that overlap the BED region [bed_start, bed_end)
+            // lower_bound: first anchor at or after bed_start
+            auto it_start = tgt_pos_to_ref_pos.lower_bound(bed_start);
+            // we also want the anchor just before bed_start if it exists
+            if (it_start != tgt_pos_to_ref_pos.begin()) {
+                auto prev = std::prev(it_start);
+                // include previous anchor if the node it represents could extend into the BED region
+                it_start = prev;
+            }
+            // upper_bound: first anchor strictly after bed_end
+            auto it_end = tgt_pos_to_ref_pos.lower_bound(bed_end);
+
+            if (it_start == tgt_pos_to_ref_pos.end()) {
+                continue;
+            }
+
+            // collect all ref positions in this range and take min/max
+            // (handles reversed paths where ref positions may not be monotonic)
+            int64_t ref_min = numeric_limits<int64_t>::max();
+            int64_t ref_max = numeric_limits<int64_t>::min();
+            for (auto it = it_start; it != it_end; ++it) {
+                ref_min = min(ref_min, it->second);
+                ref_max = max(ref_max, it->second);
+            }
+            if (ref_min <= ref_max) {
+                excluded.push_back(make_pair(ref_min, ref_max));
+            }
+        }
+    }
+
+    // sort and merge overlapping regions
+    sort(excluded.begin(), excluded.end());
+    ExcludedRefRegions merged;
+    for (const auto& region : excluded) {
+        if (!merged.empty() && region.first <= merged.back().second) {
+            merged.back().second = max(merged.back().second, region.second);
+        } else {
+            merged.push_back(region);
+        }
+    }
+    return merged;
+}
+
 unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
                                              const path_handle_t& ref_path,
                                              const vector<path_handle_t>& tgt_paths,
@@ -404,11 +530,15 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                                                                    const path_handle_t& ref_path,
                                                                    const unordered_map<int64_t, int64_t>& ref_anchors,
                                                                    const vector<path_handle_t>& tgt_paths,
-                                                                   const vector<path_handle_t>& other_paths) {
+                                                                   const vector<path_handle_t>& other_paths,
+                                                                   const ExcludedRefRegions& excluded_regions) {
 
     assert(ref_anchors.size() > 1);
     assert(tgt_paths.size() > 0);
-    
+
+    // build target path set for O(1) lookup when checking excluded regions
+    unordered_set<path_handle_t> tgt_path_set(tgt_paths.begin(), tgt_paths.end());
+
     unordered_map<path_handle_t, int64_t> path_rank;
     for (int64_t i = 0; i < tgt_paths.size(); ++i) {
         path_rank[tgt_paths[i]] = i;
@@ -474,6 +604,19 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                 pair<step_handle_t, bool> next_anchor = find_next_anchor_on_path(graph, ref_anchors, step, cur_pos,
                                                                                  direction, cross_gaps);
                 if (next_anchor.first != graph->path_end(graph->get_path_handle_of_step(step))) {
+                    // check if this interval overlaps an excluded region for non-target paths
+                    path_handle_t step_path = graph->get_path_handle_of_step(step);
+                    if (!excluded_regions.empty() && !tgt_path_set.count(step_path)) {
+                        int64_t next_pos = ref_anchors.at(graph->get_id(graph->get_handle_of_step(next_anchor.first)));
+                        if (interval_overlaps_excluded(min(cur_pos, next_pos), max(cur_pos, next_pos), excluded_regions)) {
+#ifdef debug
+                            cerr << "Skipping interval on " << graph->get_path_name(step_path)
+                                 << " at ref pos " << cur_pos << "-" << next_pos
+                                 << " due to excluded region" << endl;
+#endif
+                            continue;
+                        }
+                    }
                     interval_cover.push_back(make_tuple(step, next_anchor.first, next_anchor.second));
 #ifdef debug
                     const auto& interval = interval_cover.back();
@@ -670,9 +813,10 @@ string intervals_to_sequence(const PathHandleGraph* graph,
 
 vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleGraph* graph,
                                                                const path_handle_t& ref_path,
-                                                               const vector<path_handle_t>& tgt_paths,                  
+                                                               const vector<path_handle_t>& tgt_paths,
                                                                const vector<string>& sample_names,
-                                                               const unordered_map<string, vector<path_handle_t>>& sample_covers) {
+                                                               const unordered_map<string, vector<path_handle_t>>& sample_covers,
+                                                               const BedRegions& bed_regions) {
 
        
 #ifdef debug
@@ -703,6 +847,18 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     }
     unordered_map<int64_t, int64_t> ref_anchors = find_anchors(graph, ref_path, tgt_paths, relevant_paths);
 
+    // convert BED exclusion regions to reference coordinates
+    ExcludedRefRegions excluded_regions;
+    if (!bed_regions.empty()) {
+        excluded_regions = bed_to_ref_regions(graph, tgt_paths, ref_anchors, bed_regions);
+#ifdef debug
+        cerr << "excluded " << excluded_regions.size() << " ref regions from BED file" << endl;
+        for (const auto& r : excluded_regions) {
+            cerr << "  [" << r.first << ", " << r.second << ")" << endl;
+        }
+#endif
+    }
+
 #ifdef debug
 
     cerr << "number of anchors found " << ref_anchors.size() << endl;
@@ -724,7 +880,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                                            ref_path,
                                                                                            ref_anchors,
                                                                                            tgt_paths,
-                                                                                           other_paths);
+                                                                                           other_paths,
+                                                                                           excluded_regions);
 
     if (patched_intervals.empty()) {
         cerr << "[panpatch] warning: unable to patch assembly on " << graph->get_locus_name(ref_path)
@@ -795,7 +952,27 @@ bool revert_bad_patch(const PathHandleGraph* graph,
         // we replace the patch with the reference because there was no patch
         to_revert = !patch_happened;
         if (to_revert) {
-            cout << "#Reverting to input assembly because no patches from other assemblies were found" << endl;            
+            // check if target paths have any gaps (N bases)
+            bool has_gaps = false;
+            for (const path_handle_t& tgt_path : first_tgt_paths) {
+                graph->for_each_step_in_path(tgt_path, [&](step_handle_t step) {
+                    if (!has_gaps) {
+                        string seq = graph->get_sequence(graph->get_handle_of_step(step));
+                        for (char c : seq) {
+                            if (c == 'N' || c == 'n') {
+                                has_gaps = true;
+                                return;
+                            }
+                        }
+                    }
+                });
+                if (has_gaps) break;
+            }
+            if (!has_gaps) {
+                cout << "#No patching is required (the sequence contains no gaps)" << endl;
+            } else {
+                cout << "#Reverting to input assembly because no patches from other assemblies were found" << endl;
+            }
         }
     }
 

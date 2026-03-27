@@ -75,6 +75,17 @@ run('panpatch telomere.vg -r x -s verkko -s noTelo -T > telomere.noTelo.T.bed')
 run('diff telomere.noTelo.T.bed telomere.noTelo.T.bed.truth')
 temp_files += ['telomere.noTelo.T.bed']
 
+# No-gaps message test: hifi has no N bases, so should get friendly message
+run('panpatch tiny.vg -r x -s hifi -s verkko > tiny.nogaps.bed')
+run('diff tiny.nogaps.bed tiny.nogaps.bed.truth')
+temp_files += ['tiny.nogaps.bed']
+
+# BED exclusion test: exclude the gap region so it doesn't get patched
+run('printf "verkko#1#chrX#0\\t12\\t36\\n" > tiny.exclude.bed')
+run('panpatch tiny.vg -r x -s verkko -s hifi -b tiny.exclude.bed > tiny.exclude.bed.out')
+run('diff tiny.exclude.bed.out tiny.exclude.bed.truth')
+temp_files += ['tiny.exclude.bed', 'tiny.exclude.bed.out']
+
 
 for f in temp_files:
     if os.path.isfile(f):

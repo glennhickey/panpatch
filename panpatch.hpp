@@ -1,10 +1,19 @@
 #pragma once
 
 #include <unordered_map>
+#include <map>
+#include <string>
+#include <fstream>
 #include "handlegraph/path_handle_graph.hpp"
 
 using namespace std;
 using namespace handlegraph;
+
+// BED regions parsed from file: contig_name -> vector of [start, end) intervals
+using BedRegions = unordered_map<string, vector<pair<int64_t, int64_t>>>;
+
+// Sorted, merged intervals in reference coordinates representing excluded regions
+using ExcludedRefRegions = vector<pair<int64_t, int64_t>>;
 
 // compute overlap identity between set of ref_paths (treated colletively) with each path in the
 // other_paths 
@@ -33,6 +42,17 @@ multimap<pair<int64_t, int64_t>, path_handle_t> sort_overlapping_paths(const Pat
 pair<int64_t, int64_t> find_telomeres(const PathHandleGraph* graph,
                                       const path_handle_t path,
                                       double threshold=0.95);
+
+// parse a BED file into regions keyed by contig name
+// skips comment/header lines (starting with #, track, browser)
+BedRegions parse_bed_file(const string& bed_filename);
+
+// convert BED regions (in target assembly coordinates) to reference coordinate ranges
+// using the anchor map to map between coordinate systems
+ExcludedRefRegions bed_to_ref_regions(const PathHandleGraph* graph,
+                                      const vector<path_handle_t>& tgt_paths,
+                                      const unordered_map<int64_t, int64_t>& ref_anchors,
+                                      const BedRegions& bed_regions);
 
 // find a series of anchors along the reference path
 // anchors have this property:
@@ -67,7 +87,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                                                                    const path_handle_t& ref_path,
                                                                    const unordered_map<int64_t, int64_t>& ref_anchors,
                                                                    const vector<path_handle_t>& tgt_paths,
-                                                                   const vector<path_handle_t>& other_paths);
+                                                                   const vector<path_handle_t>& other_paths,
+                                                                   const ExcludedRefRegions& excluded_regions = {});
 
 // smooth out the threaded intervals
 vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHandleGraph* graph,
@@ -91,7 +112,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const path_handle_t& ref_path,
                                                                const vector<path_handle_t>& tgt_paths,
                                                                const vector<string>& sample_names,
-                                                               const unordered_map<string, vector<path_handle_t>>& sample_covers);
+                                                               const unordered_map<string, vector<path_handle_t>>& sample_covers,
+                                                               const BedRegions& bed_regions = {});
                   
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,

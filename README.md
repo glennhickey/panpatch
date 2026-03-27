@@ -111,7 +111,7 @@ will patch the `PAN028-verkko` assembly, using `PAN028-hifiasm` where possible, 
 
 The output will be a list of contig intervals (BED format), for each haplotype, that span the reference chromosome from telomere to telomere, which form the patched T2T assembly.
 
-You can write a FASTA file for the patched contigs with `--fasta FILE`. 
+You can write a FASTA file for the patched contigs with `--fasta FILE`.  Use `--exclude-bed FILE` to prevent patching in specific regions (see [Excluding Regions from Patching](#excluding-regions-from-patching)).
 
 Note: small intervals should probably be filtered out, there's no such logic yet in `panpatch`.  The output of the above is
 
@@ -127,9 +127,24 @@ Patched assembly for PAN028-verkko#2:
 PAN028-verkko#2#haplotype2-0000073#0	1	65910828
 ```
 
+## Excluding Regions from Patching
+
+Use the `-b/--exclude-bed` option to provide a BED file of regions that panpatch should not attempt to patch.  Coordinates are in the target assembly being patched (the first `-s` sample).  In excluded regions, panpatch will always keep the original target assembly sequence and never substitute sequence from another assembly.
+
+This is primarily useful for acrocentric chromosomes, where rDNA-adjacent gaps can get overfilled by patches, or where a centromere gap patch should be skipped.  It can also be used to prevent patching of any region where you want to preserve the original assembly sequence.
+
+For example, to prevent panpatch from patching the centromere region of chr22 (leaving the rDNA gap patch intact):
+
+```
+echo -e "PAN027-verkko-1#0#PAN027.chr22.paternal\t11000000\t13000000" > exclude.bed
+panpatch chr22.full.vg -r PAN027-verkko-1 -s PAN027-verkko-1 -s PAN027-herro -s PAN011-verkko -b exclude.bed
+```
+
+The BED file uses standard 0-based half-open coordinates.  The first column must match the full path name of the target assembly contig in the graph (as shown in panpatch output).  Multiple regions can be specified, across multiple contigs, one per line.  Comment lines beginning with `#` are ignored.
+
 ## Check Telomeres
 
-In some cases, the best alignment / patch can place a telomere inside the output assembly (as opposed to at the tip).  Use the `-T` option to check for these cases and reject patches that do not begin and end with telomeres. 
+In some cases, the best alignment / patch can place a telomere inside the output assembly (as opposed to at the tip).  Use the `-T` option to check for these cases and reject patches that do not begin and end with telomeres.
 
 ### Running time
 
