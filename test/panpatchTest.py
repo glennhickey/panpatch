@@ -86,6 +86,24 @@ run('panpatch tiny.vg -r x -s verkko -s hifi -b tiny.exclude.bed > tiny.exclude.
 run('diff tiny.exclude.bed.out tiny.exclude.bed.truth')
 temp_files += ['tiny.exclude.bed', 'tiny.exclude.bed.out']
 
+# Scaffolding test: two contigs of the SAME target sample (frag) span the chromosome
+# and meet at one shared anchor node, with no foreign sample bridging them. This
+# exercises the target-only scaffold join that used to be incorrectly reverted as
+# "no patching required".
+run('vg convert scaffold.gfa > scaffold.vg')
+temp_files += ['scaffold.vg']
+
+# without -T: ctgA and ctgB are stitched into a single chrX_hap_1 record
+run('panpatch scaffold.vg -r x -s frag -f scaffold.frag.fa > scaffold.frag.bed')
+run('diff scaffold.frag.bed scaffold.frag.bed.truth')
+run('diff scaffold.frag.fa scaffold.frag.truth.fa')
+temp_files += ['scaffold.frag.bed', 'scaffold.frag.fa']
+
+# with -T: the join has no telomeres, so it must fail validation and revert to the inputs
+run('panpatch scaffold.vg -r x -s frag -T > scaffold.frag.T.bed')
+run('diff scaffold.frag.T.bed scaffold.frag.T.bed.truth')
+temp_files += ['scaffold.frag.T.bed']
+
 
 for f in temp_files:
     if os.path.isfile(f):
