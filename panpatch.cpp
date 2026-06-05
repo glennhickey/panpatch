@@ -943,11 +943,22 @@ bool revert_bad_patch(const PathHandleGraph* graph,
 
     if (!default_sample.length() && !to_revert) {
         bool patch_happened = false;
+        unordered_set<path_handle_t> tgt_contigs_in_patch;
         for (const auto& interval : in_intervals) {
-            if (graph->get_sample_name(graph->get_path_handle_of_step(get<0>(interval))) != sample_names[0]) {
+            path_handle_t interval_path = graph->get_path_handle_of_step(get<0>(interval));
+            if (graph->get_sample_name(interval_path) != sample_names[0]) {
+                // a different (non-target) sample contributed sequence: this is a patch
                 patch_happened = true;
                 break;
             }
+            tgt_contigs_in_patch.insert(interval_path);
+        }
+        // scaffolding two or more of the target sample's own contigs into a single
+        // sequence is also a patch, even when no foreign sequence was used to bridge them.
+        // (if -T is given, this join is telomere-validated upstream in main, and reverted
+        //  there if it fails; without -T there is no check and the join is kept as-is)
+        if (tgt_contigs_in_patch.size() > 1) {
+            patch_happened = true;
         }
         // we replace the patch with the reference because there was no patch
         to_revert = !patch_happened;
