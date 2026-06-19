@@ -98,6 +98,18 @@ vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHan
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHandleGraph* graph,
                                                                    const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
 
+// patch a missing telomere onto a terminal end by handing off to a foreign cover that has one.
+// for each terminal end lacking a telomere, walk inward from the tip to the nearest node also
+// visited by a foreign cover, and if that cover runs outward to a real telomere, splice it on
+// (replacing the target's capless tail beyond the shared handoff node).
+vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const PathHandleGraph* graph,
+                                                                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                                                      const unordered_map<string, vector<path_handle_t>>& sample_covers,
+                                                                      const vector<string>& sample_names,
+                                                                      double telo_threshold=0.8,
+                                                                      int64_t max_handoff=500000,
+                                                                      bool verbose=false);
+
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
@@ -113,8 +125,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const vector<path_handle_t>& tgt_paths,
                                                                const vector<string>& sample_names,
                                                                const unordered_map<string, vector<path_handle_t>>& sample_covers,
-                                                               const BedRegions& bed_regions = {});
-                  
+                                                               const BedRegions& bed_regions = {},
+                                                               bool patch_ends = false,
+                                                               double telo_threshold = 0.8,
+                                                               int64_t max_telomere_patch = 500000,
+                                                               bool verbose = false);
+
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,
                       const path_handle_t& ref_path,

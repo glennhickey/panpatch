@@ -142,9 +142,19 @@ panpatch chr22.full.vg -r PAN027-verkko-1 -s PAN027-verkko-1 -s PAN027-herro -s 
 
 The BED file uses standard 0-based half-open coordinates.  The first column must match the full path name of the target assembly contig in the graph (as shown in panpatch output).  Multiple regions can be specified, across multiple contigs, one per line.  Comment lines beginning with `#` are ignored.
 
-## Check Telomeres
+## Telomeres
 
-In some cases, the best alignment / patch can place a telomere inside the output assembly (as opposed to at the tip).  Use the `-T` option to check for these cases and reject patches that do not begin and end with telomeres.
+Use the `-T` option to require that each patched haplotype begins and ends with a telomere (and has none internally).  With `-T`, panpatch will:
+
+1. **Patch a missing terminal telomere.**  If the target assembly stops short of a telomere at one end, panpatch looks for a higher-priority assembly (one of the other `-s` samples) that *does* reach a telomere there, and splices it on.  Because subtelomeric sequence is typically divergent (and absent from the reference path), the handoff is made at the nearest graph node shared by the target and the donor: the target's capless tip beyond that node is replaced by the donor's run to its telomere.  This is graph-coherent — the junction is a node both assemblies actually traverse.
+2. **Reject bad patches.**  If, after any such patching, the assembly still does not begin and end with a telomere (or has an internal one — e.g. an alignment placed a telomere mid-assembly), the patch is reverted to the input contigs.
+
+Without `-T`, telomeres are neither patched nor checked.
+
+Because the replaced tip is the *divergent* subtelomere (everything past the last shared node), a telomere patch is not a swap of equivalent sequence — it completes the arm with the donor's version.  Two controls make this safe and auditable:
+
+- `-M, --max-telomere-patch N` caps how much target sequence a single telomere patch may replace (default 500000).  The nearest shared handoff can be far in when the subtelomere is large (e.g. acrocentric arms); a patch that would replace more than `N` bp is skipped and the assembly is left to the normal revert.  The skip message reports the distance so you can opt in with a larger `-M`.
+- Each applied patch reports a line such as `#Telomere patch (front): donor=... replaced=118701bp grafted=218447bp kmer_recovery=0.9%`, where `kmer_recovery` is the fraction of the replaced target sequence's k-mers also found in the graft — a low value flags that the donor's subtelomere differs substantially from the target's.
 
 ### Running time
 

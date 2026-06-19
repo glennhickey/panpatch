@@ -1,0 +1,5 @@
+#Telomere patch (front): donor=donor#1#ctg#0 replaced=3000bp grafted=12004bp kmer_recovery=NA
+#Patched assembly on chrX for frag#1:
+donor#1#ctg#0	0	12004	+
+frag#1#ctg#0	3000	25004	+
+
