@@ -104,6 +104,24 @@ run('panpatch scaffold.vg -r x -s frag -T > scaffold.frag.T.bed')
 run('diff scaffold.frag.T.bed scaffold.frag.T.bed.truth')
 temp_files += ['scaffold.frag.T.bed']
 
+# Telomere patching (folded into -T): when the target is missing a telomere, graft one in
+# from a foreign cover (donor) by handing off at the nearest shared node. Small graphs
+# exercise the splice paths. The non-deterministic-order #Contig lines are dropped, and the
+# #Telomere patch line is kept (pinning the replaced=/grafted= byte counts) with only the
+# kmer_recovery percentage masked.
+#   telopatch       - forward target, telomere appended at the back
+#   telopatch_rev   - reverse-oriented target (as in real assemblies), back patch
+#   telopatch_front - forward target, telomere prepended at the front
+#   telopatch_multi - scaffolded 2-interval target, front patch with handoff at the inner
+#                     boundary (exercises the multi-interval rebuild + empty-interval trim)
+telo_filter = 'grep -v "^#Contig" | sed -E "s/kmer_recovery=[0-9.]+%/kmer_recovery=NA/"'
+for base in ['telopatch', 'telopatch_rev', 'telopatch_front', 'telopatch_multi']:
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    run('panpatch {0}.vg -r x -s frag -s donor -T -f {0}.fa 2>/dev/null | {1} > {0}.patch.bed'.format(base, telo_filter))
+    run('diff {0}.patch.bed {0}.bed.truth'.format(base))
+    run('diff {0}.fa {0}.truth.fa'.format(base))
+    temp_files += ['{0}.vg'.format(base), '{0}.patch.bed'.format(base), '{0}.fa'.format(base)]
+
 
 for f in temp_files:
     if os.path.isfile(f):

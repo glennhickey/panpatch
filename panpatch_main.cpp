@@ -43,7 +43,8 @@ void help(char** argv) {
        << "    -w, --window SIZE            Size of window used for computing identity for haplotype matching [1000]" << endl
        << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
-       << "    -T, --require-telomeres      Require assemblies to have telomeres at both ends and no internal telomeres" << endl
+       << "    -T, --require-telomeres      Require telomeres at both ends (no internal): patch a missing terminal telomere from another assembly when possible, else revert" << endl
+       << "    -M, --max-telomere-patch N   Max bp of target sequence a -T telomere patch may replace at a contig end [500000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << endl;
 }    
@@ -60,7 +61,8 @@ int main(int argc, char** argv) {
     int64_t window_size = 1000;
     bool ref_default = false;
     bool require_telomeres = false;
-    optind = 1; 
+    int64_t max_telomere_patch = 500000;
+    optind = 1;
     while (true) {
 
         static const struct option long_options[] = {
@@ -73,13 +75,14 @@ int main(int argc, char** argv) {
             {"default-sample", required_argument, 0, 'e'},
             {"threads", required_argument, 0, 't'},
             {"require-telomeres", no_argument, 0, 'T'},
+            {"max-telomere-patch", required_argument, 0, 'M'},
             {"exclude-bed", required_argument, 0, 'b'},
             {0, 0, 0, 0}
         };
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hpr:s:f:w:e:t:Tb:",
+        c = getopt_long (argc, argv, "hpr:s:f:w:e:t:TM:b:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -119,6 +122,16 @@ int main(int argc, char** argv) {
         case 'T':
             require_telomeres = true;
             break;
+        case 'M':
+        {
+            char* m_end = nullptr;
+            max_telomere_patch = strtol(optarg, &m_end, 10);
+            if (m_end == optarg || *m_end != '\0' || max_telomere_patch < 0) {
+                cerr << "[panpatch] error: --max-telomere-patch (-M) must be a non-negative integer" << endl;
+                return 1;
+            }
+            break;
+        }
         case 'b':
             bed_filename = optarg;
             break;
@@ -263,7 +276,8 @@ int main(int argc, char** argv) {
             cerr << "[panpatch]: Running greedy patch selection" << endl;
         }
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
-            graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions);
+            graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
+            require_telomeres, 0.8, max_telomere_patch, progress);
 
         // Check telomere validation if required
         bool telomere_validation_failed = false;

@@ -6,6 +6,7 @@
 #include <sstream>
 #include "panpatch.hpp"
 #include <limits>
+#include <cstdint>
 
 //#define debug
 //#define ultra_debug
@@ -729,8 +730,334 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHan
              << " rev=" <<get<2>(interval) << endl;
     }
 #endif
-    
+
     return extended_intervals;
+}
+
+// telomere repeat density (max of forward/reverse hexamer density) over a sequence
+static double telomere_density(const string& s) {
+    if (s.empty()) return 0.0;
+    int64_t fw = 0, rv = 0;
+    for (size_t i = 0; i + 6 <= s.size(); ) {
+        if (s.compare(i, 6, "TTAGGG") == 0) { ++fw; i += 6; }
+        else if (s.compare(i, 6, "CCCTAA") == 0) { ++rv; i += 6; }
+        else ++i;
+    }
+    double n = (double)s.size();
+    return max(6.0 * (double)fw / n, 6.0 * (double)rv / n);
+}
+
+// true if a telomere is present anywhere in the sequence: scan 500bp windows and require one
+// to clear the density threshold.  (real telomeres are often slightly inset or degenerate, so a
+// flat density over a fixed tip window under-calls them - mirror validate_telomeres' windowing.)
+static bool region_has_telomere(const string& s, double threshold) {
+    const int64_t W = 500;
+    int64_t n = (int64_t)s.size();
+    if (n < W) return telomere_density(s) >= threshold;
+    for (int64_t i = 0; i + W <= n; i += 100) {
+        if (telomere_density(s.substr(i, W)) >= threshold) return true;
+    }
+    return false;
+}
+
+static inline uint64_t hash64(uint64_t x) {
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33; return x;
+}
+
+// insert a ~1/16 subsample of canonical 31-mer hashes of s into out
+static void sample_kmers(const string& s, unordered_set<uint64_t>& out) {
+    const int K = 31;
+    const uint64_t SAMPLE_MASK = 0xF;  // keep hashes with low 4 bits zero -> ~1/16
+    int n = (int)s.size();
+    if (n < K) return;
+    uint64_t fwd = 0, rev = 0, mask = (1ULL << (2 * K)) - 1;
+    int valid = 0;
+    for (int i = 0; i < n; ++i) {
+        int c;
+        switch (s[i]) {
+            case 'A': case 'a': c = 0; break;
+            case 'C': case 'c': c = 1; break;
+            case 'G': case 'g': c = 2; break;
+            case 'T': case 't': c = 3; break;
+            default: c = -1;
+        }
+        if (c < 0) { valid = 0; fwd = rev = 0; continue; }
+        fwd = ((fwd << 2) | (uint64_t)c) & mask;
+        rev = (rev >> 2) | ((uint64_t)(3 - c) << (2 * (K - 1)));
+        if (++valid >= K) {
+            uint64_t h = hash64(min(fwd, rev));
+            if ((h & SAMPLE_MASK) == 0) out.insert(h);
+        }
+    }
+}
+
+// percent of the distinct (sampled) k-mers in `removed` that also occur in `added`. a cheap,
+// strand-independent proxy for how much of the replaced target sequence the graft recapitulates.
+static double kmer_recovery(const string& removed, const string& added) {
+    unordered_set<uint64_t> aset, rset;
+    sample_kmers(added, aset);
+    sample_kmers(removed, rset);
+    if (rset.empty()) return 0.0;
+    int64_t found = 0;
+    for (uint64_t h : rset) if (aset.count(h)) ++found;
+    return 100.0 * (double)found / (double)rset.size();
+}
+
+// Telomere / contig-end patching.
+//
+// extend_intervals() only extends the two terminal intervals along their *own* (target)
+// paths to the contigs' own ends.  If the target assembly is simply missing a telomere
+// there, nothing can add it.  This routine grafts a missing telomere in from a foreign
+// cover (selected donor assembly) when one is available:
+//
+//   For each terminal end of the assembly that lacks a telomere, walk inward from the tip
+//   along the terminal target interval looking for the nearest node also visited by a
+//   foreign cover; if that cover continues outward (in the assembly's frame) and ends in a
+//   real telomere, hand off to it there.  The target's (divergent, capless) sequence beyond
+//   the handoff node is replaced by the foreign cover's run to its telomere.
+//
+// This is graph-coherent: the handoff is a node genuinely shared by both paths, so the join
+// is supported by the graph rather than a blind concatenation.
+vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
+        const PathHandleGraph* graph,
+        const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+        const unordered_map<string, vector<path_handle_t>>& sample_covers,
+        const vector<string>& sample_names,
+        double telo_threshold,
+        int64_t max_handoff,
+        bool verbose) {
+
+    static const int64_t OUTER = 20000;            // inspect this many bp at a contig tip for a telomere
+    static const int64_t REPORT_MARGIN = 3000000;  // keep searching this far past the cap to report a skipped handoff
+    static const int64_t MAX_FOREIGN_EXT = 8000000;// follow a foreign cover at most this far to reach its telomere
+
+    if (intervals.empty()) return intervals;
+
+    // candidate foreign cover paths, in sample-priority order (exclude the target sample)
+    vector<path_handle_t> foreign;
+    for (size_t i = 1; i < sample_names.size(); ++i) {
+        auto it = sample_covers.find(sample_names[i]);
+        if (it != sample_covers.end()) {
+            for (const path_handle_t& p : it->second) foreign.push_back(p);
+        }
+    }
+    if (foreign.empty()) return intervals;
+    unordered_set<path_handle_t> foreign_set(foreign.begin(), foreign.end());
+
+    // sequence of the outermost OUTER bp at one end of a path (from_end -> the path_back tip)
+    auto terminal_seq = [&](const path_handle_t& F, bool from_end) -> string {
+        string s;
+        if (from_end) {
+            step_handle_t st = graph->path_back(F);
+            while (true) {
+                s = graph->get_sequence(graph->get_handle_of_step(st)) + s;
+                if ((int64_t)s.size() >= OUTER || st == graph->path_begin(F)) break;
+                st = graph->get_previous_step(st);
+            }
+        } else {
+            step_handle_t st = graph->path_begin(F);
+            while (true) {
+                s += graph->get_sequence(graph->get_handle_of_step(st));
+                if ((int64_t)s.size() >= OUTER) break;
+                step_handle_t nx = graph->get_next_step(st);
+                if (nx == graph->path_end(F)) break;
+                st = nx;
+            }
+        }
+        return s;
+    };
+
+    // precompute, once per cover, whether each of its two ends carries a telomere
+    unordered_map<path_handle_t, bool> telo_begin, telo_end;
+    for (const path_handle_t& F : foreign) {
+        telo_begin[F] = region_has_telomere(terminal_seq(F, false), telo_threshold);
+        telo_end[F]   = region_has_telomere(terminal_seq(F, true), telo_threshold);
+        if (verbose) cerr << "[panpatch] telomere-patch cover " << graph->get_path_name(F)
+                          << " telomere begin=" << telo_begin[F] << " end=" << telo_end[F] << endl;
+    }
+
+    // Try to find a telomere patch for one terminal interval.
+    // Returns true and sets out_s_i (handoff step on the target path) and out_fi (new foreign
+    // interval to splice on) if a patch was found.
+    auto find_end_patch = [&](const tuple<step_handle_t, step_handle_t, bool>& term,
+                              bool is_front,
+                              step_handle_t& out_s_i,
+                              tuple<step_handle_t, step_handle_t, bool>& out_fi) -> bool {
+        path_handle_t P = graph->get_path_handle_of_step(get<0>(term));
+        bool rev = get<2>(term);
+        step_handle_t tip_step   = is_front ? get<0>(term) : get<1>(term);
+        step_handle_t inner_bound = is_front ? get<1>(term) : get<0>(term);
+
+        // oriented handle of a step in the assembly's 5'->3' frame
+        auto asm_handle = [&](const step_handle_t& s) -> handle_t {
+            handle_t h = graph->get_handle_of_step(s);
+            return rev ? graph->flip(h) : h;
+        };
+        // step toward the interval interior
+        auto inward = [&](const step_handle_t& s) -> step_handle_t {
+            if (!is_front) return rev ? graph->get_next_step(s) : graph->get_previous_step(s);
+            else           return rev ? graph->get_previous_step(s) : graph->get_next_step(s);
+        };
+
+        // 1) if the tip already carries a telomere, nothing to do
+        {
+            string tip_seq;
+            step_handle_t s = tip_step;
+            while ((int64_t)tip_seq.size() < OUTER) {
+                tip_seq += graph->get_sequence(asm_handle(s));
+                if (s == inner_bound) break;
+                s = inward(s);
+            }
+            bool has = region_has_telomere(tip_seq, telo_threshold);
+            if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
+                              << " tip of " << graph->get_path_name(P) << ": telomere=" << has << endl;
+            if (has) return false;
+        }
+
+        // 2) walk inward looking for a shared-node handoff to a foreign cover with a telomere
+        int64_t walked = 0;
+        step_handle_t s_i = tip_step;
+        while (true) {
+            handle_t a_i = asm_handle(s_i);
+            handle_t under = graph->get_handle_of_step(s_i);
+            handle_t out_handle = is_front ? graph->flip(a_i) : a_i;
+
+            // collect the foreign covers present on this node in one pass (first step of each)
+            unordered_map<path_handle_t, step_handle_t> steps_here;
+            graph->for_each_step_on_handle(under, [&](step_handle_t fs) {
+                path_handle_t fp = graph->get_path_handle_of_step(fs);
+                if (foreign_set.count(fp) && !steps_here.count(fp)) steps_here[fp] = fs;
+            });
+
+            for (const path_handle_t& F : foreign) {
+                auto sit = steps_here.find(F);
+                if (sit == steps_here.end()) continue;  // cover F does not visit this node
+                step_handle_t s_F = sit->second;
+
+                // pick the direction along F that continues outward in the assembly frame
+                handle_t gF = graph->get_handle_of_step(s_F);
+                bool f_forward;
+                if (gF == out_handle) f_forward = true;
+                else if (gF == graph->flip(out_handle)) f_forward = false;
+                else continue;
+
+                // the outward end of F in this direction must be telomeric (precomputed)
+                if (!(f_forward ? telo_end[F] : telo_begin[F])) continue;
+
+                // `walked` is the length of the target's capless tail this handoff would replace.
+                bool within_cap = (walked <= max_handoff);
+
+                // follow F outward to its (telomeric) end, bounded; this confirms reachability and
+                // gives us the terminal step. accumulate the grafted sequence only when we will
+                // actually patch (within cap), for the recovery stat.
+                int64_t ext = 0;
+                string added_seq;
+                step_handle_t fs = f_forward ? graph->get_next_step(s_F) : graph->get_previous_step(s_F);
+                step_handle_t f_last = s_F;
+                bool reached = false, any = false;
+                while (true) {
+                    bool at_end = f_forward ? (fs == graph->path_end(F)) : (fs == graph->path_front_end(F));
+                    if (at_end) { reached = true; break; }
+                    handle_t fh = graph->get_handle_of_step(fs);
+                    if (within_cap) added_seq += graph->get_sequence(f_forward ? fh : graph->flip(fh));
+                    ext += graph->get_length(fh);
+                    f_last = fs; any = true;
+                    if (ext > MAX_FOREIGN_EXT) break;
+                    fs = f_forward ? graph->get_next_step(fs) : graph->get_previous_step(fs);
+                }
+                if (!reached || !any) continue;  // not a usable handoff; keep looking
+
+                if (!within_cap) {
+                    // nearest usable handoff is too far in: replacing this much target is risky, so skip
+                    cout << "#Telomere not patched (" << (is_front ? "front" : "back")
+                         << "): nearest donor handoff (" << graph->get_path_name(F) << ") would replace "
+                         << walked << "bp of target, over the --max-telomere-patch cap of " << max_handoff
+                         << "bp (rerun with -M " << walked << " to allow)" << endl;
+                    return false;
+                }
+
+                // replaced target tail (tip .. just inside the handoff node) for the recovery stat
+                string removed_seq;
+                for (step_handle_t s = tip_step; s != s_i; s = inward(s)) {
+                    removed_seq += graph->get_sequence(asm_handle(s));
+                }
+                double recovery = kmer_recovery(removed_seq, added_seq);
+                // format the percentage in a local stream so we don't leave cout stuck in
+                // fixed/setprecision state (those manipulators are sticky and would corrupt
+                // later default-formatted floats, e.g. the revert ratio in revert_bad_patch)
+                ostringstream rec_ss;
+                rec_ss << fixed << setprecision(1) << recovery;
+                cout << "#Telomere patch (" << (is_front ? "front" : "back") << "): donor="
+                     << graph->get_path_name(F) << " replaced=" << walked << "bp grafted=" << ext
+                     << "bp kmer_recovery=" << rec_ss.str() << "%" << endl;
+
+                out_s_i = s_i;
+                out_fi  = is_front ? make_tuple(f_last, s_F, f_forward)
+                                   : make_tuple(s_F, f_last, !f_forward);
+                return true;
+            }
+
+            if (s_i == inner_bound) break;
+            walked += graph->get_length(under);
+            if (walked > max_handoff + REPORT_MARGIN) {
+                if (verbose) cerr << "[panpatch]   no donor handoff found within "
+                                  << (max_handoff + REPORT_MARGIN) << "bp" << endl;
+                break;
+            }
+            s_i = inward(s_i);
+        }
+        return false;
+    };
+
+    step_handle_t s_i_front, s_i_back;
+    tuple<step_handle_t, step_handle_t, bool> fi_front, fi_back;
+    bool fp = find_end_patch(intervals.front(), true,  s_i_front, fi_front);
+    bool bp = find_end_patch(intervals.back(),  false, s_i_back,  fi_back);
+    if (!fp && !bp) return intervals;
+
+    // splice in the foreign extension(s); the foreign interval owns its (telomere) tip and the
+    // shared handoff node is kept exactly once at the boundary.
+    vector<tuple<step_handle_t, step_handle_t, bool>> out;
+    size_t n = intervals.size();
+    if (n == 1) {
+        auto I = intervals[0];
+        step_handle_t a = get<0>(I), b = get<1>(I);
+        bool r = get<2>(I);
+        if (fp) a = s_i_front;
+        if (bp) b = s_i_back;
+        if (fp) out.push_back(fi_front);
+        out.push_back(make_tuple(a, b, r));
+        if (bp) out.push_back(fi_back);
+    } else {
+        if (fp) out.push_back(fi_front);
+        {
+            auto I = intervals[0];
+            if (fp) I = make_tuple(s_i_front, get<1>(I), get<2>(I));
+            out.push_back(I);
+        }
+        for (size_t i = 1; i + 1 < n; ++i) out.push_back(intervals[i]);
+        {
+            auto I = intervals[n - 1];
+            if (bp) I = make_tuple(get<0>(I), s_i_back, get<2>(I));
+            out.push_back(I);
+        }
+        if (bp) out.push_back(fi_back);
+    }
+
+    // Truncating a target interval to the handoff node can leave it zero-length when the handoff
+    // lands on its inner boundary. Such a non-last interval emits nothing (the boundary node is
+    // re-emitted by its neighbour, so the sequence is unaffected), but it would still print a
+    // spurious zero-length BED line - drop it.
+    vector<tuple<step_handle_t, step_handle_t, bool>> trimmed;
+    for (size_t i = 0; i < out.size(); ++i) {
+        bool empty = (get<0>(out[i]) == get<1>(out[i]));
+        bool is_last = (i + 1 == out.size());
+        if (empty && !is_last) continue;
+        trimmed.push_back(out[i]);
+    }
+    return trimmed;
 }
 
 void print_intervals(const PathHandleGraph* graph,
@@ -816,9 +1143,13 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const vector<path_handle_t>& tgt_paths,
                                                                const vector<string>& sample_names,
                                                                const unordered_map<string, vector<path_handle_t>>& sample_covers,
-                                                               const BedRegions& bed_regions) {
+                                                               const BedRegions& bed_regions,
+                                                               bool patch_ends,
+                                                               double telo_threshold,
+                                                               int64_t max_telomere_patch,
+                                                               bool verbose) {
 
-       
+
 #ifdef debug
     cerr << "greedy patch\n"
          << " ref_path = " << graph->get_path_name(ref_path) << endl
@@ -906,6 +1237,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = extend_intervals(graph, smoothed_intervals);
 
     check_intervals(graph, extended_intervals);
+
+    if (patch_ends) {
+        extended_intervals = extend_to_telomeres(graph, extended_intervals, sample_covers,
+                                                 sample_names, telo_threshold, max_telomere_patch, verbose);
+        check_intervals(graph, extended_intervals);
+    }
 
     return extended_intervals;
 }
