@@ -1343,7 +1343,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
 static bool splices_same_sample_interior(const PathHandleGraph* graph,
                                          const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                          string& detail) {
-    // first and last list-index at which each contig appears (intervals are in reference order)
+    // first and last position at which each contig appears in the output (list) order; an interval
+    // between those two positions that is on a different contig is "interior" material
     unordered_map<path_handle_t, pair<int, int>> span;
     vector<path_handle_t> idx_path(intervals.size());
     for (int i = 0; i < (int)intervals.size(); ++i) {
@@ -1365,6 +1366,83 @@ static bool splices_same_sample_interior(const PathHandleGraph* graph,
                        + graph->get_path_name(idx_path[j]) + " spliced into its interior";
                 return true;
             }
+        }
+    }
+    return false;
+}
+
+// Second guard (complements splices_same_sample_interior, which only catches same-sample
+// interior splices).  When a *foreign* donor is spliced into the interior of a target contig (a
+// gap-fill / replacement), measure how much of the replaced target sequence the graft actually
+// recapitulates with the same canonical-31-mer recovery used for telomere grafts.  A graft that
+// shares almost none of the replaced sequence's k-mers came from a different locus/paralog (a
+// repeat-region misjoin), not a faithful fill -- revert it.  Only interior replacements are judged;
+// terminal telomere grafts legitimately have low recovery (divergent subtelomeres) and are not
+// considered here.  Restricted to the target sample's own contigs (avoids donor-vs-donor cases).
+static bool interior_graft_low_recovery(const PathHandleGraph* graph,
+                                        const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                        const string& target_sample,
+                                        double min_recovery, int64_t min_replaced,
+                                        string& detail) {
+    // step -> forward position index per contig used
+    unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> path_index;
+    for (const auto& iv : intervals) path_index[graph->get_path_handle_of_step(get<0>(iv))] = {};
+    for (auto& pm : path_index) {
+        int64_t pos = 0;
+        graph->for_each_step_in_path(pm.first, [&](step_handle_t s) {
+            pm.second[s] = pos; pos += graph->get_length(graph->get_handle_of_step(s));
+        });
+    }
+    // used forward ranges + list-index span per contig
+    unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>> used;
+    unordered_map<path_handle_t, pair<int, int>> span;
+    for (int i = 0; i < (int)intervals.size(); ++i) {
+        const auto& iv = intervals[i];
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+        int64_t a, b;
+        if (!get<2>(iv)) { a = path_index[p][get<0>(iv)]; b = path_index[p][get<1>(iv)] + graph->get_length(graph->get_handle_of_step(get<1>(iv))); }
+        else             { a = path_index[p][get<1>(iv)]; b = path_index[p][get<0>(iv)] + graph->get_length(graph->get_handle_of_step(get<0>(iv))); }
+        used[p].push_back(make_pair(a, b));
+        auto it = span.find(p); if (it == span.end()) span[p] = make_pair(i, i); else it->second.second = i;
+    }
+    for (auto& kv : used) {
+        path_handle_t C = kv.first;
+        if (graph->get_sample_name(C) != target_sample) continue;     // only the target's own contigs
+        auto& r = kv.second;
+        if (r.size() < 2) continue;
+        sort(r.begin(), r.end());
+        vector<pair<int64_t, int64_t>> gaps;
+        for (size_t i = 1; i < r.size(); ++i) { int64_t ga = r[i-1].second, gb = r[i].first; if (gb > ga) gaps.push_back(make_pair(ga, gb)); }
+        if (gaps.empty()) continue;
+        // foreign intervals spliced between C's first and last appearance
+        int lo = span[C].first, hi = span[C].second;
+        vector<tuple<step_handle_t, step_handle_t, bool>> foreign;
+        for (int j = lo + 1; j < hi; ++j) {
+            path_handle_t pj = graph->get_path_handle_of_step(get<0>(intervals[j]));
+            if (pj == C) continue;
+            if (graph->get_sample_name(pj) != target_sample) foreign.push_back(intervals[j]);
+        }
+        if (foreign.empty()) continue;   // same-sample interior is handled by the other guard
+        // removed = the target sequence skipped over in C's interior
+        string removed;
+        int64_t pos = 0;
+        graph->for_each_step_in_path(C, [&](step_handle_t s) {
+            handle_t h = graph->get_handle_of_step(s); int64_t len = graph->get_length(h);
+            int64_t na = pos, nb = pos + len; pos = nb;
+            for (auto& g : gaps) { int64_t oa = max(na, g.first), ob = min(nb, g.second);
+                if (oa < ob) removed += graph->get_sequence(h).substr(oa - na, ob - oa); }
+        });
+        int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
+        if (nonN < min_replaced) continue;   // too little real sequence replaced to judge reliably
+        string added = intervals_to_sequence(graph, foreign);
+        double rec = kmer_recovery(removed, added);
+        ostringstream ss; ss << fixed << setprecision(1) << rec;
+        cout << "#Interior graft: contig " << graph->get_path_name(C) << " replaced=" << removed.size()
+             << "bp grafted=" << added.size() << "bp kmer_recovery=" << ss.str() << "%" << endl;
+        if (rec < min_recovery) {
+            detail = "contig " + graph->get_path_name(C) + " interior (" + to_string(removed.size())
+                   + "bp) was replaced by a foreign graft sharing only " + ss.str() + "% of its k-mers";
+            return true;
         }
     }
     return false;
@@ -1408,6 +1486,15 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     string interior_detail;
     if (splices_same_sample_interior(graph, in_intervals, interior_detail)) {
         cout << "#Reverting patch: " << interior_detail << " (likely repeat-region misjoin)" << endl;
+        to_revert = true;
+    }
+
+    // reject a foreign interior graft that recapitulates almost none of the target
+    // sequence it replaced (k-mer recovery < 25% over a >=10kb replaced region) -- a repeat-region
+    // misjoin where the donor came from a different locus.  (Thresholds are provisional.)
+    string graft_detail;
+    if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], 25.0, 10000, graft_detail)) {
+        cout << "#Reverting patch: " << graft_detail << " (likely repeat-region misjoin)" << endl;
         to_revert = true;
     }
 

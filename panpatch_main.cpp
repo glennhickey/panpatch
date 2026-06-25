@@ -337,7 +337,17 @@ int main(int argc, char** argv) {
         cout << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "
              << graph->get_sample_name(hap_tgts.second.front()) << "#"
              << graph->get_haplotype(hap_tgts.second.front()) << ":" << endl;
-        print_intervals(graph, patched_intervals);
+        if (reverted) {
+            // reverted output is a set of separate input contigs (each its own FASTA record below),
+            // so print each on its own: print_intervals closes the last interval of each call, which
+            // for a single-contig list means the full contig (BED then matches the FASTA / #Contig
+            // lengths instead of dropping each non-last contig's final node)
+            for (const auto& interval : patched_intervals) {
+                print_intervals(graph, {interval});
+            }
+        } else {
+            print_intervals(graph, patched_intervals);
+        }
         cout << endl;
 
         // save the intervals to the fasta

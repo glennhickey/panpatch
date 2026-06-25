@@ -2,6 +2,6 @@
 #Contig frag#1#main#0 len=12060bp left=NO(0.006) right=NO(0.006)
 #Contig frag#1#alt#0 len=60bp left=NO(0.000) right=NO(0.000)
 #Patched assembly on chrX for frag#1:
-frag#1#alt#0	0	40	+
+frag#1#alt#0	0	60	+
 frag#1#main#0	0	12060	+
 
