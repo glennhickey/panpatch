@@ -1,3 +1,5 @@
+#Telomere not patched (front) of verkko#1#chrX#0: telomeric repeats are present near the tip but not as a clean terminal telomere (sequence extending past the telomere, or a degraded/fragmented telomere) - beyond simple patching; no donor provides a clean telomere here
+#Telomere not patched (back) of verkko#1#chrX#0: telomeric repeats are present near the tip but not as a clean terminal telomere (sequence extending past the telomere, or a degraded/fragmented telomere) - beyond simple patching; no donor provides a clean telomere here
 #Telomere validation failed: assembly does not meet telomere requirements
 #Reverting to input assembly because no patches from other assemblies were found
 #Contig verkko#1#chrX#0 len=1233bp left=YES(0.990) right=YES(0.990)

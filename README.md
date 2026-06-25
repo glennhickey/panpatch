@@ -156,6 +156,8 @@ Because the replaced tip is the *divergent* subtelomere (everything past the las
 - `-M, --max-telomere-patch N` caps how much target sequence a single telomere patch may replace (default 500000).  The nearest shared handoff can be far in when the subtelomere is large (e.g. acrocentric arms); a patch that would replace more than `N` bp is skipped and the assembly is left to the normal revert.  The skip message reports the distance so you can opt in with a larger `-M`.
 - Each applied patch reports a line such as `#Telomere patch (front): donor=... replaced=118701bp grafted=218447bp kmer_recovery=0.9%`, where `kmer_recovery` is the fraction of the replaced target sequence's k-mers also found in the graft — a low value flags that the donor's subtelomere differs substantially from the target's.
 
+When an end lacks a telomere and panpatch cannot lift one over, it reports why with a `#Telomere not patched (front|back) of <contig>: <reason>` line, distinguishing a simple gap (no telomere here and no donor reaches one) from an assembly issue beyond panpatch's scope (telomeric repeats present near the tip but not as a clean terminal telomere — i.e. sequence extending past the telomere, or a degraded/fragmented one).
+
 ### Running time
 
 The above examples takes about 2 hours on the cluster to run `cactus-pangenome`.  Running `panpatch` on each chromosome in series takes about 2 minutes total on my desktop. 

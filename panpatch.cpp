@@ -800,6 +800,25 @@ static bool seq_has_telomere(const string& sequence, int64_t start, int64_t max_
     return (fw_density >= threshold || r_density >= threshold);
 }
 
+// lenient telomere presence: true if ANY 500bp window in s clears the density threshold. Unlike
+// seq_has_telomere (which requires a clean terminal telomere), this just detects that telomeric
+// repeats exist somewhere in the region - used only to explain *why* a capless tip wasn't patched
+// (e.g. a telomere buried under terminal junk, or a degraded/fragmented one).
+static bool has_telomeric_window(const string& s, double threshold) {
+    const int64_t W = 500;
+    int64_t n = (int64_t)s.size();
+    for (int64_t i = 0; i + W <= n; i += 100) {
+        int64_t fw = 0, rv = 0;
+        for (int64_t p = i; p < i + W - 6; ) {
+            if (s.compare(p, 6, "TTAGGG") == 0) { ++fw; p += 6; }
+            else if (s.compare(p, 6, "CCCTAA") == 0) { ++rv; p += 6; }
+            else ++p;
+        }
+        if (6.0 * (double)max(fw, rv) / (double)W >= threshold) return true;
+    }
+    return false;
+}
+
 static inline uint64_t hash64(uint64_t x) {
     x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
     x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
@@ -950,6 +969,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         // detection in seq_has_telomere agrees with validate_telomeres (front tip -> sequence start,
         // is_right_end=false; back tip -> sequence end, is_right_end=true).  (Walking from the tip
         // inward visits nodes in reverse order for the back end, so prepend there.)
+        bool buried = false;  // capless tip, but telomeric repeats are present nearby
         {
             string tip_seq;
             step_handle_t s = tip_step;
@@ -964,6 +984,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
             if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
                               << " tip of " << graph->get_path_name(P) << ": telomere=" << has << endl;
             if (has) return false;
+            buried = has_telomeric_window(tip_seq, telo_threshold);
         }
 
         // 2) walk inward looking for a shared-node handoff to a foreign cover with a telomere
@@ -1051,12 +1072,21 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
 
             if (s_i == inner_bound) break;
             walked += graph->get_length(under);
-            if (walked > max_handoff + REPORT_MARGIN) {
-                if (verbose) cerr << "[panpatch]   no donor handoff found within "
-                                  << (max_handoff + REPORT_MARGIN) << "bp" << endl;
-                break;
-            }
+            if (walked > max_handoff + REPORT_MARGIN) break;
             s_i = inward(s_i);
+        }
+
+        // capless end with no usable donor handoff in range: report why, so the user can see which
+        // ends were left as-is and whether it's a simple gap (no telomere anywhere, no donor) or an
+        // assembly issue beyond panpatch's scope (a telomere present but buried/degraded at the tip).
+        cout << "#Telomere not patched (" << (is_front ? "front" : "back") << ") of "
+             << graph->get_path_name(P) << ": ";
+        if (buried) {
+            cout << "telomeric repeats are present near the tip but not as a clean terminal telomere "
+                    "(sequence extending past the telomere, or a degraded/fragmented telomere) - "
+                    "beyond simple patching; no donor provides a clean telomere here" << endl;
+        } else {
+            cout << "no telomere at this end and no donor assembly reaches one near it" << endl;
         }
         return false;
     };
