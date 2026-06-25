@@ -158,6 +158,34 @@ Because the replaced tip is the *divergent* subtelomere (everything past the las
 
 When an end lacks a telomere and panpatch cannot lift one over, it reports why with a `#Telomere not patched (front|back) of <contig>: <reason>` line, distinguishing a simple gap (no telomere here and no donor reaches one) from an assembly issue beyond panpatch's scope (telomeric repeats present near the tip but not as a clean terminal telomere — i.e. sequence extending past the telomere, or a degraded/fragmented one).
 
+## Why a patch is rejected (quality control)
+
+panpatch only emits a patched sequence when it passes a series of checks; otherwise it reverts to the target's input contig(s) — or to `--default-sample`'s contig if that option is given.  Every rejection prints a `#`-prefixed reason on the BED (stdout) stream so the outcome is auditable.
+
+**Checks applied to every run**
+
+- **Patch too short.**  If the patched sequence is less than 95% of the combined length of the target sample's input contigs, it is discarded.
+  `#Reverting failed patch as it covers only <frac> of target`
+- **Repeat-region misjoin (interior splice).**  If a contig is used non-contiguously with another contig *of the same sample* spliced into the interior between its pieces, the patch is reverted.  This catches the failure mode where non-unique satellite / segmental-duplication anchors cause the target assembly's own spare fragments to be stitched into the middle of a contig that already spans the region — observed on acrocentric short arms and pericentromeres, where it collapses or scrambles megabase satellite arrays.  Legitimate operations are unaffected: a genuine gap-fill is bridged by a *foreign* donor (different sample), and an end-to-end scaffold uses each contig as a single contiguous block.
+  `#Reverting patch: contig <C> was used non-contiguously with same-sample fragment <F> spliced into its interior (likely repeat-region misjoin)`
+- **Nothing to patch.**  If no foreign sequence was used and fewer than two of the target's own contigs were joined, there was no patch to keep:
+  - with no gaps (no `N`s) the assembly is already complete — `#No patching is required (the sequence contains no gaps)`
+  - with gaps but no donor that covered them — `#Reverting to input assembly because no patches from other assemblies were found`
+
+**Additional checks with `-T` (telomere requirements)**
+
+- **Telomere validation failed.**  After any telomere patching, the assembly must begin and end with a telomere, contain none internally, and be at least 2 kb long; otherwise it is reverted.
+  `#Telomere validation failed: assembly does not meet telomere requirements`
+- **Telomere patch over the cap.**  A missing terminal telomere is grafted from a donor only if the handoff replaces at most `--max-telomere-patch` (`-M`, default 500000) bp of target sequence; a larger graft is skipped, leaving the end to the validation check above.
+  `#Telomere not patched (front|back): nearest donor handoff ... over the --max-telomere-patch cap ...`
+- **No telomere to lift over.**  If an end has no telomere and no donor can supply one (or the telomere is degraded/buried — beyond panpatch's scope), it is reported and left to the validation check.
+  `#Telomere not patched (front|back) of <contig>: <reason>`
+
+**Options that limit what is patched**
+
+- `-b, --exclude-bed FILE` — keep listed target regions untouched (see *Excluding Regions from Patching*).
+- `-e, --default-sample STRING` — when a patch is rejected, output this sample's contig for the chromosome instead of the target's input contigs.
+
 ### Running time
 
 The above examples takes about 2 hours on the cluster to run `cactus-pangenome`.  Running `panpatch` on each chromosome in series takes about 2 minutes total on my desktop. 

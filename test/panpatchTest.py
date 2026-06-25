@@ -104,6 +104,17 @@ run('panpatch scaffold.vg -r x -s frag -T > scaffold.frag.T.bed')
 run('diff scaffold.frag.T.bed scaffold.frag.T.bed.truth')
 temp_files += ['scaffold.frag.T.bed']
 
+# Interior-splice guard: the main contig (frag#1#main) spans the whole chromosome but diverges
+# in the middle (node 8); a same-sample fragment (frag#1#alt) matches the reference there. Greedy
+# threading splices alt into main's interior (main used non-contiguously with alt between), which
+# is the repeat-region misjoin signature. The guard must reject this and revert to the input
+# contigs. The big flanks keep the length check satisfied so the guard is the sole reason to revert
+# (contrast with the legit cases above: end-to-end scaffolds and foreign-donor gap-fills are kept).
+run('vg convert interior_splice.gfa > interior_splice.vg')
+run('panpatch interior_splice.vg -r x -s frag > interior_splice.bed')
+run('diff interior_splice.bed interior_splice.bed.truth')
+temp_files += ['interior_splice.vg', 'interior_splice.bed']
+
 # Telomere patching (folded into -T): when the target is missing a telomere, graft one in
 # from a foreign cover (donor) by handing off at the nearest shared node. Small graphs
 # exercise the splice paths. The non-deterministic-order #Contig lines are dropped, and the
