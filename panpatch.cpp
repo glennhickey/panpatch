@@ -1327,6 +1327,49 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     return extended_intervals;
 }
 
+// Sanity guard for repeat-region misjoins.
+//
+// Detects when a contig is used in two or more disjoint pieces and another contig OF THE SAME
+// SAMPLE is spliced into the interior between them.  This is the signature of the acrocentric /
+// pericentromeric misjoins: the threading bounces through ambiguous satellite/segdup anchors and
+// splices the target assembly's own spare fragments into the middle of a contig that already spans
+// the region, producing scrambled / collapsed output.
+//
+// Legitimate operations are unaffected:
+//  - a genuine gap-fill bridges with a FOREIGN donor (different sample), so the interior material
+//    is not same-sample and is allowed;
+//  - end-to-end scaffolds and telomere patches use each contig contiguously (a single block), so
+//    there is no interior to splice into.
+static bool splices_same_sample_interior(const PathHandleGraph* graph,
+                                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                         string& detail) {
+    // first and last list-index at which each contig appears (intervals are in reference order)
+    unordered_map<path_handle_t, pair<int, int>> span;
+    vector<path_handle_t> idx_path(intervals.size());
+    for (int i = 0; i < (int)intervals.size(); ++i) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(intervals[i]));
+        idx_path[i] = p;
+        auto it = span.find(p);
+        if (it == span.end()) span[p] = make_pair(i, i);
+        else it->second.second = i;
+    }
+    for (const auto& kv : span) {
+        int lo = kv.second.first, hi = kv.second.second;
+        if (hi <= lo) continue;  // contig used as a single contiguous block: no interior to splice
+        string c_sample = graph->get_sample_name(kv.first);
+        for (int j = lo + 1; j < hi; ++j) {
+            if (idx_path[j] == kv.first) continue;            // another piece of the same contig
+            if (graph->get_sample_name(idx_path[j]) == c_sample) {
+                detail = "contig " + graph->get_path_name(kv.first)
+                       + " was used non-contiguously with same-sample fragment "
+                       + graph->get_path_name(idx_path[j]) + " spliced into its interior";
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool revert_bad_patch(const PathHandleGraph* graph,
                       const path_handle_t& ref_path,
                       const vector<path_handle_t>& tgt_paths,
@@ -1356,6 +1399,16 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     if (to_revert) {
         cout << "#Reverting failed patch as it covers only " << ((double)patch_length / (double)tgt_length)
              << " of target" << endl;
+    }
+
+    // sanity guard: reject patches that replaced real interior sequence of a contig without an
+    // assembly gap to justify it (repeat-region misjoin -- e.g. fragments spliced into satellite/
+    // segdup through ambiguous anchors).  this overrides an otherwise-accepted (even telomere-valid)
+    // patch and reverts to the input contigs.
+    string interior_detail;
+    if (splices_same_sample_interior(graph, in_intervals, interior_detail)) {
+        cout << "#Reverting patch: " << interior_detail << " (likely repeat-region misjoin)" << endl;
+        to_revert = true;
     }
 
     if (!default_sample.length() && !to_revert) {
