@@ -734,30 +734,70 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHan
     return extended_intervals;
 }
 
-// telomere repeat density (max of forward/reverse hexamer density) over a sequence
-static double telomere_density(const string& s) {
-    if (s.empty()) return 0.0;
-    int64_t fw = 0, rv = 0;
-    for (size_t i = 0; i + 6 <= s.size(); ) {
-        if (s.compare(i, 6, "TTAGGG") == 0) { ++fw; i += 6; }
-        else if (s.compare(i, 6, "CCCTAA") == 0) { ++rv; i += 6; }
-        else ++i;
+// Find where a telomere run anchored at a tip ends/begins within sequence[search_start, search_end).
+//   scan_forward : telomere anchored at search_start; returns the index where the run ends (-1 if none).
+//  !scan_forward : telomere anchored at search_end;   returns the index where the run begins (-1 if none).
+// Slides a 500bp window inward from the tip, extending the run while window density stays >= 0.7.
+static int64_t find_telomere_boundary(const string& sequence, int64_t search_start, int64_t search_end,
+                                      bool scan_forward) {
+    const int64_t window_size = 500;
+    const double min_density = 0.7;
+    if (scan_forward) {
+        int64_t telomere_end = search_start;
+        for (int64_t win_start = search_start; win_start + window_size < search_end; win_start += 100) {
+            int64_t repeats = 0;
+            for (int64_t pos = win_start; pos < min(win_start + window_size, search_end - 6); ++pos) {
+                if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") { ++repeats; pos += 5; }
+            }
+            double density = 6.0 * (double)repeats / (double)window_size;
+            if (density >= min_density) telomere_end = win_start + window_size;
+            else if (telomere_end > search_start) break;
+        }
+        return telomere_end > search_start ? telomere_end : -1;
+    } else {
+        int64_t telomere_start = search_end;
+        for (int64_t win_end = search_end; win_end - window_size > search_start; win_end -= 100) {
+            int64_t win_start = max(search_start, win_end - window_size);
+            int64_t repeats = 0;
+            for (int64_t pos = win_start; pos < win_end - 6; ++pos) {
+                if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") { ++repeats; pos += 5; }
+            }
+            double density = 6.0 * (double)repeats / (double)window_size;
+            if (density >= min_density) telomere_start = win_start;
+            else if (telomere_start < search_end) break;
+        }
+        return telomere_start < search_end ? telomere_start : -1;
     }
-    double n = (double)s.size();
-    return max(6.0 * (double)fw / n, 6.0 * (double)rv / n);
 }
 
-// true if a telomere is present anywhere in the sequence: scan 500bp windows and require one
-// to clear the density threshold.  (real telomeres are often slightly inset or degenerate, so a
-// flat density over a fixed tip window under-calls them - mirror validate_telomeres' windowing.)
-static bool region_has_telomere(const string& s, double threshold) {
-    const int64_t W = 500;
-    int64_t n = (int64_t)s.size();
-    if (n < W) return telomere_density(s) >= threshold;
-    for (int64_t i = 0; i + W <= n; i += 100) {
-        if (telomere_density(s.substr(i, W)) >= threshold) return true;
+// Canonical "does this region carry a telomere?" test, shared by telomere validation and patching.
+// When find_boundary is set, the region is first narrowed to the telomeric run anchored at the tip
+// (is_right_end => tip at max_end, else tip at start); the run must then be >=500bp and reach the
+// density threshold.  Averaging over the actual run (rather than accepting any single dense window)
+// is what makes a telomere buried under terminal junk, or a short/degraded telomere, read as absent.
+static bool seq_has_telomere(const string& sequence, int64_t start, int64_t max_end,
+                             bool find_boundary, bool is_right_end, double threshold) {
+    int64_t actual_start = start;
+    int64_t actual_end = max_end;
+    if (find_boundary) {
+        if (is_right_end) {
+            int64_t telomere_start = find_telomere_boundary(sequence, start, max_end, false);
+            if (telomere_start >= start && telomere_start < max_end) actual_start = telomere_start;
+        } else {
+            int64_t telomere_end = find_telomere_boundary(sequence, start, max_end, true);
+            if (telomere_end > start) actual_end = telomere_end;
+        }
     }
-    return false;
+    int64_t fw_count = 0, r_count = 0;
+    for (int64_t pos = actual_start; pos < actual_end - 6; ++pos) {
+        if (sequence.substr(pos, 6) == "TTAGGG") { ++fw_count; pos += 5; }
+        else if (sequence.substr(pos, 6) == "CCCTAA") { ++r_count; pos += 5; }
+    }
+    int64_t region_len = actual_end - actual_start;
+    if (region_len < 500) return false;
+    double fw_density = 6. * ((double)fw_count / (double)region_len);
+    double r_density = 6. * ((double)r_count / (double)region_len);
+    return (fw_density >= threshold || r_density >= threshold);
 }
 
 static inline uint64_t hash64(uint64_t x) {
@@ -872,8 +912,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
     // precompute, once per cover, whether each of its two ends carries a telomere
     unordered_map<path_handle_t, bool> telo_begin, telo_end;
     for (const path_handle_t& F : foreign) {
-        telo_begin[F] = region_has_telomere(terminal_seq(F, false), telo_threshold);
-        telo_end[F]   = region_has_telomere(terminal_seq(F, true), telo_threshold);
+        // terminal_seq(F,false) is in path order with the path_begin tip first; terminal_seq(F,true)
+        // has the path_back tip last (is_right_end).
+        string tseq_b = terminal_seq(F, false);
+        string tseq_e = terminal_seq(F, true);
+        telo_begin[F] = seq_has_telomere(tseq_b, 0, (int64_t)tseq_b.size(), true, false, telo_threshold);
+        telo_end[F]   = seq_has_telomere(tseq_e, 0, (int64_t)tseq_e.size(), true, true,  telo_threshold);
         if (verbose) cerr << "[panpatch] telomere-patch cover " << graph->get_path_name(F)
                           << " telomere begin=" << telo_begin[F] << " end=" << telo_end[F] << endl;
     }
@@ -901,16 +945,22 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
             else           return rev ? graph->get_previous_step(s) : graph->get_next_step(s);
         };
 
-        // 1) if the tip already carries a telomere, nothing to do
+        // 1) if the tip already carries a telomere, nothing to do.
+        // Build the outermost OUTER bp of this end in true assembly 5'->3' order so the boundary
+        // detection in seq_has_telomere agrees with validate_telomeres (front tip -> sequence start,
+        // is_right_end=false; back tip -> sequence end, is_right_end=true).  (Walking from the tip
+        // inward visits nodes in reverse order for the back end, so prepend there.)
         {
             string tip_seq;
             step_handle_t s = tip_step;
             while ((int64_t)tip_seq.size() < OUTER) {
-                tip_seq += graph->get_sequence(asm_handle(s));
+                string node_seq = graph->get_sequence(asm_handle(s));
+                if (is_front) tip_seq += node_seq;          // front tip at index 0
+                else          tip_seq = node_seq + tip_seq;  // back tip at the end
                 if (s == inner_bound) break;
                 s = inward(s);
             }
-            bool has = region_has_telomere(tip_seq, telo_threshold);
+            bool has = seq_has_telomere(tip_seq, 0, (int64_t)tip_seq.size(), true, !is_front, telo_threshold);
             if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
                               << " tip of " << graph->get_path_name(P) << ": telomere=" << has << endl;
             if (has) return false;
@@ -1401,111 +1451,20 @@ bool validate_telomeres(const PathHandleGraph* graph,
     // Search window - check up to 50kb from each end
     int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
 
-    // Helper to find where telomere ends (scans forward from start)
-    // OR find where telomere starts (scans backward from end)
-    // Uses sliding window to detect where repeat density drops below threshold
-    auto find_telomere_boundary = [&](int64_t search_start, int64_t search_end, bool scan_forward) -> int64_t {
-        const int64_t window_size = 500;  // 500bp sliding window
-        const double min_density = 0.7;   // Require 70% telomeric content in window
-
-        if (scan_forward) {
-            // Scan forward from start to find where telomere ends
-            int64_t telomere_end = search_start;
-            for (int64_t win_start = search_start; win_start + window_size < search_end; win_start += 100) {
-                int64_t repeats = 0;
-                for (int64_t pos = win_start; pos < min(win_start + window_size, search_end - 6); ++pos) {
-                    if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") {
-                        ++repeats;
-                        pos += 5;
-                    }
-                }
-                double density = 6.0 * (double)repeats / (double)window_size;
-                if (density >= min_density) {
-                    telomere_end = win_start + window_size;
-                } else if (telomere_end > search_start) {
-                    break;
-                }
-            }
-            return telomere_end > search_start ? telomere_end : -1;
-        } else {
-            // Scan backward from end to find where telomere starts
-            int64_t telomere_start = search_end;
-            for (int64_t win_end = search_end; win_end - window_size > search_start; win_end -= 100) {
-                int64_t win_start = max(search_start, win_end - window_size);
-                int64_t repeats = 0;
-                for (int64_t pos = win_start; pos < win_end - 6; ++pos) {
-                    if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") {
-                        ++repeats;
-                        pos += 5;
-                    }
-                }
-                double density = 6.0 * (double)repeats / (double)window_size;
-                if (density >= min_density) {
-                    telomere_start = win_start;
-                } else if (telomere_start < search_end) {
-                    break;
-                }
-            }
-            return telomere_start < search_end ? telomere_start : -1;
-        }
-    };
-
-    // Helper function to check for telomere repeats in actual telomeric region
-    auto has_telomere = [&](int64_t start, int64_t max_end, bool find_boundary, bool is_right_end) -> bool {
-        int64_t actual_start = start;
-        int64_t actual_end = max_end;
-
-        if (find_boundary) {
-            if (is_right_end) {
-                // For right telomere, scan backward to find start
-                int64_t telomere_start = find_telomere_boundary(start, max_end, false);
-                if (telomere_start >= start && telomere_start < max_end) {
-                    actual_start = telomere_start;
-                }
-            } else {
-                // For left telomere, scan forward to find end
-                int64_t telomere_end = find_telomere_boundary(start, max_end, true);
-                if (telomere_end > start) {
-                    actual_end = telomere_end;
-                }
-            }
-        }
-
-        int64_t fw_count = 0;
-        int64_t r_count = 0;
-
-        for (int64_t pos = actual_start; pos < actual_end - 6; ++pos) {
-            if (sequence.substr(pos, 6) == "TTAGGG") {
-                ++fw_count;
-                pos += 5;
-            } else if (sequence.substr(pos, 6) == "CCCTAA") {
-                ++r_count;
-                pos += 5;
-            }
-        }
-
-        int64_t region_len = actual_end - actual_start;
-        if (region_len < 500) {  // Need at least 500bp
-            return false;
-        }
-
-        double fw_density = 6. * ((double)fw_count / (double)region_len);
-        double r_density = 6. * ((double)r_count / (double)region_len);
-
-        return (fw_density >= threshold || r_density >= threshold);
-    };
+    // Telomere detection uses the shared seq_has_telomere() helper (also used by the patcher, so
+    // the two cannot disagree). Tips use boundary detection; the internal check does not.
 
     // Check for telomeres at the start (find boundary scanning forward)
-    bool has_start_telomere = has_telomere(0, tip_check_len, true, false);
+    bool has_start_telomere = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold);
 
     // Check for telomeres at the end (find boundary scanning backward)
-    bool has_end_telomere = has_telomere(max((int64_t)0, seq_len - tip_check_len), seq_len, true, true);
+    bool has_end_telomere = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold);
 
     // Check for telomeres in the middle (internal telomeres - should NOT exist)
     // Don't find boundary here - we want to detect any telomeric sequence
     bool has_internal_telomere = false;
     if (seq_len > 2 * tip_check_len) {
-        has_internal_telomere = has_telomere(tip_check_len, seq_len - tip_check_len, false, false);
+        has_internal_telomere = seq_has_telomere(sequence, tip_check_len, seq_len - tip_check_len, false, false, threshold);
     }
 
     if (verbose) {
