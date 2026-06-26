@@ -57,7 +57,7 @@ The patching algorithm follows this pipeline:
 2. **Anchor Finding** (`find_anchors`): Identifies nodes on the reference path where assembly paths start, end, or branch
 3. **Path Threading** (`thread_intervals`): Searches left-to-right through anchors, greedily selecting highest-priority paths at each junction
 4. **Smoothing & Extension** (`smooth_intervals`, `extend_intervals`): Merges adjacent intervals on the same path and extends to telomeres
-5. **Validation** (`revert_bad_patch`): Reverts to original contigs if patching fails quality checks
+5. **Validation** (`revert_bad_patch`): Reverts to the input contigs if a patch fails a quality check — too short (`--min-cover`), a repeat-region misjoin (a same-sample interior splice, or a foreign interior graft with low k-mer recovery), a discarded target telomere, or (with `-T`) failed telomere validation. See the README *Why a patch is rejected* section for the full list and the messages each emits.
 
 **Graph Representation:**
 - Uses `bdsg::PathHandleGraph` interface from libbdsg for graph access
@@ -109,7 +109,7 @@ Sample names come from minigraph-cactus seqfile (first column, without `.1/.2` h
 - Reference-dependent: If graph doesn't align contigs to reference, no anchors will be found
 - Left-to-right search is simplistic; some cases could benefit from more general graph search
 - Nested patches not currently supported (requires target path restriction removal)
-- No sophisticated quality checking for bad patches (telomere preservation, alignment quality, sequence length reasonableness)
+- Patch quality control is heuristic — k-mer recovery, telomere preservation, and length sanity catch the common misjoins (see the README *Why a patch is rejected* section), but there is no full alignment-based scoring
 
 ### Coordinate System
 - Intervals use half-open coordinates `[start, end)` except for the last interval which is closed
