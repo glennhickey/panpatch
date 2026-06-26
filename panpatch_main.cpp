@@ -299,6 +299,10 @@ int main(int argc, char** argv) {
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
             require_telomeres, telo_threshold, max_telomere_patch, progress);
 
+        // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (restoring the
+        // target's own sequence) while keeping good sub-patches, instead of reverting the whole contig.
+        excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp);
+
         // Check telomere validation if required
         bool telomere_validation_failed = false;
         if (require_telomeres && !patched_intervals.empty()) {

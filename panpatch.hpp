@@ -131,6 +131,14 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                int64_t max_telomere_patch = 500000,
                                                                bool verbose = false);
 
+// partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
+// flanking target pieces), keeping the rest of the patch.  run before revert_bad_patch.
+void excise_bad_interior_grafts(const PathHandleGraph* graph,
+                                vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                const string& target_sample,
+                                double min_recovery = 50.0,
+                                int64_t min_replaced = 10000);
+
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,
                       const path_handle_t& ref_path,

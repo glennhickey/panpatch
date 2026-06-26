@@ -1524,6 +1524,78 @@ static bool discards_target_telomere(const PathHandleGraph* graph,
     return false;
 }
 
+// Partial-patch cleanup (run before revert_bad_patch).  For each foreign interior graft of the shape
+// [C-piece | foreign run | same-C-piece] that replaces >= min_replaced non-N bp of contig C while
+// sharing < min_recovery of C's k-mers (a repeat-region misjoin), drop the foreign run and merge the
+// two flanking C-pieces -- splicing C's own sequence back in.  This keeps the rest of the patch
+// (telomere completions, faithful fills) instead of reverting the whole contig.  Only this clean shape
+// is excised; mostly-N fills (nothing to recapitulate) and anything unusual are left untouched, so
+// revert_bad_patch's interior-graft guard still backstops them with a full revert.
+void excise_bad_interior_grafts(const PathHandleGraph* graph,
+                                vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                const string& target_sample,
+                                double min_recovery, int64_t min_replaced) {
+    unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
+    auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
+        auto it = posidx.find(C);
+        if (it != posidx.end()) return it->second;
+        auto& m = posidx[C]; int64_t p = 0;
+        graph->for_each_step_in_path(C, [&](step_handle_t s) { m[s] = p; p += graph->get_length(graph->get_handle_of_step(s)); });
+        return m;
+    };
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (int i = 0; i + 1 < (int)intervals.size() && !changed; ++i) {
+            path_handle_t C = graph->get_path_handle_of_step(get<0>(intervals[i]));
+            if (graph->get_sample_name(C) != target_sample) continue;
+            int j = -1; bool only_foreign = true;
+            for (int k = i + 1; k < (int)intervals.size(); ++k) {
+                path_handle_t pk = graph->get_path_handle_of_step(get<0>(intervals[k]));
+                if (pk == C) { j = k; break; }
+                if (graph->get_sample_name(pk) == target_sample) { only_foreign = false; break; }   // a different target contig: not a simple foreign graft
+            }
+            if (j < 0 || !only_foreign || j == i + 1) continue;
+            if (get<2>(intervals[i]) != get<2>(intervals[j])) continue;   // inconsistent orientation: leave to the full-revert guard
+            auto& pos = pos_of(C);
+            // forward [start,end) range of an interval, orientation-aware: for a reverse interval the
+            // convention is swapped (intervals_to_sequence walks get<0> backward to get<1>), so get<1>
+            // is the lower-position step and get<0> the higher.
+            auto fwd_range = [&](const tuple<step_handle_t, step_handle_t, bool>& iv) {
+                int64_t p0 = pos[get<0>(iv)], l0 = graph->get_length(graph->get_handle_of_step(get<0>(iv)));
+                int64_t p1 = pos[get<1>(iv)], l1 = graph->get_length(graph->get_handle_of_step(get<1>(iv)));
+                return get<2>(iv) ? make_pair(p1, p0 + l0) : make_pair(p0, p1 + l1);
+            };
+            pair<int64_t, int64_t> rgi = fwd_range(intervals[i]), rgj = fwd_range(intervals[j]);
+            int64_t lo, hi;
+            if (rgi.second <= rgj.first) { lo = rgi.second; hi = rgj.first; }   // piece i is the lower piece
+            else if (rgj.second <= rgi.first) { lo = rgj.second; hi = rgi.first; }  // piece j is the lower piece
+            else continue;                                  // overlapping ranges -- unexpected, leave it
+            if (hi <= lo) continue;                          // pieces adjacent: nothing of C was replaced
+            string removed; int64_t p = 0;
+            graph->for_each_step_in_path(C, [&](step_handle_t s) {
+                handle_t h = graph->get_handle_of_step(s); int64_t l = graph->get_length(h);
+                int64_t oa = max(p, lo), ob = min(p + l, hi); if (oa < ob) removed += graph->get_sequence(h).substr(oa - p, ob - oa); p += l; });
+            int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
+            if (nonN < min_replaced) continue;               // mostly-N fill: not k-mer-judged, keep it
+            vector<tuple<step_handle_t, step_handle_t, bool>> foreign(intervals.begin() + i + 1, intervals.begin() + j);
+            double rec = kmer_recovery(removed, intervals_to_sequence(graph, foreign));
+            if (rec >= min_recovery) continue;               // faithful fill: keep (interior_graft_low_recovery will log it)
+            ostringstream ss; ss << fixed << setprecision(1) << rec;
+            cout << "#Interior graft excised: contig " << graph->get_path_name(C) << " interior ("
+                 << removed.size() << "bp) replaced by a foreign graft sharing only " << ss.str()
+                 << "% of its k-mers (likely repeat-region misjoin) -- restored target sequence, kept other patches" << endl;
+            // the patch visits piece i then piece j; merging them spans the whole region in the patch's
+            // own direction -- (get<0> of i, get<1> of j) works for forward and reverse alike.
+            tuple<step_handle_t, step_handle_t, bool> merged =
+                make_tuple(get<0>(intervals[i]), get<1>(intervals[j]), get<2>(intervals[i]));
+            intervals.erase(intervals.begin() + i, intervals.begin() + j + 1);
+            intervals.insert(intervals.begin() + i, merged);
+            changed = true;
+        }
+    }
+}
+
 bool revert_bad_patch(const PathHandleGraph* graph,
                       const path_handle_t& ref_path,
                       const vector<path_handle_t>& tgt_paths,
