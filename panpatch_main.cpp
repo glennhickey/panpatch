@@ -315,7 +315,7 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> input_intervals;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
                                          patched_intervals, input_intervals,
-                                         default_sample, fail_threshold, graft_recovery, graft_min_bp);
+                                         default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold);
 
         // Also revert if telomere validation failed
         if (!reverted && telomere_validation_failed) {

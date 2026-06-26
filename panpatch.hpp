@@ -141,7 +141,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       string default_sample,
                       double threshold,
                       double graft_recovery = 25.0,
-                      int64_t graft_min_bp = 10000);
+                      int64_t graft_min_bp = 10000,
+                      double telo_threshold = 0.8);
 
 // make sure all intervals have the correct orientation (and assert fail if not)
 void check_intervals(const PathHandleGraph* graph,

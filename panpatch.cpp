@@ -1454,6 +1454,76 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
     return false;
 }
 
+// Telomere-preservation guard.  A scaffold or graft must never discard a real telomere: if a
+// target contig is capped at a natural end but the patch uses that contig starting (or ending)
+// well past the cap, the contig was already complete there and the join is redundant/erroneous.
+// (Surfaced by the no-CHM13 self-reference comparison: CHM13's divergent subtelomere made panpatch
+// trim a telomere-bearing tip to bolt on an overlapping same-haplotype fragment -- HG01074 chr14,
+// where the main contig alone was already T2T.)  Legitimate operations are unaffected: telomere
+// patches trim a *capless* tip, gap-fills trim only the interior, end-to-end scaffolds use each
+// contig in full.  Restricted to the target sample's own contigs.
+static bool discards_target_telomere(const PathHandleGraph* graph,
+                                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                     const string& target_sample, double telo_threshold,
+                                     string& detail) {
+    const int64_t OUTER = 20000;   // telomere window; also the minimum end-trim to consider the cap "dropped"
+    unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> idx;
+    for (const auto& iv : intervals) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+        if (graph->get_sample_name(p) == target_sample) idx[p] = {};
+    }
+    for (auto& pm : idx) {
+        int64_t pos = 0;
+        graph->for_each_step_in_path(pm.first, [&](step_handle_t s) { pm.second[s] = pos; pos += graph->get_length(graph->get_handle_of_step(s)); });
+    }
+    unordered_map<path_handle_t, pair<int64_t, int64_t>> used;   // min start, max end (forward contig coords)
+    unordered_map<path_handle_t, int64_t> length;
+    for (const auto& iv : intervals) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+        if (!idx.count(p)) continue;
+        int64_t a, b;
+        if (!get<2>(iv)) { a = idx[p][get<0>(iv)]; b = idx[p][get<1>(iv)] + graph->get_length(graph->get_handle_of_step(get<1>(iv))); }
+        else             { a = idx[p][get<1>(iv)]; b = idx[p][get<0>(iv)] + graph->get_length(graph->get_handle_of_step(get<0>(iv))); }
+        auto it = used.find(p);
+        if (it == used.end()) used[p] = make_pair(a, b);
+        else { it->second.first = min(it->second.first, a); it->second.second = max(it->second.second, b); }
+    }
+    for (auto& kv : idx) {
+        int64_t len = 0;
+        graph->for_each_step_in_path(kv.first, [&](step_handle_t s) { len += graph->get_length(graph->get_handle_of_step(s)); });
+        length[kv.first] = len;
+    }
+    for (auto& kv : used) {
+        path_handle_t C = kv.first;
+        int64_t lo = kv.second.first, hi = kv.second.second, len = length[C];
+        if (lo >= OUTER) {                       // 5' end trimmed -> does the natural 5' carry a telomere?
+            string tip;
+            for (step_handle_t s = graph->path_begin(C); ; s = graph->get_next_step(s)) {
+                tip += graph->get_sequence(graph->get_handle_of_step(s));
+                if ((int64_t)tip.size() >= OUTER || s == graph->path_back(C)) break;
+            }
+            if (seq_has_telomere(tip, 0, (int64_t)tip.size(), true, false, telo_threshold)) {
+                detail = "patch trimmed the telomere-bearing 5' end of " + graph->get_path_name(C)
+                       + " (used from " + to_string(lo) + "bp)";
+                return true;
+            }
+        }
+        if (len - hi >= OUTER) {                 // 3' end trimmed -> does the natural 3' carry a telomere?
+            string tip;
+            for (step_handle_t s = graph->path_back(C); ; s = graph->get_previous_step(s)) {
+                tip = graph->get_sequence(graph->get_handle_of_step(s)) + tip;
+                if ((int64_t)tip.size() >= OUTER || s == graph->path_begin(C)) break;
+            }
+            if (seq_has_telomere(tip, 0, (int64_t)tip.size(), true, true, telo_threshold)) {
+                detail = "patch trimmed the telomere-bearing 3' end of " + graph->get_path_name(C)
+                       + " (used up to " + to_string(hi) + "bp of " + to_string(len) + ")";
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool revert_bad_patch(const PathHandleGraph* graph,
                       const path_handle_t& ref_path,
                       const vector<path_handle_t>& tgt_paths,
@@ -1463,7 +1533,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       string default_sample,
                       double threshold,
                       double graft_recovery,
-                      int64_t graft_min_bp) {
+                      int64_t graft_min_bp,
+                      double telo_threshold) {
 
     out_intervals.clear();    
     
@@ -1503,6 +1574,13 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     string graft_detail;
     if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, graft_detail)) {
         cout << "#Reverting patch: " << graft_detail << " (likely repeat-region misjoin)" << endl;
+        to_revert = true;
+    }
+
+    // telomere-preservation: a patch must not discard a telomere the target already had
+    string telo_detail;
+    if (discards_target_telomere(graph, in_intervals, sample_names[0], telo_threshold, telo_detail)) {
+        cout << "#Reverting patch: " << telo_detail << " (target was already capped there)" << endl;
         to_revert = true;
     }
 
