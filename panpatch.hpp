@@ -140,7 +140,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
                       string default_sample,
                       double threshold,
-                      double graft_recovery = 25.0,
+                      double graft_recovery = 50.0,
                       int64_t graft_min_bp = 10000,
                       double telo_threshold = 0.8);
 

@@ -44,7 +44,7 @@ void help(char** argv) {
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << "        --min-cover FLOAT        Revert a patch covering less than this fraction of the input length [0.95]" << endl
        << "        --telomere-threshold F   Min telomere hexamer density to call a telomere (with -T) [0.8]" << endl
-       << "        --graft-recovery FLOAT   Revert a foreign interior graft sharing less than this % of the replaced k-mers [25]" << endl
+       << "        --graft-recovery FLOAT   Revert a foreign interior graft sharing less than this % of the replaced k-mers [50]" << endl
        << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
        << endl;
 }    
@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     int64_t max_telomere_patch = 500000;
     double fail_threshold = 0.95;
     double telo_threshold = 0.8;
-    double graft_recovery = 25.0;
+    double graft_recovery = 50.0;
     int64_t graft_min_bp = 10000;
     optind = 1;
     while (true) {
