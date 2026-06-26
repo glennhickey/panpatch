@@ -25,10 +25,6 @@ using namespace bdsg;
 // from hal2vg/clip-vg.cpp
 static unique_ptr<PathHandleGraph> load_graph(istream& graph_stream);
 
-// if the patched contig isn't at least this much as big as the set of input
-// contigs to patch, then consider the patch failed
-static const double fail_threshold = 0.95;
-
 static const size_t fasta_width = 80;
 
 void help(char** argv) {
@@ -46,6 +42,10 @@ void help(char** argv) {
        << "    -T, --require-telomeres      Require telomeres at both ends (no internal): patch a missing terminal telomere from another assembly when possible, else revert" << endl
        << "    -M, --max-telomere-patch N   Max bp of target sequence a -T telomere patch may replace at a contig end [500000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
+       << "        --min-cover FLOAT        Revert a patch covering less than this fraction of the input length [0.95]" << endl
+       << "        --telomere-threshold F   Min telomere hexamer density to call a telomere (with -T) [0.8]" << endl
+       << "        --graft-recovery FLOAT   Revert a foreign interior graft sharing less than this % of the replaced k-mers [25]" << endl
+       << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
        << endl;
 }    
 
@@ -62,6 +62,10 @@ int main(int argc, char** argv) {
     bool ref_default = false;
     bool require_telomeres = false;
     int64_t max_telomere_patch = 500000;
+    double fail_threshold = 0.95;
+    double telo_threshold = 0.8;
+    double graft_recovery = 25.0;
+    int64_t graft_min_bp = 10000;
     optind = 1;
     while (true) {
 
@@ -77,6 +81,10 @@ int main(int argc, char** argv) {
             {"require-telomeres", no_argument, 0, 'T'},
             {"max-telomere-patch", required_argument, 0, 'M'},
             {"exclude-bed", required_argument, 0, 'b'},
+            {"min-cover", required_argument, 0, 1001},
+            {"telomere-threshold", required_argument, 0, 1002},
+            {"graft-recovery", required_argument, 0, 1003},
+            {"graft-min-bp", required_argument, 0, 1004},
             {0, 0, 0, 0}
         };
 
@@ -134,6 +142,18 @@ int main(int argc, char** argv) {
         }
         case 'b':
             bed_filename = optarg;
+            break;
+        case 1001:
+            fail_threshold = atof(optarg);
+            break;
+        case 1002:
+            telo_threshold = atof(optarg);
+            break;
+        case 1003:
+            graft_recovery = atof(optarg);
+            break;
+        case 1004:
+            graft_min_bp = strtoll(optarg, nullptr, 10);
             break;
         case 'h':
         case '?':
@@ -277,7 +297,7 @@ int main(int argc, char** argv) {
         }
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
-            require_telomeres, 0.8, max_telomere_patch, progress);
+            require_telomeres, telo_threshold, max_telomere_patch, progress);
 
         // Check telomere validation if required
         bool telomere_validation_failed = false;
@@ -285,7 +305,7 @@ int main(int argc, char** argv) {
             if (progress) {
                 cerr << "[panpatch]: Validating telomeres" << endl;
             }
-            bool telomeres_valid = validate_telomeres(graph, patched_intervals, 0.8, progress);
+            bool telomeres_valid = validate_telomeres(graph, patched_intervals, telo_threshold, progress);
             if (!telomeres_valid) {
                 telomere_validation_failed = true;
                 cout << "#Telomere validation failed: assembly does not meet telomere requirements" << endl;
@@ -295,7 +315,7 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> input_intervals;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
                                          patched_intervals, input_intervals,
-                                         default_sample, fail_threshold);
+                                         default_sample, fail_threshold, graft_recovery, graft_min_bp);
 
         // Also revert if telomere validation failed
         if (!reverted && telomere_validation_failed) {
@@ -331,7 +351,7 @@ int main(int argc, char** argv) {
         
 
         // log telomere information for contigs
-        log_contig_telomeres(graph, patched_intervals);
+        log_contig_telomeres(graph, patched_intervals, telo_threshold);
 
         // print the intervals to cout
         cout << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "

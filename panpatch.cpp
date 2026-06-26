@@ -1461,7 +1461,9 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
                       string default_sample,
-                      double threshold) {
+                      double threshold,
+                      double graft_recovery,
+                      int64_t graft_min_bp) {
 
     out_intervals.clear();    
     
@@ -1495,11 +1497,11 @@ bool revert_bad_patch(const PathHandleGraph* graph,
         to_revert = true;
     }
 
-    // reject a foreign interior graft that recapitulates almost none of the target
-    // sequence it replaced (k-mer recovery < 25% over a >=10kb replaced region) -- a repeat-region
-    // misjoin where the donor came from a different locus.  (Thresholds are provisional.)
+    // reject a foreign interior graft that recapitulates almost none of the target sequence it
+    // replaced -- a repeat-region misjoin where the donor came from a different locus
+    // (thresholds controlled by --graft-recovery / --graft-min-bp)
     string graft_detail;
-    if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], 25.0, 10000, graft_detail)) {
+    if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, graft_detail)) {
         cout << "#Reverting patch: " << graft_detail << " (likely repeat-region misjoin)" << endl;
         to_revert = true;
     }

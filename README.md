@@ -113,6 +113,25 @@ The output will be a list of contig intervals (BED format), for each haplotype, 
 
 You can write a FASTA file for the patched contigs with `--fasta FILE`.  Use `--exclude-bed FILE` to prevent patching in specific regions (see [Excluding Regions from Patching](#excluding-regions-from-patching)).
 
+### Options
+
+| option | description | default |
+|---|---|---|
+| `-r, --reference STR` | reference sample (required) | |
+| `-s, --sample STR` | sample to patch (first), then donors in priority order (required, repeatable) | |
+| `-f, --fasta FILE` | also write the patched assembly to FASTA | |
+| `-e, --default-sample STR` | use this sample's contig when a patch is rejected | |
+| `-b, --exclude-bed FILE` | target regions to leave untouched | |
+| `-w, --window N` | window size for haplotype-identity binning | 1000 |
+| `-t, --threads N` | threads | all |
+| `-T, --require-telomeres` | require a telomere at both ends and none internal | off |
+| `-M, --max-telomere-patch N` | max bp a telomere graft may replace | 500000 |
+| `--telomere-threshold F` | min hexamer density to call a telomere | 0.8 |
+| `--min-cover F` | revert a patch covering less than this fraction of the input length | 0.95 |
+| `--graft-recovery F` | revert a foreign interior graft sharing less than this % of the replaced k-mers | 25 |
+| `--graft-min-bp N` | apply `--graft-recovery` only when at least this many non-N bp are replaced | 10000 |
+| `-p, --progress` | print progress to stderr | |
+
 Note: small intervals should probably be filtered out, there's no such logic yet in `panpatch`.  The output of the above is
 
 ```
@@ -164,17 +183,19 @@ panpatch only emits a patched sequence when it passes a series of checks; otherw
 
 **Checks applied to every run**
 
-- **Patch too short.**  If the patched sequence is less than 95% of the combined length of the target sample's input contigs, it is discarded.
+- **Patch too short.**  If the patched sequence covers less than `--min-cover` (default 0.95) of the combined length of the target sample's input contigs, it is discarded.
   `#Reverting failed patch as it covers only <frac> of target`
-- **Repeat-region misjoin (interior splice).**  If a contig is used non-contiguously with another contig *of the same sample* spliced into the interior between its pieces, the patch is reverted.  This catches the failure mode where non-unique satellite / segmental-duplication anchors cause the target assembly's own spare fragments to be stitched into the middle of a contig that already spans the region — observed on acrocentric short arms and pericentromeres, where it collapses or scrambles megabase satellite arrays.  Legitimate operations are unaffected: a genuine gap-fill is bridged by a *foreign* donor (different sample), and an end-to-end scaffold uses each contig as a single contiguous block.
+- **Repeat-region misjoin — same-sample splice.**  If a contig is used non-contiguously with another contig *of the same sample* spliced into the interior between its pieces, the patch is reverted.  This catches the failure mode where non-unique satellite / segmental-duplication anchors cause the target assembly's own spare fragments to be stitched into the middle of a contig that already spans the region — observed on acrocentric short arms and pericentromeres, where it collapses or scrambles megabase satellite arrays.  Legitimate operations are unaffected: a genuine gap-fill is bridged by a *foreign* donor (different sample), and an end-to-end scaffold uses each contig as a single contiguous block.
   `#Reverting patch: contig <C> was used non-contiguously with same-sample fragment <F> spliced into its interior (likely repeat-region misjoin)`
+- **Repeat-region misjoin — foreign graft.**  When a *foreign* donor is spliced into a target contig's interior (a gap-fill/replacement), the graft must recapitulate the replaced sequence: if it shares less than `--graft-recovery` (default 25%) of that sequence's k-mers, the donor came from a different locus and the patch is reverted.  Only judged when at least `--graft-min-bp` (default 10000) of *non-N* sequence is replaced, so pure gap-fills (which replace N's) are never penalized.
+  `#Reverting patch: contig <C> interior (<N>bp) was replaced by a foreign graft sharing only <r>% of its k-mers (likely repeat-region misjoin)`
 - **Nothing to patch.**  If no foreign sequence was used and fewer than two of the target's own contigs were joined, there was no patch to keep:
   - with no gaps (no `N`s) the assembly is already complete — `#No patching is required (the sequence contains no gaps)`
   - with gaps but no donor that covered them — `#Reverting to input assembly because no patches from other assemblies were found`
 
 **Additional checks with `-T` (telomere requirements)**
 
-- **Telomere validation failed.**  After any telomere patching, the assembly must begin and end with a telomere, contain none internally, and be at least 2 kb long; otherwise it is reverted.
+- **Telomere validation failed.**  After any telomere patching, the assembly must begin and end with a telomere (hexamer density ≥ `--telomere-threshold`, default 0.8), contain none internally, and be at least 2 kb long; otherwise it is reverted.
   `#Telomere validation failed: assembly does not meet telomere requirements`
 - **Telomere patch over the cap.**  A missing terminal telomere is grafted from a donor only if the handoff replaces at most `--max-telomere-patch` (`-M`, default 500000) bp of target sequence; a larger graft is skipped, leaving the end to the validation check above.
   `#Telomere not patched (front|back): nearest donor handoff ... over the --max-telomere-patch cap ...`

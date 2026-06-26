@@ -139,7 +139,9 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,                      
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
                       string default_sample,
-                      double threshold);
+                      double threshold,
+                      double graft_recovery = 25.0,
+                      int64_t graft_min_bp = 10000);
 
 // make sure all intervals have the correct orientation (and assert fail if not)
 void check_intervals(const PathHandleGraph* graph,
