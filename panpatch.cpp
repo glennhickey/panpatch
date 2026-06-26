@@ -1340,8 +1340,13 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
 //    is not same-sample and is allowed;
 //  - end-to-end scaffolds and telomere patches use each contig contiguously (a single block), so
 //    there is no interior to splice into.
+// Restricted to the target sample's own contigs: the misjoin we care about is the target assembly's
+// spare fragments spliced into the target's main contig. (This also avoids a donor-vs-donor case --
+// e.g. one donor grafted at both telomeres with a same-donor gap-fill between -- reverting a valid
+// telomere-completed assembly.)
 static bool splices_same_sample_interior(const PathHandleGraph* graph,
                                          const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                         const string& target_sample,
                                          string& detail) {
     // first and last position at which each contig appears in the output (list) order; an interval
     // between those two positions that is on a different contig is "interior" material
@@ -1358,6 +1363,7 @@ static bool splices_same_sample_interior(const PathHandleGraph* graph,
         int lo = kv.second.first, hi = kv.second.second;
         if (hi <= lo) continue;  // contig used as a single contiguous block: no interior to splice
         string c_sample = graph->get_sample_name(kv.first);
+        if (c_sample != target_sample) continue;  // only judge the target's own contigs
         for (int j = lo + 1; j < hi; ++j) {
             if (idx_path[j] == kv.first) continue;            // another piece of the same contig
             if (graph->get_sample_name(idx_path[j]) == c_sample) {
@@ -1484,7 +1490,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     // segdup through ambiguous anchors).  this overrides an otherwise-accepted (even telomere-valid)
     // patch and reverts to the input contigs.
     string interior_detail;
-    if (splices_same_sample_interior(graph, in_intervals, interior_detail)) {
+    if (splices_same_sample_interior(graph, in_intervals, sample_names[0], interior_detail)) {
         cout << "#Reverting patch: " << interior_detail << " (likely repeat-region misjoin)" << endl;
         to_revert = true;
     }
