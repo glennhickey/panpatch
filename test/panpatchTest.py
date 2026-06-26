@@ -115,6 +115,16 @@ run('panpatch interior_splice.vg -r x -s frag > interior_splice.bed')
 run('diff interior_splice.bed interior_splice.bed.truth')
 temp_files += ['interior_splice.vg', 'interior_splice.bed']
 
+# Telomere-preservation guard: frag#1#main spans the chromosome but its 5' telomere is on an
+# off-reference node, while the same-sample fragment frag#1#tip carries the reference's 5' node.
+# Greedy threading therefore trims main's telomere-bearing 5' end to use tip there (the chr14
+# scaffold pattern). The guard must reject discarding a real telomere and revert to the inputs.
+# Big interior nodes keep the length check satisfied so the guard is the sole reason to revert.
+run('vg convert telo_preserve.gfa > telo_preserve.vg')
+run('panpatch telo_preserve.vg -r x -s frag -T > telo_preserve.bed')
+run('diff telo_preserve.bed telo_preserve.bed.truth')
+temp_files += ['telo_preserve.vg', 'telo_preserve.bed']
+
 # Telomere patching (folded into -T): when the target is missing a telomere, graft one in
 # from a foreign cover (donor) by handing off at the nearest shared node. Small graphs
 # exercise the splice paths. The non-deterministic-order #Contig lines are dropped, and the
