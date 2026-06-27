@@ -36,6 +36,14 @@ static const char* PATCH_TABLE_HEADER =
     "chrom\thap\ttype\ttarget\ttarget_bp\tdonor\tdonor_bp\treplaced_bp\tkmer%\tflankL%\tflankR%\tdecision\treason";
 static string fmt_pct(double v) { if (v < 0) return "."; ostringstream s; s << fixed << setprecision(1) << v; return s.str(); }
 static string fmt_bp(int64_t v) { return v < 0 ? string(".") : to_string(v); }
+// per-haplotype FASTA filename: insert ".hap<N>" before the extension of the -f base
+static string fasta_name(const string& base, int64_t hap) {
+    string tag = ".hap" + to_string(hap);
+    size_t slash = base.find_last_of('/');
+    size_t dot = base.find_last_of('.');
+    return (dot == string::npos || (slash != string::npos && dot < slash))
+           ? base + tag : base.substr(0, dot) + tag + base.substr(dot);
+}
 static void print_patch_row(ostream& o, const PatchRecord& pr) {
     o << pr.chrom << '\t' << pr.hap << '\t' << pr.type << '\t'
       << pr.target << '\t' << pr.target_bp << '\t'
@@ -271,9 +279,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    // haplotype -> accumulated FASTA; written to <FILE>.hap<N>.fa only after every graph succeeds (atomic)
-    map<int64_t, string> fasta_by_hap;
-    // accumulated BED intervals; written to --bed only after every graph succeeds (atomic)
+    // haplotype -> open temp FASTA stream (<FILE>.hap<N>.fa.tmp), streamed during the run and renamed to
+    // the final name only after every graph succeeds, so a failure never leaves a partial FASTA and the
+    // whole genome is not held in RAM
+    map<int64_t, ofstream> fasta_tmp;
+    // accumulated BED intervals (small); written to a temp file and renamed at the end alongside the FASTAs
     ostringstream bed_ss;
     set<string> seen_loci;   // to warn on duplicate reference loci across graphs (would collide in the output)
 
@@ -484,65 +494,63 @@ int main(int argc, char** argv) {
         }
         bed_ss << endl;
 
-        // accumulate the FASTA into the per-haplotype buffer; nothing is written to disk until every
-        // graph has been processed, so a failure never leaves a partial FASTA behind
+        // stream the FASTA to this haplotype's temp file (renamed to the final name only after every
+        // graph succeeds, so a failure leaves no partial FASTA -- without holding the genome in RAM)
         if (!out_fasta_filename.empty()) {
-            string& fa = fasta_by_hap[hap_tgts.first];
+            ofstream& fo = fasta_tmp[hap_tgts.first];
+            if (!fo.is_open()) {
+                string tmp = fasta_name(out_fasta_filename, hap_tgts.first) + ".tmp";
+                fo.open(tmp);
+                if (!fo) { cerr << "[panpatch] error: Unable to open fasta file for writing: " << tmp << endl; return 1; }
+            }
+            auto emit = [&](const string& name, const string& seq) {
+                fo << ">" << name << "\n";
+                for (size_t w = 0; w < seq.length(); w += fasta_width)
+                    fo << seq.substr(w, min(fasta_width, seq.length() - w)) << "\n";
+            };
             if (reverted) {
                 // either we reverted to the original contigs (write each out), or we made a single t2t patch
-                if (progress) {
-                    cerr << "[panpatch]: Buffering input contig(s) for FASTA" << endl;
-                }
                 for (const auto& interval : patched_intervals) {
                     path_handle_t interval_path = graph->get_path_handle_of_step(get<0>(interval));
-                    string contig_name = graph->get_path_name(interval_path);
-                    string sequence = intervals_to_sequence(graph, {interval});
-                    fa += ">" + contig_name + "\n";
-                    for (size_t written = 0; written < sequence.length(); written += fasta_width) {
-                        fa += sequence.substr(written, min(fasta_width, sequence.length() - written)) + "\n";
-                    }
+                    emit(graph->get_path_name(interval_path), intervals_to_sequence(graph, {interval}));
                 }
             } else {
-                if (progress) {
-                    cerr << "[panpatch]: Buffering patched contig for FASTA" << endl;
-                }
-                string contig_name = graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first);
-                string sequence = intervals_to_sequence(graph, patched_intervals);
-                fa += ">" + contig_name + "\n";
-                for (size_t written = 0; written < sequence.length(); written += fasta_width) {
-                    fa += sequence.substr(written, min(fasta_width, sequence.length() - written)) + "\n";
-                }
+                emit(graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first),
+                     intervals_to_sequence(graph, patched_intervals));
             }
         }
     }    // end haplotype loop
     }    // end per-graph loop
 
-    // atomic BED: now that every graph succeeded, write the accumulated intervals
+    // Every graph succeeded.  Finalize all outputs atomically: flush/close the temp files, then rename
+    // them to their final names at the very end (so a failure during the run leaves only *.tmp, never a
+    // partial final BED/FASTA, and the set of finals appears together).
     if (!out_bed_filename.empty()) {
-        ofstream ob(out_bed_filename);
-        if (!ob) { cerr << "[panpatch] error: Unable to open bed file for writing: " << out_bed_filename << endl; return 1; }
+        string bed_tmp = out_bed_filename + ".tmp";
+        ofstream ob(bed_tmp);
+        if (!ob) { cerr << "[panpatch] error: Unable to open bed file for writing: " << bed_tmp << endl; return 1; }
         ob << bed_ss.str();
         ob.flush();
-        if (!ob) { cerr << "[panpatch] error: failed to write bed file (disk full?): " << out_bed_filename << endl; return 1; }
+        if (!ob) { cerr << "[panpatch] error: failed to write bed file (disk full?): " << bed_tmp << endl; return 1; }
+    }
+    for (auto& kv : fasta_tmp) {
+        kv.second.flush();
+        if (!kv.second) { cerr << "[panpatch] error: failed to write fasta for hap " << kv.first << " (disk full?)" << endl; return 1; }
+        kv.second.close();
+    }
+    // rename temps -> finals
+    if (!out_bed_filename.empty()) {
+        if (rename((out_bed_filename + ".tmp").c_str(), out_bed_filename.c_str()) != 0) {
+            cerr << "[panpatch] error: failed to finalize bed file: " << out_bed_filename << endl; return 1;
+        }
         if (progress) cerr << "[panpatch]: Wrote " << out_bed_filename << endl;
     }
-
-    // atomic FASTA: now that every graph succeeded, write one file per haplotype (<FILE>.hap<N>.fa)
-    if (!out_fasta_filename.empty()) {
-        for (const auto& kv : fasta_by_hap) {
-            string tag = ".hap" + std::to_string(kv.first);
-            size_t slash = out_fasta_filename.find_last_of('/');
-            size_t dot = out_fasta_filename.find_last_of('.');
-            string fn = (dot == string::npos || (slash != string::npos && dot < slash))
-                        ? out_fasta_filename + tag
-                        : out_fasta_filename.substr(0, dot) + tag + out_fasta_filename.substr(dot);
-            ofstream of(fn);
-            if (!of) { cerr << "[panpatch] error: Unable to open fasta file for writing: " << fn << endl; return 1; }
-            of << kv.second;
-            of.flush();
-            if (!of) { cerr << "[panpatch] error: failed to write fasta file (disk full?): " << fn << endl; return 1; }
-            if (progress) cerr << "[panpatch]: Wrote " << fn << endl;
+    for (const auto& kv : fasta_tmp) {
+        string fn = fasta_name(out_fasta_filename, kv.first);
+        if (rename((fn + ".tmp").c_str(), fn.c_str()) != 0) {
+            cerr << "[panpatch] error: failed to finalize fasta file: " << fn << endl; return 1;
         }
+        if (progress) cerr << "[panpatch]: Wrote " << fn << endl;
     }
     return 0;
 }
