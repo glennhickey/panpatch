@@ -80,14 +80,17 @@ OpenMP is used for parallelization. Configure with:
 ## Usage Pattern
 
 ```bash
-panpatch <graph.vg> -r <reference> -s <sample-to-patch> -s <patch-source-1> -s <patch-source-2> ...
+panpatch <graph.vg> [graph2.vg ...] -r <reference> -s <sample-to-patch> -s <patch-source-1> -s <patch-source-2> ...
 ```
 
 Sample names come from minigraph-cactus seqfile (first column, without `.1/.2` haplotype suffixes). Priority is determined by order of `-s` flags.
 
+**Multiple graphs / output model:** one or more graphs may be given (e.g. `panpatch chr*.vg`), processed in lexicographic order with concatenated output. A pre-scan verifies the `-r`/`-s` samples exist in some input (typo → immediate error); graphs lacking the target are skipped. Three sinks: the per-contig **report → stdout** (streamed), **`--bed FILE`** → patched intervals (BED), **`-f/--fasta FILE`** → one FASTA per haplotype (`FILE.hap1.fa`, ...). BED and FASTA are buffered and written only after all graphs succeed (atomic — no partial output on failure). The hap/graph loops are serial (no OpenMP), which the in-memory buffering relies on.
+
 **Common Options:**
-- `-f/--fasta FILE`: Output patched assembly as FASTA
-- `-b/--exclude-bed FILE`: BED file of target assembly regions to exclude from patching (coordinates in first `-s` sample space)
+- `-f/--fasta FILE`: Output patched assembly as FASTA, one file per haplotype (`FILE.hap<N>.fa`); atomic
+- `--bed FILE`: Output the patched-assembly intervals (BED); atomic
+- `-b/--exclude-bed FILE`: BED file of target assembly regions to exclude from patching (coordinates in first `-s` sample space; input filter, distinct from `--bed`)
 - `-w/--window SIZE`: Window size for identity calculation (default: 1000)
 - `-e/--default-sample`: Fallback sample if patching fails
 - `-p/--progress`: Enable progress output

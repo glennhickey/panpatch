@@ -96,9 +96,9 @@ Linux binaries are available [here](https://github.com/glennhickey/panpatch/rele
 
 ## PanPatch Interface
 
-You specify the graph and sample names in order of priority (first column of the above input file, excluding `.1/2` suffixes)
+You specify the graph(s) and sample names in order of priority (first column of the above input file, excluding `.1/2` suffixes)
 ```
-panpatch <graph.vg> -r <reference sample> -s <sample to patch> -s <first sample to patch with> -s <second sample> etc.
+panpatch <graph.vg> [graph2.vg ...] -r <reference sample> -s <sample to patch> -s <first sample to patch with> -s <second sample> etc.
 ```
 
 For example
@@ -109,9 +109,15 @@ panpatch chr20.full.vg -r hs1 -s PAN028-verkko -s PAN028-hifiasm -s PAN028-duple
 
 will patch the `PAN028-verkko` assembly, using `PAN028-hifiasm` where possible, then `PAN028-duplex` as a backup.
 
-The output will be a list of contig intervals (BED format), for each haplotype, that span the reference chromosome from telomere to telomere, which form the patched T2T assembly.
+**Multiple graphs.**  You can pass more than one graph (e.g. `panpatch chr*.full.vg ...`) to patch a whole assembly in one run.  The inputs are processed in lexicographic order and their results concatenated.  Before any patching, panpatch scans every input to confirm the `-r`/`-s` samples exist (a typo fails immediately); a graph that legitimately lacks the target sample (e.g. `chrY` for a female) is skipped with a note.
 
-You can write a FASTA file for the patched contigs with `--fasta FILE`.  Use `--exclude-bed FILE` to prevent patching in specific regions (see [Excluding Regions from Patching](#excluding-regions-from-patching)).
+**Three outputs.**
+
+- **the report** — a per-contig summary of every patch and why it was accepted/rejected — is streamed to **stdout** as each contig is processed.
+- **`--bed FILE`** writes the patched-assembly contig intervals (BED format, spanning each reference chromosome telomere-to-telomere).
+- **`-f/--fasta FILE`** writes the patched sequence as **one FASTA per haplotype** (`FILE.hap1.fa`, `FILE.hap2.fa`, ...), giving the diploid split automatically.
+
+The BED and FASTA are written only **after every input graph has been processed successfully**, so an error never leaves a partial BED/FASTA behind.  Use `--exclude-bed FILE` to prevent patching in specific regions (see [Excluding Regions from Patching](#excluding-regions-from-patching)).
 
 ### Options
 
@@ -119,9 +125,10 @@ You can write a FASTA file for the patched contigs with `--fasta FILE`.  Use `--
 |---|---|---|
 | `-r, --reference STR` | reference sample (required) | |
 | `-s, --sample STR` | sample to patch (first), then donors in priority order (required, repeatable) | |
-| `-f, --fasta FILE` | also write the patched assembly to FASTA | |
+| `-f, --fasta FILE` | write the patched assembly to FASTA, one file per haplotype (`FILE.hap1.fa`, ...); written only on full success | |
+| `--bed FILE` | write the patched-assembly intervals (BED) to FILE; written only on full success | |
 | `-e, --default-sample STR` | use this sample's contig when a patch is rejected | |
-| `-b, --exclude-bed FILE` | target regions to leave untouched | |
+| `-b, --exclude-bed FILE` | target regions to leave untouched (input filter; distinct from `--bed`) | |
 | `-w, --window N` | window size for haplotype-identity binning | 1000 |
 | `-t, --threads N` | threads | all |
 | `-T, --require-telomeres` | require a telomere at both ends and none internal | off |
@@ -181,7 +188,7 @@ When an end lacks a telomere and panpatch cannot lift one over, it reports why w
 
 ## Why a patch is rejected (quality control)
 
-panpatch only emits a patched sequence when it passes a series of checks; otherwise it reverts to the target's input contig(s) — or to `--default-sample`'s contig if that option is given.  Every rejection prints a `#`-prefixed reason on the BED (stdout) stream so the outcome is auditable.
+panpatch only emits a patched sequence when it passes a series of checks; otherwise it reverts to the target's input contig(s) — or to `--default-sample`'s contig if that option is given.  Every rejection prints a `#`-prefixed reason on the report (stdout) stream so the outcome is auditable.
 
 **Checks applied to every run**
 
