@@ -113,7 +113,7 @@ will patch the `PAN028-verkko` assembly, using `PAN028-hifiasm` where possible, 
 
 **Three outputs.**
 
-- **the report** — a per-contig summary of every patch and why it was accepted/rejected — is streamed to **stdout** as each contig is processed.
+- **the report** — a TSV table, one row per candidate patch, streamed to **stdout** as each contig is processed.  Columns: `chrom hap type target:bp donor:bp replaced_bp kmer% flankL% flankR% decision reason`.  `type` is `telomere`, `gap-fill`, or `scaffold`; a 2-sided graft shows both its k-mer recovery (content) and flank anchoring (locus), a telomere shows its k-mer only (`.` = n/a); `decision` is `accepted` or `rejected`, with the `reason` column giving the rejection cause.  Per-contig telomere cap status (`#Contig ...`) is printed after the rows.  These numbers let you scrutinise borderline calls and retune the guards (`--graft-recovery`, `--min-flank`, ...) for your own assemblies.
 - **`--bed FILE`** writes the patched-assembly contig intervals (BED format, spanning each reference chromosome telomere-to-telomere).
 - **`-f/--fasta FILE`** writes the patched sequence as **one FASTA per haplotype** (`FILE.hap1.fa`, `FILE.hap2.fa`, ...), giving the diploid split automatically.
 
@@ -188,7 +188,7 @@ When an end lacks a telomere and panpatch cannot lift one over, it reports why w
 
 ## Why a patch is rejected (quality control)
 
-panpatch only emits a patched sequence when it passes a series of checks; otherwise it reverts to the target's input contig(s) — or to `--default-sample`'s contig if that option is given.  Every rejection prints a `#`-prefixed reason on the report (stdout) stream so the outcome is auditable.
+panpatch only emits a patched sequence when it passes a series of checks; otherwise it reverts to the target's input contig(s) — or to `--default-sample`'s contig if that option is given.  Every candidate patch appears in the stdout report table with `decision` = `accepted`/`rejected` and, when rejected, the cause in the `reason` column, so the outcome is auditable.
 
 **Checks applied to every run**
 
