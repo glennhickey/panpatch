@@ -1574,6 +1574,59 @@ static double flank_fraction(const PathHandleGraph* g, step_handle_t start, bool
     return walked ? 100.0 * shared / walked : 0.0;
 }
 
+// Record scaffold joins (where the patch spans more than one of the target's own contigs) as report
+// rows, and guard foreign-bridged joins.  A join [contig A | foreign run | contig B] is a foreign
+// bridge: the bridging donor must anchor to A's and B's own sequence over flank_window bp (>= min_flank
+// %) on both sides, else it is a wrong-locus misjoin and the whole scaffold must be reverted.  A join
+// where A and B are simply adjacent (no foreign bridge) is a plain target-to-target scaffold and is
+// recorded but not flank-guarded (telomere validation, if requested, gates it instead).  Returns true
+// (+ bridge_detail) if any foreign bridge fails the flank check, so the caller can revert.
+bool record_scaffolds(const PathHandleGraph* graph,
+                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                      const string& target_sample, double min_flank, int64_t flank_window,
+                      string& bridge_detail) {
+    bool bad = false;
+    unordered_set<path_handle_t> seen;   // target contigs already recorded (so [A|B|A] splices give one row)
+    int prev_tgt = -1;       // index of the most recent target-sample interval
+    int foreign_start = -1;  // index where a foreign run began since prev_tgt (-1 = none)
+    for (int i = 0; i < (int)intervals.size(); ++i) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(intervals[i]));
+        if (graph->get_sample_name(p) != target_sample) { if (foreign_start < 0) foreign_start = i; continue; }
+        if (prev_tgt >= 0) {
+            path_handle_t pc = graph->get_path_handle_of_step(get<0>(intervals[prev_tgt]));
+            if (p != pc && !seen.count(p)) {   // a join into a not-yet-seen target contig
+                PatchRecord pr; pr.type = "scaffold";
+                pr.target = graph->get_path_name(pc); pr.target_bp = path_bp(graph, pc);
+                if (foreign_start >= 0 && foreign_start < i) {
+                    // foreign-bridged: flank-check the bridge against both contigs' own sequence
+                    path_handle_t donor = graph->get_path_handle_of_step(get<0>(intervals[foreign_start]));
+                    unordered_set<nid_t> dn = path_node_set(graph, donor);
+                    double fl = flank_fraction(graph, get<1>(intervals[prev_tgt]), get<2>(intervals[prev_tgt]), dn, flank_window);
+                    double fr = flank_fraction(graph, get<0>(intervals[i]), !get<2>(intervals[i]), dn, flank_window);
+                    pr.donor = graph->get_path_name(donor); pr.donor_bp = path_bp(graph, donor);
+                    pr.flankL = fl; pr.flankR = fr;
+                    pr.accepted = (fl >= min_flank && fr >= min_flank);
+                    if (!pr.accepted) {
+                        ostringstream rs; rs << fixed << setprecision(1)
+                           << "foreign bridge anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
+                        pr.reason = rs.str();
+                        bridge_detail = "contig " + pr.target + " scaffolded to " + graph->get_path_name(p)
+                                      + " by foreign " + pr.donor + ": " + rs.str();
+                        bad = true;
+                    }
+                } else {   // adjacent target-to-target scaffold (no foreign bridge)
+                    pr.donor = graph->get_path_name(p); pr.donor_bp = path_bp(graph, p);
+                }
+                g_patch_records.push_back(pr);
+            }
+        }
+        seen.insert(p);
+        prev_tgt = i;
+        foreign_start = -1;
+    }
+    return bad;
+}
+
 // Partial-patch cleanup (run before revert_bad_patch).  For each foreign interior graft of the shape
 // [C-piece | foreign run | same-C-piece], excise it -- drop the foreign run and merge the two flanking
 // C-pieces, splicing C's own sequence back in -- when it is a repeat-region misjoin by either test:

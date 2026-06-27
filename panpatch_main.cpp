@@ -396,26 +396,10 @@ int main(int argc, char** argv) {
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, excised_nonN);
 
-        // a scaffold patch joins >1 of the target's own contigs (no foreign donor bridges them, so excise
-        // doesn't see it).  Record it here so the report shows it; accept/reject is finalized below.
-        {
-            vector<path_handle_t> tgt_in_patch;
-            for (const auto& iv : patched_intervals) {
-                path_handle_t pp = graph->get_path_handle_of_step(get<0>(iv));
-                if (graph->get_sample_name(pp) == sample_names[0] &&
-                    find(tgt_in_patch.begin(), tgt_in_patch.end(), pp) == tgt_in_patch.end()) {
-                    tgt_in_patch.push_back(pp);
-                }
-            }
-            if (tgt_in_patch.size() > 1) {
-                PatchRecord pr;
-                pr.type = "scaffold";
-                pr.target = graph->get_path_name(tgt_in_patch[0]); pr.target_bp = path_bp(graph, tgt_in_patch[0]);
-                pr.donor = graph->get_path_name(tgt_in_patch[1]); pr.donor_bp = path_bp(graph, tgt_in_patch[1]);
-                if (tgt_in_patch.size() > 2) pr.donor += " (+" + to_string(tgt_in_patch.size() - 2) + " more)";
-                g_patch_records.push_back(pr);
-            }
-        }
+        // record scaffold joins (patch spans >1 target contig) for the report, and guard foreign-bridged
+        // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.
+        string bridge_detail;
+        bool bad_bridge = record_scaffolds(graph, patched_intervals, sample_names[0], min_flank, flank_window, bridge_detail);
 
         // Check telomere validation if required
         bool telomere_validation_failed = false;
@@ -435,10 +419,10 @@ int main(int argc, char** argv) {
                                          patched_intervals, input_intervals,
                                          default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN, revert_reason);
 
-        // Also revert if telomere validation failed
-        if (!reverted && telomere_validation_failed) {
+        // Also revert if telomere validation failed or a foreign-bridged scaffold is a wrong-locus misjoin
+        if (!reverted && (telomere_validation_failed || bad_bridge)) {
             reverted = true;
-            revert_reason = "telomere validation failed";
+            revert_reason = bad_bridge ? bridge_detail : "telomere validation failed";
             // Generate input intervals if not already done
             if (input_intervals.empty()) {
                 if (!default_sample.empty()) {

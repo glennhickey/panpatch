@@ -133,6 +133,13 @@ extern std::vector<PatchRecord> g_patch_records;
 // total sequence length (bp) of a path
 int64_t path_bp(const PathHandleGraph* g, path_handle_t p);
 
+// record scaffold joins (patch spanning >1 target contig) as report rows; flank-guard foreign-bridged
+// joins.  returns true (+ bridge_detail) if any foreign bridge is a wrong-locus misjoin -> revert.
+bool record_scaffolds(const PathHandleGraph* graph,
+                      const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                      const std::string& target_sample, double min_flank, int64_t flank_window,
+                      std::string& bridge_detail);
+
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
