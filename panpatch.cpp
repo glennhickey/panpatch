@@ -1389,6 +1389,7 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
                                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                         const string& target_sample,
                                         double min_recovery, int64_t min_replaced,
+                                        const unordered_map<path_handle_t, int64_t>& excised_nonN,
                                         string& detail) {
     // step -> forward position index per contig used
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> path_index;
@@ -1439,6 +1440,10 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
                 if (oa < ob) removed += graph->get_sequence(h).substr(oa - na, ob - oa); }
         });
         int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
+        // count non-N already excised from this contig by the partial-patch pass toward the gate, so
+        // excising one graft doesn't drop the remainder below the threshold and disable this backstop
+        // for a second still-bad graft (a regression vs. the pre-excise lumped full-revert)
+        auto eit = excised_nonN.find(C); if (eit != excised_nonN.end()) nonN += eit->second;
         if (nonN < min_replaced) continue;   // too little real sequence replaced to judge reliably
         string added = intervals_to_sequence(graph, foreign);
         double rec = kmer_recovery(removed, added);
@@ -1569,7 +1574,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                 const string& target_sample,
                                 double min_recovery, int64_t min_replaced,
-                                double min_flank, int64_t flank_window) {
+                                double min_flank, int64_t flank_window,
+                                unordered_map<path_handle_t, int64_t>& excised_nonN) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -1646,6 +1652,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             cout << "#Interior graft excised: contig " << graph->get_path_name(C) << " interior ("
                  << removed.size() << "bp) -- " << ss.str()
                  << " (likely repeat-region misjoin) -- restored target sequence, kept other patches" << endl;
+            excised_nonN[C] += nonN;   // so the revert backstop's threshold still sees this replaced bp
             // the patch visits piece i then piece j; merging them spans the whole region in the patch's
             // own direction -- (get<0> of i, get<1> of j) works for forward and reverse alike.
             tuple<step_handle_t, step_handle_t, bool> merged =
@@ -1667,7 +1674,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       double threshold,
                       double graft_recovery,
                       int64_t graft_min_bp,
-                      double telo_threshold) {
+                      double telo_threshold,
+                      const unordered_map<path_handle_t, int64_t>& excised_nonN) {
 
     out_intervals.clear();    
     
@@ -1705,7 +1713,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     // replaced -- a repeat-region misjoin where the donor came from a different locus
     // (thresholds controlled by --graft-recovery / --graft-min-bp)
     string graft_detail;
-    if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, graft_detail)) {
+    if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, excised_nonN, graft_detail)) {
         cout << "#Reverting patch: " << graft_detail << " (likely repeat-region misjoin)" << endl;
         to_revert = true;
     }

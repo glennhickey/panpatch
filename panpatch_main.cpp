@@ -321,8 +321,11 @@ int main(int argc, char** argv) {
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
+        // excised_nonN carries the non-N bp removed per contig so revert_bad_patch's backstop threshold
+        // still accounts for them.
+        unordered_map<path_handle_t, int64_t> excised_nonN;
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
-                                   min_flank, flank_window);
+                                   min_flank, flank_window, excised_nonN);
 
         // Check telomere validation if required
         bool telomere_validation_failed = false;
@@ -340,7 +343,7 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> input_intervals;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
                                          patched_intervals, input_intervals,
-                                         default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold);
+                                         default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN);
 
         // Also revert if telomere validation failed
         if (!reverted && telomere_validation_failed) {

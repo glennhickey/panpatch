@@ -137,10 +137,11 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
 void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                 const string& target_sample,
-                                double min_recovery = 50.0,
-                                int64_t min_replaced = 10000,
-                                double min_flank = 50.0,
-                                int64_t flank_window = 500000);
+                                double min_recovery,
+                                int64_t min_replaced,
+                                double min_flank,
+                                int64_t flank_window,
+                                std::unordered_map<path_handle_t, int64_t>& excised_nonN);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,
@@ -153,7 +154,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       double threshold,
                       double graft_recovery = 50.0,
                       int64_t graft_min_bp = 10000,
-                      double telo_threshold = 0.8);
+                      double telo_threshold = 0.8,
+                      const std::unordered_map<path_handle_t, int64_t>& excised_nonN = {});
 
 // make sure all intervals have the correct orientation (and assert fail if not)
 void check_intervals(const PathHandleGraph* graph,
