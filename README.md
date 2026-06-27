@@ -34,15 +34,14 @@ Now make the graph.  The `--reference` and `--chrom-vg full` options are essenti
 cactus-pangenome ./js ./pan028.verkko1.seqfile --outName pan028-mc-verkko-1 --outDir pan028-mc-verkko-1 --logFile pan028-mc-verkko1.log --reference PAN028-verkko_1 --chrom-vg full --batchSystem slurm --consCores 65 --mgCores 64 --indexCores 64 --mapCores 16
 ```
 
-Now you can run `panpatch` individually on each `.vg` file in `pan028-mc-verkko-1/pan028-mc-verkko-1.chroms/` :
+Now run `panpatch` over all the chromosome graphs in `pan028-mc-verkko-1/pan028-mc-verkko-1.chroms/` in a single command:
 ```
 cd pan028-mc-verkko-1/pan028-mc-verkko-1.chroms/
-for CHR in *.vg; do \
-    panpatch "$CHR" -r PAN028-verkko_1 -p -s PAN028-verkko_1 -s PAN028-hifiasm -s PAN028-duplex -f "${CHR::-3}-patched.fa" > "${CHR::-3}-patched.bed" 2>"${CHR::-3}-patched.stderr" ; \
-done 
+panpatch *.full.vg -r PAN028-verkko_1 -p -s PAN028-verkko_1 -s PAN028-hifiasm -s PAN028-duplex \
+    --bed patched.bed -f patched.fa > patched.report 2> patched.stderr
 ```
 
-This will produce a FASTA file for each chromosome, as well as a BED file listing the patched regions.  If a chromosome couldn't be patched, the FASTA output will be the same as the input.  The `.stderr` files will contain additional information about what wasn't patched and why.
+This produces `patched.report` (the per-patch report table, on stdout), `patched.bed` (the patched intervals), and a per-haplotype FASTA (`patched.hap*.fa`).  A chromosome that couldn't be patched contributes its input contig(s) unchanged.  With `-p`, progress and the reasons anything wasn't patched go to stderr; the report table on stdout records the accept/reject decision for every candidate patch.
 
 Note that even though the `hifiasm` and `duplex` assemblies are diploid, only the most relevant haplotype for each will be selected for each chromosome.
 
@@ -70,15 +69,14 @@ The alignment is then done with
 cactus-pangenome ./js ./pan028.hs1.seqfile --outName pan028-mc-hs1 --outDir pan028-mc-hs1 --logFile pan028-mc-hs1.log --reference hs1 --consCores 65 --batchSystem slurm --mgCores 64 --indexCores 64 --mapCores 16 --chrom-vg full
 ```
 
-Now you can run `panpatch` individually on each `.vg` file in `pan028-mc-hs1/pan028-mc-hs1.chroms/` :
+Now run `panpatch` over all the chromosome graphs in `pan028-mc-hs1/pan028-mc-hs1.chroms/` in a single command:
 ```
 cd pan028-mc-hs1/pan028-mc-hs1.chroms/
-for CHR in *.vg; do \
-    panpatch "$CHR" -r hs1 -p -s PAN028-verkko -s PAN028-hifiasm -s PAN028-duplex -f "${CHR::-3}-patched.fa" > "${CHR::-3}-patched.bed" 2>"${CHR::-3}-patched.stderr" ; \
-done 
+panpatch *.full.vg -r hs1 -p -s PAN028-verkko -s PAN028-hifiasm -s PAN028-duplex \
+    --bed patched.bed -f patched.fa > patched.report 2> patched.stderr
 ```
 
-Note that unlike the above example, the output here will be diploid since both verkko haplotypes are getting patched. 
+Unlike the previous example the output here is diploid, since both verkko haplotypes are patched, so you get two FASTAs: `patched.hap1.fa` and `patched.hap2.fa` (plus the single `patched.bed` and `patched.report`).
 
 ## Building Panpatch
 
@@ -141,19 +139,24 @@ The BED and FASTA are written only **after every input graph has been processed 
 | `--flank-window N` | window (bp) each side of an N-gap fill over which flank anchoring is measured | 500000 |
 | `-p, --progress` | print progress to stderr | |
 
-Note: small intervals should probably be filtered out, there's no such logic yet in `panpatch`.  The output of the above is
+The report table on **stdout** has one row per candidate patch, e.g.:
 
 ```
-Patched assembly for PAN028-verkko#1:
-PAN028-hifiasm#2#h2tg000032l#0	2	27
-PAN028-verkko#1#haplotype1-0000008#0	0	64821530
-PAN028-verkko#1#haplotype1-0000043#0	11	673283
-PAN028-hifiasm#2#h2tg000052l#0	649569	683780
-PAN028-verkko#1#haplotype1-0000046#0	0	682357
-
-Patched assembly for PAN028-verkko#2:
-PAN028-verkko#2#haplotype2-0000073#0	1	65910828
+chrom  hap  type      target              target_bp  donor       donor_bp   replaced_bp  kmer%  flankL%  flankR%  decision  reason
+chr12  2    gap-fill  haplotype2-0000064  132285855  CM088792.1  133100000  1175239      98.4   100.0    100.0    accepted  .
+chr14  1    gap-fill  haplotype1-0000004  101799395  CM090131.1  101948476  197297       0.4    98.1     100.0    rejected  k-mer recovery 0.4% < 50.0% (repeat-region misjoin)
 ```
+
+The optional **`--bed`** file lists the contig intervals of the patched assembly (the path taken through the graph for each haplotype):
+
+```
+#Patched assembly on chr8 for PAN028-verkko#1:
+PAN028-hifiasm#2#h2tg000032l#0	2	27	+
+PAN028-verkko#1#haplotype1-0000008#0	0	64821530	+
+PAN028-verkko#1#haplotype1-0000043#0	11	673283	+
+```
+
+(Small intervals should probably be filtered out; there's no such logic yet in `panpatch`.)
 
 ## Excluding Regions from Patching
 
@@ -181,40 +184,42 @@ Without `-T`, telomeres are neither patched nor checked.
 
 Because the replaced tip is the *divergent* subtelomere (everything past the last shared node), a telomere patch is not a swap of equivalent sequence — it completes the arm with the donor's version.  Two controls make this safe and auditable:
 
-- `-M, --max-telomere-patch N` caps how much target sequence a single telomere patch may replace (default 500000).  The nearest shared handoff can be far in when the subtelomere is large (e.g. acrocentric arms); a patch that would replace more than `N` bp is skipped and the assembly is left to the normal revert.  The skip message reports the distance so you can opt in with a larger `-M`.
-- Each applied patch reports a line such as `#Telomere patch (front): donor=... replaced=118701bp grafted=218447bp kmer_recovery=0.9%`, where `kmer_recovery` is the fraction of the replaced target sequence's k-mers also found in the graft — a low value flags that the donor's subtelomere differs substantially from the target's.
+- `-M, --max-telomere-patch N` caps how much target sequence a single telomere patch may replace (default 500000).  The nearest shared handoff can be far in when the subtelomere is large (e.g. acrocentric arms); a patch that would replace more than `N` bp is skipped and the assembly is left to the normal revert.  The skipped patch appears as a rejected `telomere` row whose `reason` reports the distance, so you can opt in with a larger `-M`.
+- Each applied patch is a `telomere` row in the report table; its `kmer%` column is the fraction of the replaced target sequence's k-mers also found in the graft — a low value flags that the donor's subtelomere differs substantially from the target's (telomere patches are accepted regardless, since the subtelomere is expected to be divergent).
 
-When an end lacks a telomere and panpatch cannot lift one over, it reports why with a `#Telomere not patched (front|back) of <contig>: <reason>` line, distinguishing a simple gap (no telomere here and no donor reaches one) from an assembly issue beyond panpatch's scope (telomeric repeats present near the tip but not as a clean terminal telomere — i.e. sequence extending past the telomere, or a degraded/fragmented one).
+When an end lacks a telomere and panpatch cannot lift one over, it appears as a rejected `telomere` row whose `reason` distinguishes a simple gap (no telomere here and no donor reaches one) from an assembly issue beyond panpatch's scope (telomeric repeats present near the tip but not as a clean terminal telomere — i.e. sequence extending past the telomere, or a degraded/fragmented one).
 
 ## Why a patch is rejected (quality control)
 
 panpatch only emits a patched sequence when it passes a series of checks; otherwise it reverts to the target's input contig(s) — or to `--default-sample`'s contig if that option is given.  Every candidate patch appears in the stdout report table with `decision` = `accepted`/`rejected` and, when rejected, the cause in the `reason` column, so the outcome is auditable.
 
+In the report table each candidate patch is a row with `decision` = `accepted` or `rejected`; the rejection cause appears in the `reason` column (shown below for each check).  A whole-contig revert prefixes its rows with `contig reverted: `.
+
 **Checks applied to every run**
 
-- **Patch too short.**  If the patched sequence covers less than `--min-cover` (default 0.95) of the combined length of the target sample's input contigs, it is discarded.
-  `#Reverting failed patch as it covers only <frac> of target`
+- **Patch too short.**  If the patched sequence covers less than `--min-cover` (default 0.95) of the combined length of the target sample's input contigs, the whole contig is reverted.
+  reason: `contig reverted: patch covers only <frac> of target (< --min-cover)`
 - **Repeat-region misjoin — same-sample splice.**  If a contig is used non-contiguously with another contig *of the same sample* spliced into the interior between its pieces, the patch is reverted.  This catches the failure mode where non-unique satellite / segmental-duplication anchors cause the target assembly's own spare fragments to be stitched into the middle of a contig that already spans the region — observed on acrocentric short arms and pericentromeres, where it collapses or scrambles megabase satellite arrays.  Legitimate operations are unaffected: a genuine gap-fill is bridged by a *foreign* donor (different sample), and an end-to-end scaffold uses each contig as a single contiguous block.
-  `#Reverting patch: contig <C> was used non-contiguously with same-sample fragment <F> spliced into its interior (likely repeat-region misjoin)`
+  reason: `contig reverted: contig <C> was used non-contiguously with same-sample fragment <F> spliced into its interior (repeat-region misjoin)`
 - **Repeat-region misjoin — foreign graft.**  When a *foreign* donor is spliced into a target contig's interior, the graft is **excised** — dropped, with the target's own sequence spliced back in, while the rest of the patch (telomere completions, faithful fills) is *kept* — if it fails the test appropriate to its kind:
   - **content** (a replacement of real, non-N sequence, ≥ `--graft-min-bp` default 10000): it must recapitulate ≥ `--graft-recovery` (default 50%) of the replaced sequence's k-mers, else the donor came from a different locus/array;
   - **anchoring** (an N-gap fill, where there is no replaced sequence to recapitulate): the donor must stay homologous to the target's *own* sequence over `--flank-window` (default 500000) bp on **both** flanks, sharing ≥ `--min-flank` (default 50%); otherwise the fill sits on a structural disagreement (a wrong-locus join).
-  Each graft is judged independently, so a faithful graft is kept even when a sibling graft on the same contig is excised.  (Anything that doesn't fit the clean excision shape is still backstopped by a full revert.)
-  `#Interior graft excised: contig <C> interior (<N>bp) -- k-mer recovery <r>% | flank anchoring <l>%/<r>% (likely repeat-region misjoin) -- restored target sequence, kept other patches`
+  Each graft is judged independently, so a faithful graft is kept even when a sibling graft on the same contig is excised.  The excised graft shows as a rejected `gap-fill` row; the kept ones stay `accepted`.  (Anything that doesn't fit the clean excision shape is still backstopped by a full revert.)
+  reason: `k-mer recovery <r>% < 50% (repeat-region misjoin)`  or  `flank anchoring <l>%/<r>% < 50% (wrong-locus join)`
+- **Repeat-region misjoin — foreign bridge.**  When a foreign donor bridges *two* of the target's own contigs into a scaffold (`A | donor | B`), the bridging donor must anchor to both contigs' own sequence over `--flank-window` bp (≥ `--min-flank`); otherwise it is a wrong-locus join and the whole scaffold is reverted.
+  reason: `contig reverted: contig <A> scaffolded to <B> by foreign <D>: foreign bridge anchoring <l>%/<r>% < 50% (wrong-locus join)`
 - **Discarded telomere.**  A patch must not trim off a target contig's telomere-bearing end.  If a contig is capped at a natural end (telomere density ≥ `--telomere-threshold`) but the patch uses it starting — or ending — ≥20 kb past that cap, the contig was already complete there, so the join is redundant/erroneous and is reverted.  (A divergent reference's subtelomere can otherwise make panpatch trim a real telomere to bolt on an overlapping same-haplotype fragment, when the main contig alone was already T2T.)  Telomere patches (which trim a *capless* tip), gap-fills (interior only), and end-to-end scaffolds (each contig used in full) are unaffected.
-  `#Reverting patch: patch trimmed the telomere-bearing 5'|3' end of <C> ... (target was already capped there)`
-- **Nothing to patch.**  If no foreign sequence was used and fewer than two of the target's own contigs were joined, there was no patch to keep:
-  - with no gaps (no `N`s) the assembly is already complete — `#No patching is required (the sequence contains no gaps)`
-  - with gaps but no donor that covered them — `#Reverting to input assembly because no patches from other assemblies were found`
+  reason: `contig reverted: patch trimmed the telomere-bearing 5'|3' end of <C> ... (target was already capped)`
+- **Nothing to patch.**  If no foreign sequence was used and fewer than two of the target's own contigs were joined, there was no patch — so the contig produces *no* report row.  Its `#Contig <name> ... left=/right=` cap-status line (printed after the table) shows whether it is already complete (no `N` gaps) or simply had no donor that covered its gaps.
 
 **Additional checks with `-T` (telomere requirements)**
 
-- **Telomere validation failed.**  After any telomere patching, the assembly must begin and end with a telomere (hexamer density ≥ `--telomere-threshold`, default 0.8), contain none internally, and be at least 2 kb long; otherwise it is reverted.
-  `#Telomere validation failed: assembly does not meet telomere requirements`
-- **Telomere patch over the cap.**  A missing terminal telomere is grafted from a donor only if the handoff replaces at most `--max-telomere-patch` (`-M`, default 500000) bp of target sequence; a larger graft is skipped, leaving the end to the validation check above.
-  `#Telomere not patched (front|back): nearest donor handoff ... over the --max-telomere-patch cap ...`
-- **No telomere to lift over.**  If an end has no telomere and no donor can supply one (or the telomere is degraded/buried — beyond panpatch's scope), it is reported and left to the validation check.
-  `#Telomere not patched (front|back) of <contig>: <reason>`
+- **Telomere validation failed.**  After any telomere patching, the assembly must begin and end with a telomere (hexamer density ≥ `--telomere-threshold`, default 0.8), contain none internally, and be at least 2 kb long; otherwise the contig is reverted.
+  reason: `contig reverted: telomere validation failed`
+- **Telomere patch over the cap.**  A missing terminal telomere is grafted from a donor only if the handoff replaces at most `--max-telomere-patch` (`-M`, default 500000) bp of target sequence; a larger graft is skipped, shown as a rejected `telomere` row.
+  reason: `handoff would replace <N>bp, over --max-telomere-patch <M>`
+- **No telomere to lift over.**  If an end has no telomere and no donor can supply one (or the telomere is degraded/buried — beyond panpatch's scope), it is a rejected `telomere` row.
+  reason: `no telomere at this end and no donor reaches one`  (or a buried/degraded variant)
 
 **Options that limit what is patched**
 
@@ -223,7 +228,7 @@ panpatch only emits a patched sequence when it passes a series of checks; otherw
 
 ### Running time
 
-The above examples takes about 2 hours on the cluster to run `cactus-pangenome`.  Running `panpatch` on each chromosome in series takes about 2 minutes total on my desktop. 
+The above examples take about 2 hours on the cluster to run `cactus-pangenome`.  The single `panpatch` command over all the chromosome graphs takes about 2 minutes on my desktop. 
 
 ### Algorithm
 
