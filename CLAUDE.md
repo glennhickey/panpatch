@@ -110,6 +110,7 @@ Sample names come from minigraph-cactus seqfile (first column, without `.1/.2` h
 - Left-to-right search is simplistic; some cases could benefit from more general graph search
 - Nested patches not currently supported (requires target path restriction removal)
 - Patch quality control is heuristic — k-mer recovery, telomere preservation, and length sanity catch the common misjoins (see the README *Why a patch is rejected* section), but there is no full alignment-based scoring
+- The N-gap-fill flank-anchoring guard (`--min-flank`/`--flank-window`) tests donor↔target homology by *shared graph-node ids*. In fully-collapsed satellite/segdup, a misjoined donor and the target's own flank can traverse the *same* collapsed nodes, so the fraction reads ~100% and the test cannot tell a misjoin from a faithful same-locus fill — it is best-effort exactly in those repeat regions. This is why the per-patch k-mer and flank numbers are printed to stdout: so the user can scrutinize borderline calls and retune the guards for their own assemblies. Other known holes (multi-donor runs averaging a misjoin away; non-clean graft shapes bypassing excise) are likewise best-effort, not guaranteed
 
 ### Coordinate System
 - Intervals use half-open coordinates `[start, end)` except for the last interval which is closed
