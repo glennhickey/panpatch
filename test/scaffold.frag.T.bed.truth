@@ -1,4 +1,5 @@
-#Telomere validation failed: assembly does not meet telomere requirements
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason
+chrX	1	scaffold	frag#1#ctgA#0	41	frag#1#ctgB#0	41	.	.	.	.	rejected	contig reverted: telomere validation failed
 #Patched assembly on chrX for frag#1:
 frag#1#ctgB#0	0	41	+
 frag#1#ctgA#0	0	41	+

@@ -173,10 +173,11 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
                       string default_sample,
                       double threshold,
-                      double graft_recovery = 50.0,
-                      int64_t graft_min_bp = 10000,
-                      double telo_threshold = 0.8,
-                      const std::unordered_map<path_handle_t, int64_t>& excised_nonN = {});
+                      double graft_recovery,
+                      int64_t graft_min_bp,
+                      double telo_threshold,
+                      const std::unordered_map<path_handle_t, int64_t>& excised_nonN,
+                      std::string& revert_reason);
 
 // make sure all intervals have the correct orientation (and assert fail if not)
 void check_intervals(const PathHandleGraph* graph,

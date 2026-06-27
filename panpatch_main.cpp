@@ -9,6 +9,7 @@
 #include <set>
 #include <algorithm>
 #include <sstream>
+#include <iomanip>
 #include <unistd.h>
 #include <getopt.h>
 #include <omp.h>
@@ -29,6 +30,24 @@ using namespace bdsg;
 
 // from hal2vg/clip-vg.cpp
 static unique_ptr<PathHandleGraph> load_graph(istream& graph_stream);
+
+// the per-patch report table (TSV) printed to stdout
+static const char* PATCH_TABLE_HEADER =
+    "chrom\thap\ttype\ttarget\ttarget_bp\tdonor\tdonor_bp\treplaced_bp\tkmer%\tflankL%\tflankR%\tdecision\treason";
+static string fmt_pct(double v) { if (v < 0) return "."; ostringstream s; s << fixed << setprecision(1) << v; return s.str(); }
+static string fmt_bp(int64_t v) { return v < 0 ? string(".") : to_string(v); }
+static int64_t path_len(const PathHandleGraph* g, path_handle_t p) {
+    int64_t n = 0; g->for_each_step_in_path(p, [&](step_handle_t s) { n += g->get_length(g->get_handle_of_step(s)); }); return n;
+}
+static void print_patch_row(ostream& o, const PatchRecord& pr) {
+    o << pr.chrom << '\t' << pr.hap << '\t' << pr.type << '\t'
+      << pr.target << '\t' << pr.target_bp << '\t'
+      << pr.donor << '\t' << pr.donor_bp << '\t'
+      << fmt_bp(pr.replaced_bp) << '\t'
+      << fmt_pct(pr.kmer) << '\t' << fmt_pct(pr.flankL) << '\t' << fmt_pct(pr.flankR) << '\t'
+      << (pr.accepted ? "accepted" : "rejected") << '\t'
+      << (pr.reason.empty() ? "." : pr.reason) << '\n';
+}
 
 static const size_t fasta_width = 80;
 
@@ -260,6 +279,9 @@ int main(int argc, char** argv) {
     // accumulated BED intervals; written to --bed only after every graph succeeds (atomic)
     ostringstream bed_ss;
 
+    // the patch report streams to stdout: a TSV table, one row per candidate patch, per contig
+    cout << PATCH_TABLE_HEADER << "\n";
+
     for (const string& graph_filename : graph_filenames) {
         ifstream graph_stream(graph_filename);
         if (!graph_stream) {
@@ -323,6 +345,12 @@ int main(int argc, char** argv) {
     // we patch each target haplotype independently, greedily selecting other haplotypes
     // up front using this simple coverage calculation
     for (const auto& hap_tgts : target_paths) {
+        // collect this haplotype's patch records; suppress the legacy #-comment chatter that the deep
+        // functions still write to cout (the PatchRecord table below is the report now)
+        g_patch_records.clear();
+        ostringstream report_sink;
+        streambuf* saved_cout = cout.rdbuf(report_sink.rdbuf());
+
         // break out the best-covering haplotype of each other sample
         unordered_map<path_handle_t, double> coverage_map = compute_overlap_identity(graph, hap_tgts.second, other_paths, window_size);
         if (progress) {
@@ -369,6 +397,27 @@ int main(int argc, char** argv) {
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, excised_nonN);
 
+        // a scaffold patch joins >1 of the target's own contigs (no foreign donor bridges them, so excise
+        // doesn't see it).  Record it here so the report shows it; accept/reject is finalized below.
+        {
+            vector<path_handle_t> tgt_in_patch;
+            for (const auto& iv : patched_intervals) {
+                path_handle_t pp = graph->get_path_handle_of_step(get<0>(iv));
+                if (graph->get_sample_name(pp) == sample_names[0] &&
+                    find(tgt_in_patch.begin(), tgt_in_patch.end(), pp) == tgt_in_patch.end()) {
+                    tgt_in_patch.push_back(pp);
+                }
+            }
+            if (tgt_in_patch.size() > 1) {
+                PatchRecord pr;
+                pr.type = "scaffold";
+                pr.target = graph->get_path_name(tgt_in_patch[0]); pr.target_bp = path_len(graph, tgt_in_patch[0]);
+                pr.donor = graph->get_path_name(tgt_in_patch[1]); pr.donor_bp = path_len(graph, tgt_in_patch[1]);
+                if (tgt_in_patch.size() > 2) pr.donor += " (+" + to_string(tgt_in_patch.size() - 2) + " more)";
+                g_patch_records.push_back(pr);
+            }
+        }
+
         // Check telomere validation if required
         bool telomere_validation_failed = false;
         if (require_telomeres && !patched_intervals.empty()) {
@@ -383,13 +432,15 @@ int main(int argc, char** argv) {
         }
 
         vector<tuple<step_handle_t, step_handle_t, bool>> input_intervals;
+        string revert_reason;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
                                          patched_intervals, input_intervals,
-                                         default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN);
+                                         default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN, revert_reason);
 
         // Also revert if telomere validation failed
         if (!reverted && telomere_validation_failed) {
             reverted = true;
+            revert_reason = "telomere validation failed";
             // Generate input intervals if not already done
             if (input_intervals.empty()) {
                 if (!default_sample.empty()) {
@@ -418,7 +469,19 @@ int main(int argc, char** argv) {
         if (reverted) {
             patched_intervals = input_intervals;
         }
-        
+
+        // restore stdout and emit this haplotype's report rows.  Finalize each decision first: a whole-
+        // contig revert rejects every patch that had been provisionally accepted on it.
+        cout.rdbuf(saved_cout);
+        for (auto& pr : g_patch_records) {
+            pr.chrom = graph->get_locus_name(ref_path);
+            pr.hap = hap_tgts.first;
+            if (reverted && pr.accepted) {
+                pr.accepted = false;
+                pr.reason = revert_reason.empty() ? "contig reverted to input" : ("contig reverted: " + revert_reason);
+            }
+            print_patch_row(cout, pr);
+        }
 
         // log telomere information for contigs
         log_contig_telomeres(graph, patched_intervals, telo_threshold);

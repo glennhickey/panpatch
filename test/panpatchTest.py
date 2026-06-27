@@ -138,7 +138,7 @@ temp_files += ['telo_preserve.vg', 'telo_preserve.bed']
 #   telopatch_buried- target's back telomere is buried under terminal junk (verkko over-extension
 #                     pattern): must read as capless and get patched, where the old lenient
 #                     "any 500bp window" tip check would call it present and skip -> revert.
-telo_filter = 'grep -v "^#Contig" | sed -E "s/kmer_recovery=[0-9.]+%/kmer_recovery=NA/"'
+telo_filter = 'grep -v "^#Contig"'
 for base in ['telopatch', 'telopatch_rev', 'telopatch_front', 'telopatch_multi', 'telopatch_buried']:
     run('vg convert {0}.gfa > {0}.vg'.format(base))
     run('panpatch {0}.vg -r x -s frag -s donor -T --bed {0}.int -f {0}.fa 2>/dev/null | {1} > {0}.rep && cat {0}.rep {0}.int > {0}.patch.bed'.format(base, telo_filter))

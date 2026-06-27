@@ -1,3 +1,5 @@
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason
+chrX	1	gap-fill	longo#1#chrX#0	52	hifi#1#chrX#0	46	23	.	66.7	85.7	accepted	.
 #Patched assembly on chrX for longo#1:
 longo#1#chrX#0	37	52	-
 hifi#1#chrX#0	10	36	+

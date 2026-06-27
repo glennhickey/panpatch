@@ -1,4 +1,5 @@
-#Reverting patch: patch trimmed the telomere-bearing 5' end of frag#1#main#0 (used from 25002bp) (target was already capped there)
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason
+chrX	1	scaffold	frag#1#tip#0	11002	frag#1#main#0	636004	.	.	.	.	rejected	contig reverted: patch trimmed the telomere-bearing 5' end of frag#1#main#0 (used from 25002bp) (target was already capped)
 #Contig frag#1#main#0 len=636004bp left=YES(0.996) right=YES(0.990)
 #Contig frag#1#tip#0 len=11002bp left=YES(0.999) right=YES(0.819)
 #Patched assembly on chrX for frag#1:

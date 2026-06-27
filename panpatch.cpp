@@ -1729,9 +1729,10 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       double graft_recovery,
                       int64_t graft_min_bp,
                       double telo_threshold,
-                      const unordered_map<path_handle_t, int64_t>& excised_nonN) {
+                      const unordered_map<path_handle_t, int64_t>& excised_nonN,
+                      string& revert_reason) {
 
-    out_intervals.clear();    
+    out_intervals.clear();
     
     vector<path_handle_t> first_tgt_paths;
     int64_t tgt_length = 0;
@@ -1749,6 +1750,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     // we replace the patch with the input because it was too short
     bool to_revert = (double)patch_length / (double)tgt_length < threshold;
     if (to_revert) {
+        ostringstream rr; rr << "patch covers only " << ((double)patch_length / (double)tgt_length) << " of target (< --min-cover)";
+        revert_reason = rr.str();
         cout << "#Reverting failed patch as it covers only " << ((double)patch_length / (double)tgt_length)
              << " of target" << endl;
     }
@@ -1759,6 +1762,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     // patch and reverts to the input contigs.
     string interior_detail;
     if (splices_same_sample_interior(graph, in_intervals, sample_names[0], interior_detail)) {
+        revert_reason = interior_detail + " (repeat-region misjoin)";
         cout << "#Reverting patch: " << interior_detail << " (likely repeat-region misjoin)" << endl;
         to_revert = true;
     }
@@ -1768,6 +1772,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     // (thresholds controlled by --graft-recovery / --graft-min-bp)
     string graft_detail;
     if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, excised_nonN, graft_detail)) {
+        revert_reason = graft_detail + " (repeat-region misjoin)";
         cout << "#Reverting patch: " << graft_detail << " (likely repeat-region misjoin)" << endl;
         to_revert = true;
     }
@@ -1775,6 +1780,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     // telomere-preservation: a patch must not discard a telomere the target already had
     string telo_detail;
     if (discards_target_telomere(graph, in_intervals, sample_names[0], telo_threshold, telo_detail)) {
+        revert_reason = telo_detail + " (target was already capped)";
         cout << "#Reverting patch: " << telo_detail << " (target was already capped there)" << endl;
         to_revert = true;
     }
@@ -1818,8 +1824,10 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                 if (has_gaps) break;
             }
             if (!has_gaps) {
+                revert_reason = "no patching required (no gaps)";
                 cout << "#No patching is required (the sequence contains no gaps)" << endl;
             } else {
+                revert_reason = "no patches from other assemblies were found";
                 cout << "#Reverting to input assembly because no patches from other assemblies were found" << endl;
             }
         }
