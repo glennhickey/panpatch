@@ -36,9 +36,6 @@ static const char* PATCH_TABLE_HEADER =
     "chrom\thap\ttype\ttarget\ttarget_bp\tdonor\tdonor_bp\treplaced_bp\tkmer%\tflankL%\tflankR%\tdecision\treason";
 static string fmt_pct(double v) { if (v < 0) return "."; ostringstream s; s << fixed << setprecision(1) << v; return s.str(); }
 static string fmt_bp(int64_t v) { return v < 0 ? string(".") : to_string(v); }
-static int64_t path_len(const PathHandleGraph* g, path_handle_t p) {
-    int64_t n = 0; g->for_each_step_in_path(p, [&](step_handle_t s) { n += g->get_length(g->get_handle_of_step(s)); }); return n;
-}
 static void print_patch_row(ostream& o, const PatchRecord& pr) {
     o << pr.chrom << '\t' << pr.hap << '\t' << pr.type << '\t'
       << pr.target << '\t' << pr.target_bp << '\t'
@@ -86,10 +83,9 @@ int main(int argc, char** argv) {
     string out_fasta_filename;
     string out_bed_filename;
     string default_sample;
-    string bed_filename;
+    string exclude_bed_filename;
     int c;
     int64_t window_size = 1000;
-    bool ref_default = false;
     bool require_telomeres = false;
     int64_t max_telomere_patch = 500000;
     double fail_threshold = 0.95;
@@ -156,7 +152,7 @@ int main(int argc, char** argv) {
         {
             int num_threads = stoi(optarg);
             if (num_threads <= 0) {
-                cerr << "[vg2maf] error: Thread count (-t) set to " << num_threads << ", must set to a positive integer." << endl;
+                cerr << "[panpatch] error: Thread count (-t) set to " << num_threads << ", must set to a positive integer." << endl;
                 exit(1);
             }
             omp_set_num_threads(num_threads);
@@ -176,7 +172,7 @@ int main(int argc, char** argv) {
             break;
         }
         case 'b':
-            bed_filename = optarg;
+            exclude_bed_filename = optarg;
             break;
         case 1001:
             fail_threshold = atof(optarg);
@@ -238,10 +234,11 @@ int main(int argc, char** argv) {
         return 1;
     }
     sort(graph_filenames.begin(), graph_filenames.end());
+    graph_filenames.erase(unique(graph_filenames.begin(), graph_filenames.end()), graph_filenames.end());
 
     BedRegions bed_regions;
-    if (!bed_filename.empty()) {
-        bed_regions = parse_bed_file(bed_filename);
+    if (!exclude_bed_filename.empty()) {
+        bed_regions = parse_bed_file(exclude_bed_filename);
         if (progress) {
             int64_t total_regions = 0;
             for (const auto& br : bed_regions) total_regions += br.second.size();
@@ -278,6 +275,7 @@ int main(int argc, char** argv) {
     map<int64_t, string> fasta_by_hap;
     // accumulated BED intervals; written to --bed only after every graph succeeds (atomic)
     ostringstream bed_ss;
+    set<string> seen_loci;   // to warn on duplicate reference loci across graphs (would collide in the output)
 
     // the patch report streams to stdout: a TSV table, one row per candidate patch, per contig
     cout << PATCH_TABLE_HEADER << "\n";
@@ -313,6 +311,10 @@ int main(int argc, char** argv) {
         continue;
     }
     path_handle_t ref_path = ref_paths.front();
+    if (!seen_loci.insert(graph->get_locus_name(ref_path)).second) {
+        cerr << "[panpatch]: warning: reference locus " << graph->get_locus_name(ref_path)
+             << " appears in more than one input graph; output records will share names" << endl;
+    }
     if (progress) {
         cerr << "[panpatch]: Selected reference path " << graph->get_path_name(ref_path) << endl;
     }
@@ -345,11 +347,8 @@ int main(int argc, char** argv) {
     // we patch each target haplotype independently, greedily selecting other haplotypes
     // up front using this simple coverage calculation
     for (const auto& hap_tgts : target_paths) {
-        // collect this haplotype's patch records; suppress the legacy #-comment chatter that the deep
-        // functions still write to cout (the PatchRecord table below is the report now)
+        // collect this haplotype's patch records (the PatchRecord table below is the report)
         g_patch_records.clear();
-        ostringstream report_sink;
-        streambuf* saved_cout = cout.rdbuf(report_sink.rdbuf());
 
         // break out the best-covering haplotype of each other sample
         unordered_map<path_handle_t, double> coverage_map = compute_overlap_identity(graph, hap_tgts.second, other_paths, window_size);
@@ -411,8 +410,8 @@ int main(int argc, char** argv) {
             if (tgt_in_patch.size() > 1) {
                 PatchRecord pr;
                 pr.type = "scaffold";
-                pr.target = graph->get_path_name(tgt_in_patch[0]); pr.target_bp = path_len(graph, tgt_in_patch[0]);
-                pr.donor = graph->get_path_name(tgt_in_patch[1]); pr.donor_bp = path_len(graph, tgt_in_patch[1]);
+                pr.target = graph->get_path_name(tgt_in_patch[0]); pr.target_bp = path_bp(graph, tgt_in_patch[0]);
+                pr.donor = graph->get_path_name(tgt_in_patch[1]); pr.donor_bp = path_bp(graph, tgt_in_patch[1]);
                 if (tgt_in_patch.size() > 2) pr.donor += " (+" + to_string(tgt_in_patch.size() - 2) + " more)";
                 g_patch_records.push_back(pr);
             }
@@ -427,7 +426,6 @@ int main(int argc, char** argv) {
             bool telomeres_valid = validate_telomeres(graph, patched_intervals, telo_threshold, progress);
             if (!telomeres_valid) {
                 telomere_validation_failed = true;
-                cout << "#Telomere validation failed: assembly does not meet telomere requirements" << endl;
             }
         }
 
@@ -470,9 +468,8 @@ int main(int argc, char** argv) {
             patched_intervals = input_intervals;
         }
 
-        // restore stdout and emit this haplotype's report rows.  Finalize each decision first: a whole-
-        // contig revert rejects every patch that had been provisionally accepted on it.
-        cout.rdbuf(saved_cout);
+        // emit this haplotype's report rows.  Finalize each decision first: a whole-contig revert
+        // rejects every patch that had been provisionally accepted on it.
         for (auto& pr : g_patch_records) {
             pr.chrom = graph->get_locus_name(ref_path);
             pr.hap = hap_tgts.first;
@@ -541,6 +538,8 @@ int main(int argc, char** argv) {
         ofstream ob(out_bed_filename);
         if (!ob) { cerr << "[panpatch] error: Unable to open bed file for writing: " << out_bed_filename << endl; return 1; }
         ob << bed_ss.str();
+        ob.flush();
+        if (!ob) { cerr << "[panpatch] error: failed to write bed file (disk full?): " << out_bed_filename << endl; return 1; }
         if (progress) cerr << "[panpatch]: Wrote " << out_bed_filename << endl;
     }
 
@@ -556,6 +555,8 @@ int main(int argc, char** argv) {
             ofstream of(fn);
             if (!of) { cerr << "[panpatch] error: Unable to open fasta file for writing: " << fn << endl; return 1; }
             of << kv.second;
+            of.flush();
+            if (!of) { cerr << "[panpatch] error: failed to write fasta file (disk full?): " << fn << endl; return 1; }
             if (progress) cerr << "[panpatch]: Wrote " << fn << endl;
         }
     }

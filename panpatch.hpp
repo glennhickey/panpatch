@@ -130,6 +130,9 @@ struct PatchRecord {
 };
 extern std::vector<PatchRecord> g_patch_records;
 
+// total sequence length (bp) of a path
+int64_t path_bp(const PathHandleGraph* g, path_handle_t p);
+
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,

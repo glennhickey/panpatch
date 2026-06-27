@@ -16,7 +16,7 @@
 vector<PatchRecord> g_patch_records;
 
 // total sequence length (bp) of a path
-static int64_t path_bp(const PathHandleGraph* g, path_handle_t p) {
+int64_t path_bp(const PathHandleGraph* g, path_handle_t p) {
     int64_t n = 0;
     g->for_each_step_in_path(p, [&](step_handle_t s) { n += g->get_length(g->get_handle_of_step(s)); });
     return n;
@@ -1053,10 +1053,6 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
 
                 if (!within_cap) {
                     // nearest usable handoff is too far in: replacing this much target is risky, so skip
-                    cout << "#Telomere not patched (" << (is_front ? "front" : "back")
-                         << "): nearest donor handoff (" << graph->get_path_name(F) << ") would replace "
-                         << walked << "bp of target, over the --max-telomere-patch cap of " << max_handoff
-                         << "bp (rerun with -M " << walked << " to allow)" << endl;
                     {
                         PatchRecord pr;
                         pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
@@ -1074,14 +1070,6 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                     removed_seq += graph->get_sequence(asm_handle(s));
                 }
                 double recovery = kmer_recovery(removed_seq, added_seq);
-                // format the percentage in a local stream so we don't leave cout stuck in
-                // fixed/setprecision state (those manipulators are sticky and would corrupt
-                // later default-formatted floats, e.g. the revert ratio in revert_bad_patch)
-                ostringstream rec_ss;
-                rec_ss << fixed << setprecision(1) << recovery;
-                cout << "#Telomere patch (" << (is_front ? "front" : "back") << "): donor="
-                     << graph->get_path_name(F) << " replaced=" << walked << "bp grafted=" << ext
-                     << "bp kmer_recovery=" << rec_ss.str() << "%" << endl;
                 {
                     PatchRecord pr;
                     pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
@@ -1102,18 +1090,9 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
             s_i = inward(s_i);
         }
 
-        // capless end with no usable donor handoff in range: report why, so the user can see which
-        // ends were left as-is and whether it's a simple gap (no telomere anywhere, no donor) or an
-        // assembly issue beyond panpatch's scope (a telomere present but buried/degraded at the tip).
-        cout << "#Telomere not patched (" << (is_front ? "front" : "back") << ") of "
-             << graph->get_path_name(P) << ": ";
-        if (buried) {
-            cout << "telomeric repeats are present near the tip but not as a clean terminal telomere "
-                    "(sequence extending past the telomere, or a degraded/fragmented telomere) - "
-                    "beyond simple patching; no donor provides a clean telomere here" << endl;
-        } else {
-            cout << "no telomere at this end and no donor assembly reaches one near it" << endl;
-        }
+        // capless end with no usable donor handoff in range: record why, so the user can see which ends
+        // were left as-is and whether it's a simple gap (no telomere anywhere, no donor) or an assembly
+        // issue beyond panpatch's scope (a telomere present but buried/degraded at the tip).
         {
             PatchRecord pr;
             pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
@@ -1482,12 +1461,10 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
         if (nonN < min_replaced) continue;   // too little real sequence replaced to judge reliably
         string added = intervals_to_sequence(graph, foreign);
         double rec = kmer_recovery(removed, added);
-        ostringstream ss; ss << fixed << setprecision(1) << rec;
-        cout << "#Interior graft: contig " << graph->get_path_name(C) << " replaced=" << removed.size()
-             << "bp grafted=" << added.size() << "bp kmer_recovery=" << ss.str() << "%" << endl;
         if (rec < min_recovery) {
+            ostringstream rs; rs << fixed << setprecision(1) << rec;
             detail = "contig " + graph->get_path_name(C) + " interior (" + to_string(removed.size())
-                   + "bp) was replaced by a foreign graft sharing only " + ss.str() + "% of its k-mers";
+                   + "bp) was replaced by a foreign graft sharing only " + rs.str() + "% of its k-mers";
             return true;
         }
     }
@@ -1697,13 +1674,6 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 pr.reason = rs.str();
             }
             g_patch_records.push_back(pr);
-
-            ostringstream ss; ss << fixed << setprecision(1);
-            if (rec >= 0) ss << "k-mer recovery " << rec << "%";
-            else          ss << "flank anchoring " << fl << "%/" << fr << "%";
-            cout << "#Interior graft excised: contig " << graph->get_path_name(C) << " interior ("
-                 << removed.size() << "bp) -- " << ss.str()
-                 << " (likely repeat-region misjoin) -- restored target sequence, kept other patches" << endl;
             excised_nonN[C] += nonN;   // so the revert backstop's threshold still sees this replaced bp
             // the patch visits piece i then piece j; merging them spans the whole region in the patch's
             // own direction -- (get<0> of i, get<1> of j) works for forward and reverse alike.
@@ -1752,8 +1722,6 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     if (to_revert) {
         ostringstream rr; rr << "patch covers only " << ((double)patch_length / (double)tgt_length) << " of target (< --min-cover)";
         revert_reason = rr.str();
-        cout << "#Reverting failed patch as it covers only " << ((double)patch_length / (double)tgt_length)
-             << " of target" << endl;
     }
 
     // sanity guard: reject patches that replaced real interior sequence of a contig without an
@@ -1763,7 +1731,6 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     string interior_detail;
     if (splices_same_sample_interior(graph, in_intervals, sample_names[0], interior_detail)) {
         revert_reason = interior_detail + " (repeat-region misjoin)";
-        cout << "#Reverting patch: " << interior_detail << " (likely repeat-region misjoin)" << endl;
         to_revert = true;
     }
 
@@ -1773,7 +1740,6 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     string graft_detail;
     if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, excised_nonN, graft_detail)) {
         revert_reason = graft_detail + " (repeat-region misjoin)";
-        cout << "#Reverting patch: " << graft_detail << " (likely repeat-region misjoin)" << endl;
         to_revert = true;
     }
 
@@ -1781,7 +1747,6 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     string telo_detail;
     if (discards_target_telomere(graph, in_intervals, sample_names[0], telo_threshold, telo_detail)) {
         revert_reason = telo_detail + " (target was already capped)";
-        cout << "#Reverting patch: " << telo_detail << " (target was already capped there)" << endl;
         to_revert = true;
     }
 
@@ -1823,13 +1788,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                 });
                 if (has_gaps) break;
             }
-            if (!has_gaps) {
-                revert_reason = "no patching required (no gaps)";
-                cout << "#No patching is required (the sequence contains no gaps)" << endl;
-            } else {
-                revert_reason = "no patches from other assemblies were found";
-                cout << "#Reverting to input assembly because no patches from other assemblies were found" << endl;
-            }
+            revert_reason = has_gaps ? "no patches from other assemblies were found"
+                                     : "no patching required (no gaps)";
         }
     }
 
