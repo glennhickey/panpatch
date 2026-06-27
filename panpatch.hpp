@@ -132,12 +132,15 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool verbose = false);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
-// flanking target pieces), keeping the rest of the patch.  run before revert_bad_patch.
+// flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
+// (content) or low flank anchoring (locus).  run before revert_bad_patch.
 void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                 const string& target_sample,
                                 double min_recovery = 50.0,
-                                int64_t min_replaced = 10000);
+                                int64_t min_replaced = 10000,
+                                double min_flank = 50.0,
+                                int64_t flank_window = 500000);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,

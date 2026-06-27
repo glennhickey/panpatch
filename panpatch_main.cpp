@@ -46,6 +46,8 @@ void help(char** argv) {
        << "        --telomere-threshold F   Min telomere hexamer density to call a telomere (with -T) [0.8]" << endl
        << "        --graft-recovery FLOAT   Revert a foreign interior graft sharing less than this % of the replaced k-mers [50]" << endl
        << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
+       << "        --min-flank FLOAT        Revert a foreign interior graft anchored to less than this % of the target flank [50]" << endl
+       << "        --flank-window N         Window (bp) each side of a graft over which flank anchoring is measured [500000]" << endl
        << endl;
 }    
 
@@ -66,6 +68,8 @@ int main(int argc, char** argv) {
     double telo_threshold = 0.8;
     double graft_recovery = 50.0;
     int64_t graft_min_bp = 10000;
+    double min_flank = 50.0;
+    int64_t flank_window = 500000;
     optind = 1;
     while (true) {
 
@@ -85,6 +89,8 @@ int main(int argc, char** argv) {
             {"telomere-threshold", required_argument, 0, 1002},
             {"graft-recovery", required_argument, 0, 1003},
             {"graft-min-bp", required_argument, 0, 1004},
+            {"min-flank", required_argument, 0, 1005},
+            {"flank-window", required_argument, 0, 1006},
             {0, 0, 0, 0}
         };
 
@@ -154,6 +160,12 @@ int main(int argc, char** argv) {
             break;
         case 1004:
             graft_min_bp = strtoll(optarg, nullptr, 10);
+            break;
+        case 1005:
+            min_flank = atof(optarg);
+            break;
+        case 1006:
+            flank_window = strtoll(optarg, nullptr, 10);
             break;
         case 'h':
         case '?':
@@ -299,9 +311,10 @@ int main(int argc, char** argv) {
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
             require_telomeres, telo_threshold, max_telomere_patch, progress);
 
-        // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (restoring the
-        // target's own sequence) while keeping good sub-patches, instead of reverting the whole contig.
-        excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp);
+        // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
+        // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
+        excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
+                                   min_flank, flank_window);
 
         // Check telomere validation if required
         bool telomere_validation_failed = false;

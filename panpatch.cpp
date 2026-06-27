@@ -1524,17 +1524,48 @@ static bool discards_target_telomere(const PathHandleGraph* graph,
     return false;
 }
 
+// every node id a path traverses (used to test donor/target homology by shared nodes)
+static unordered_set<nid_t> path_node_set(const PathHandleGraph* g, path_handle_t p) {
+    unordered_set<nid_t> s;
+    g->for_each_step_in_path(p, [&](step_handle_t st) { s.insert(g->get_id(g->get_handle_of_step(st))); });
+    return s;
+}
+
+// Fraction (0-100) of a `window`-bp walk along a path -- starting at `start`, stepping `nxt` (next) or
+// !nxt (previous) -- that lands on nodes in `donor_nodes`.  Measuring a fraction over a *fixed window*
+// (not a contiguous run) is tolerant of SNP bubbles: a SNP splits one homologous node into a small
+// bubble, costing only a few bp.  A faithful fill stays homologous to the target's own flank (high
+// fraction); a repeat-region misjoin diverges into different sequence (low fraction).  Crucially this
+// works even for N-gap fills, where k-mer recovery cannot judge (the replaced region has no sequence).
+static double flank_fraction(const PathHandleGraph* g, step_handle_t start, bool nxt,
+                             const unordered_set<nid_t>& donor_nodes, int64_t window) {
+    int64_t walked = 0, shared = 0; step_handle_t s = start;
+    while (walked < window) {
+        handle_t h = g->get_handle_of_step(s);
+        int64_t use = min((int64_t)g->get_length(h), window - walked);
+        walked += use;
+        if (donor_nodes.count(g->get_id(h))) shared += use;
+        if (nxt ? !g->has_next_step(s) : !g->has_previous_step(s)) break;
+        s = nxt ? g->get_next_step(s) : g->get_previous_step(s);
+    }
+    return walked ? 100.0 * shared / walked : 0.0;
+}
+
 // Partial-patch cleanup (run before revert_bad_patch).  For each foreign interior graft of the shape
-// [C-piece | foreign run | same-C-piece] that replaces >= min_replaced non-N bp of contig C while
-// sharing < min_recovery of C's k-mers (a repeat-region misjoin), drop the foreign run and merge the
-// two flanking C-pieces -- splicing C's own sequence back in.  This keeps the rest of the patch
-// (telomere completions, faithful fills) instead of reverting the whole contig.  Only this clean shape
-// is excised; mostly-N fills (nothing to recapitulate) and anything unusual are left untouched, so
-// revert_bad_patch's interior-graft guard still backstops them with a full revert.
+// [C-piece | foreign run | same-C-piece], excise it -- drop the foreign run and merge the two flanking
+// C-pieces, splicing C's own sequence back in -- when it is a repeat-region misjoin by either test:
+//   * k-mer content: it replaced >= min_replaced non-N bp of C but shares < min_recovery of C's k-mers
+//     (the donor came from a different locus/array); or
+//   * flank anchoring: the donor is not homologous to C's own sequence over flank_window bp on one of
+//     the two flanks (< min_flank %), i.e. the graft is not anchored at the right locus.  This catches
+//     N-gap fills (which k-mer cannot judge) and any join that rides a long repeat before diverging.
+// The rest of the patch (telomere completions, faithful fills) is kept instead of reverting the whole
+// contig.  Anything that doesn't fit this clean shape is left to revert_bad_patch's full-revert guard.
 void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                 const string& target_sample,
-                                double min_recovery, int64_t min_replaced) {
+                                double min_recovery, int64_t min_replaced,
+                                double min_flank, int64_t flank_window) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -1577,14 +1608,31 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 handle_t h = graph->get_handle_of_step(s); int64_t l = graph->get_length(h);
                 int64_t oa = max(p, lo), ob = min(p + l, hi); if (oa < ob) removed += graph->get_sequence(h).substr(oa - p, ob - oa); p += l; });
             int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
-            if (nonN < min_replaced) continue;               // mostly-N fill: not k-mer-judged, keep it
-            vector<tuple<step_handle_t, step_handle_t, bool>> foreign(intervals.begin() + i + 1, intervals.begin() + j);
-            double rec = kmer_recovery(removed, intervals_to_sequence(graph, foreign));
-            if (rec >= min_recovery) continue;               // faithful fill: keep (interior_graft_low_recovery will log it)
-            ostringstream ss; ss << fixed << setprecision(1) << rec;
+
+            // Apply whichever test is authoritative for this graft:
+            //   * real (non-N) sequence was replaced -> k-mer recovery judges the CONTENT;
+            //   * mostly-N gap (nothing to recapitulate) -> flank anchoring judges the LOCUS, i.e. the
+            //     donor must stay homologous to C's own sequence over flank_window bp on both flanks.
+            double rec = -1.0, fl = -1.0, fr = -1.0; bool bad = false;
+            if (nonN >= min_replaced) {
+                vector<tuple<step_handle_t, step_handle_t, bool>> foreign(intervals.begin() + i + 1, intervals.begin() + j);
+                rec = kmer_recovery(removed, intervals_to_sequence(graph, foreign));
+                bad = (rec < min_recovery);
+            } else {
+                unordered_set<nid_t> dL = path_node_set(graph, graph->get_path_handle_of_step(get<0>(intervals[i + 1])));
+                fl = flank_fraction(graph, get<1>(intervals[i]), get<2>(intervals[i]), dL, flank_window);
+                unordered_set<nid_t> dR = path_node_set(graph, graph->get_path_handle_of_step(get<0>(intervals[j - 1])));
+                fr = flank_fraction(graph, get<0>(intervals[j]), !get<2>(intervals[j]), dR, flank_window);
+                bad = (fl < min_flank || fr < min_flank);
+            }
+            if (!bad) continue;                              // faithful (content) or anchored (locus) -- keep
+
+            ostringstream ss; ss << fixed << setprecision(1);
+            if (rec >= 0) ss << "k-mer recovery " << rec << "%";
+            else          ss << "flank anchoring " << fl << "%/" << fr << "%";
             cout << "#Interior graft excised: contig " << graph->get_path_name(C) << " interior ("
-                 << removed.size() << "bp) replaced by a foreign graft sharing only " << ss.str()
-                 << "% of its k-mers (likely repeat-region misjoin) -- restored target sequence, kept other patches" << endl;
+                 << removed.size() << "bp) -- " << ss.str()
+                 << " (likely repeat-region misjoin) -- restored target sequence, kept other patches" << endl;
             // the patch visits piece i then piece j; merging them spans the whole region in the patch's
             // own direction -- (get<0> of i, get<1> of j) works for forward and reverse alike.
             tuple<step_handle_t, step_handle_t, bool> merged =
