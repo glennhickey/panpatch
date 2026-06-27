@@ -316,8 +316,42 @@ int main(int argc, char** argv) {
         ref_paths.push_back(ref_path);
     });
     if (ref_paths.size() != 1) {
-        cerr << "[panpatch]: skipping " << graph_filename << ": expected exactly 1 reference path for "
-             << ref_sample << ", found " << ref_paths.size() << endl;
+        // No single reference path -- e.g. a chrOther / unplaced-contigs graph, which holds many of the
+        // target's own contigs rather than one chromosome.  Rather than drop it, pass the target sample's
+        // contigs through unchanged so every input contig still reaches the output.
+        cerr << "[panpatch]: warning: " << graph_filename << " has " << ref_paths.size()
+             << " reference paths for " << ref_sample << " (not a single chromosome); passing its "
+             << sample_names.front() << " contigs through unchanged" << endl;
+        string stem = graph_filename;
+        { size_t s = stem.find_last_of('/'); if (s != string::npos) stem = stem.substr(s + 1);
+          size_t d = stem.find(".full.vg"); if (d == string::npos) d = stem.rfind(".vg");
+          if (d != string::npos) stem = stem.substr(0, d); }
+        vector<path_handle_t> pass_paths;
+        graph->for_each_path_of_sample(sample_names.front(), [&](path_handle_t p) { pass_paths.push_back(p); });
+        for (path_handle_t p : pass_paths) {
+            int64_t hap = graph->get_haplotype(p);
+            vector<tuple<step_handle_t, step_handle_t, bool>> whole = { make_tuple(graph->path_begin(p), graph->path_back(p), false) };
+            if (!out_fasta_filename.empty()) {
+                ofstream& fo = fasta_tmp[hap];
+                if (!fo.is_open()) {
+                    string tmp = fasta_name(out_fasta_filename, hap) + ".tmp";
+                    fo.open(tmp);
+                    if (!fo) { cerr << "[panpatch] error: Unable to open fasta file for writing: " << tmp << endl; return 1; }
+                }
+                string seq = intervals_to_sequence(graph, whole);
+                fo << ">" << graph->get_path_name(p) << "\n";
+                for (size_t w = 0; w < seq.length(); w += fasta_width)
+                    fo << seq.substr(w, min(fasta_width, seq.length() - w)) << "\n";
+            }
+            bed_ss << "#Passthrough (unplaced) for " << graph->get_sample_name(p) << "#" << hap << ":" << endl;
+            print_intervals(graph, whole, bed_ss);
+            bed_ss << endl;
+            PatchRecord pr;
+            pr.chrom = stem; pr.hap = hap; pr.type = "passthrough";
+            pr.target = graph->get_path_name(p); pr.target_bp = path_bp(graph, p);
+            pr.accepted = true; pr.reason = "unplaced (no reference chromosome)";
+            print_patch_row(cout, pr);
+        }
         continue;
     }
     path_handle_t ref_path = ref_paths.front();

@@ -104,6 +104,14 @@ run('panpatch scaffold.vg -r x -s frag -T --bed scaffold.frag.T.bed.int > scaffo
 run('diff scaffold.frag.T.bed scaffold.frag.T.bed.truth')
 temp_files += ['scaffold.frag.T.bed']
 
+# Pass-through: a graph whose -r sample has more than one path (no single reference chromosome -- e.g. a
+# chrOther graph of unplaced contigs) is not skipped; its target contigs are emitted unchanged (a warning
+# on stderr, a "passthrough" row per contig, the contig in the FASTA). Here frag itself (ctgA + ctgB) is
+# the reference, so both contigs pass through.
+run('panpatch scaffold.vg -r frag -s frag -f scaffold.pass.fa --bed scaffold.pass.bed.int 2>/dev/null > scaffold.pass.bed.rep && cat scaffold.pass.bed.rep scaffold.pass.bed.int > scaffold.pass.bed')
+run('diff scaffold.pass.bed scaffold.pass.bed.truth')
+temp_files += ['scaffold.pass.bed', 'scaffold.pass.hap1.fa']
+
 # Interior-splice guard: the main contig (frag#1#main) spans the whole chromosome but diverges
 # in the middle (node 8); a same-sample fragment (frag#1#alt) matches the reference there. Greedy
 # threading splices alt into main's interior (main used non-contiguously with alt between), which

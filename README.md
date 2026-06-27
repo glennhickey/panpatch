@@ -107,7 +107,7 @@ panpatch chr20.full.vg -r hs1 -s PAN028-verkko -s PAN028-hifiasm -s PAN028-duple
 
 will patch the `PAN028-verkko` assembly, using `PAN028-hifiasm` where possible, then `PAN028-duplex` as a backup.
 
-**Multiple graphs.**  You can pass more than one graph (e.g. `panpatch chr*.full.vg ...`) to patch a whole assembly in one run.  The inputs are processed in lexicographic order and their results concatenated.  Before any patching, panpatch scans every input to confirm the `-r`/`-s` samples exist (a typo fails immediately); a graph that legitimately lacks the target sample (e.g. `chrY` for a female) is skipped with a note.
+**Multiple graphs.**  You can pass more than one graph (e.g. `panpatch chr*.full.vg ...`) to patch a whole assembly in one run.  The inputs are processed in lexicographic order and their results concatenated.  Before any patching, panpatch scans every input to confirm the `-r`/`-s` samples exist (a typo fails immediately); a graph that legitimately lacks the target sample (e.g. `chrY` for a female) is skipped with a note.  A graph with no single reference path — e.g. a `chrOther` graph holding many unplaced contigs rather than one chromosome — is **passed through**: its target contigs are emitted unchanged (as `passthrough` rows), so every input contig still reaches the output.
 
 **Three outputs.**
 
