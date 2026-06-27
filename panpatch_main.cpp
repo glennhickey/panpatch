@@ -189,7 +189,15 @@ int main(int argc, char** argv) {
     if (ref_sample.empty()) {
         cerr << "[panpatch] error: -r must be used to specify a reference sample" << endl;
         return 1;
-    }    
+    }
+    // validate numeric thresholds (a nonsensical value silently disables or inverts a guard)
+    if (fail_threshold < 0 || fail_threshold > 1) { cerr << "[panpatch] error: --min-cover must be in [0,1]" << endl; return 1; }
+    if (telo_threshold < 0 || telo_threshold > 1) { cerr << "[panpatch] error: --telomere-threshold must be in [0,1]" << endl; return 1; }
+    if (graft_recovery < 0 || graft_recovery > 100) { cerr << "[panpatch] error: --graft-recovery must be in [0,100]" << endl; return 1; }
+    if (min_flank < 0 || min_flank > 100) { cerr << "[panpatch] error: --min-flank must be in [0,100]" << endl; return 1; }
+    if (graft_min_bp < 0) { cerr << "[panpatch] error: --graft-min-bp must be >= 0" << endl; return 1; }
+    if (flank_window <= 0) { cerr << "[panpatch] error: --flank-window must be > 0" << endl; return 1; }
+    if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
     string graph_filename = argv[optind++];
     ifstream graph_stream(graph_filename);
     if (!graph_stream) {

@@ -1539,7 +1539,11 @@ static unordered_set<nid_t> path_node_set(const PathHandleGraph* g, path_handle_
 // works even for N-gap fills, where k-mer recovery cannot judge (the replaced region has no sequence).
 static double flank_fraction(const PathHandleGraph* g, step_handle_t start, bool nxt,
                              const unordered_set<nid_t>& donor_nodes, int64_t window) {
-    int64_t walked = 0, shared = 0; step_handle_t s = start;
+    // step off the shared junction node first: it is trivially shared by both paths and would inflate
+    // the fraction for short / contig-end flanks
+    if (nxt ? !g->has_next_step(start) : !g->has_previous_step(start)) return 0.0;
+    step_handle_t s = nxt ? g->get_next_step(start) : g->get_previous_step(start);
+    int64_t walked = 0, shared = 0;
     while (walked < window) {
         handle_t h = g->get_handle_of_step(s);
         int64_t use = min((int64_t)g->get_length(h), window - walked);
@@ -1599,9 +1603,18 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             };
             pair<int64_t, int64_t> rgi = fwd_range(intervals[i]), rgj = fwd_range(intervals[j]);
             int64_t lo, hi;
-            if (rgi.second <= rgj.first) { lo = rgi.second; hi = rgj.first; }   // piece i is the lower piece
-            else if (rgj.second <= rgi.first) { lo = rgj.second; hi = rgi.first; }  // piece j is the lower piece
-            else continue;                                  // overlapping ranges -- unexpected, leave it
+            // The merge below is (get<0> of i, get<1> of j, orient of i): valid ONLY when the patch
+            // visits the two pieces in their on-contig order for that orientation -- forward => piece i
+            // is lower, reverse => piece i is higher (piece j lower).  A transposed revisit (order vs.
+            // orientation disagree) would make intervals_to_sequence walk off the path end (crash), so
+            // bail and leave it to the full-revert backstop.
+            if (!get<2>(intervals[i])) {                     // forward: piece i must be the lower piece
+                if (rgi.second > rgj.first) continue;
+                lo = rgi.second; hi = rgj.first;
+            } else {                                         // reverse: piece j must be the lower piece
+                if (rgj.second > rgi.first) continue;
+                lo = rgj.second; hi = rgi.first;
+            }
             if (hi <= lo) continue;                          // pieces adjacent: nothing of C was replaced
             string removed; int64_t p = 0;
             graph->for_each_step_in_path(C, [&](step_handle_t s) {
