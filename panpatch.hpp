@@ -112,7 +112,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
 
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
-                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
+                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                     std::ostream& out = std::cout);
 
 // get the dna sequence of a list of intervals (ie the patched assembly for a contig)
 string intervals_to_sequence(const PathHandleGraph* graph,

@@ -23,42 +23,42 @@ run('echo ">chrX_hap_1" > tiny.longo.truth.fa')
 run('vg paths -x tiny.gfa -Q plongo -F | tail -1 >> tiny.longo.truth.fa')
 temp_files += ['tiny.x2.vg', 'tiny.vg', 'tiny.truth.fa', 'tiny.longo.truth.fa']
 
-run('panpatch tiny.vg -r x -s verkko -s hifi -f tiny.hifi.fa > tiny.hifi.bed')
+run('panpatch tiny.vg -r x -s verkko -s hifi -f tiny.hifi.fa --bed tiny.hifi.bed.int > tiny.hifi.bed.rep && cat tiny.hifi.bed.rep tiny.hifi.bed.int > tiny.hifi.bed')
 run('diff tiny.hifi.bed tiny.hifi.bed.truth')
 run('diff tiny.hifi.hap1.fa tiny.truth.fa')
 temp_files += ['tiny.hifi.bed', 'tiny.hifi.hap1.fa']
 
-run('panpatch tiny.x2.vg -r x -s verkko -s hifi -f tiny.x2.hifi.fa > tiny.x2.hifi.bed')
+run('panpatch tiny.x2.vg -r x -s verkko -s hifi -f tiny.x2.hifi.fa --bed tiny.x2.hifi.bed.int > tiny.x2.hifi.bed.rep && cat tiny.x2.hifi.bed.rep tiny.x2.hifi.bed.int > tiny.x2.hifi.bed')
 run('diff tiny.x2.hifi.bed tiny.x2.hifi.bed.truth')
 run('diff tiny.x2.hifi.hap1.fa tiny.truth.fa')
 temp_files += ['tiny.x2.hifi.bed', 'tiny.x2.hifi.hap1.fa']
 
-run('panpatch tiny.vg -r x -s verkko -s duplex -f tiny.duplex.fa > tiny.duplex.bed')
+run('panpatch tiny.vg -r x -s verkko -s duplex -f tiny.duplex.fa --bed tiny.duplex.bed.int > tiny.duplex.bed.rep && cat tiny.duplex.bed.rep tiny.duplex.bed.int > tiny.duplex.bed')
 run('diff tiny.duplex.bed tiny.duplex.bed.truth')
 run('diff tiny.duplex.hap1.fa tiny.truth.fa')
 temp_files += ['tiny.duplex.bed', 'tiny.duplex.hap1.fa']
 
-run('panpatch tiny.x2.vg -r x -s verkko -s duplex -f tiny.x2.duplex.fa > tiny.x2.duplex.bed')
+run('panpatch tiny.x2.vg -r x -s verkko -s duplex -f tiny.x2.duplex.fa --bed tiny.x2.duplex.bed.int > tiny.x2.duplex.bed.rep && cat tiny.x2.duplex.bed.rep tiny.x2.duplex.bed.int > tiny.x2.duplex.bed')
 run('diff tiny.x2.duplex.bed tiny.x2.duplex.bed.truth')
 run('diff tiny.x2.duplex.hap1.fa tiny.truth.fa')
 temp_files += ['tiny.x2.duplex.bed', 'tiny.x2.duplex.hap1.fa']
 
-run('panpatch tiny.vg -r x -s backo -s hifi -f tiny.backo.hifi.fa > tiny.backo.hifi.bed')
+run('panpatch tiny.vg -r x -s backo -s hifi -f tiny.backo.hifi.fa --bed tiny.backo.hifi.bed.int > tiny.backo.hifi.bed.rep && cat tiny.backo.hifi.bed.rep tiny.backo.hifi.bed.int > tiny.backo.hifi.bed')
 run('diff tiny.backo.hifi.bed tiny.backo.hifi.bed.truth')
 run('diff tiny.backo.hifi.hap1.fa tiny.truth.fa')
 temp_files += ['tiny.backo.hifi.bed', 'tiny.backo.hifi.hap1.fa']
 
-run('panpatch tiny.vg -r x -s backo -s duplex -f tiny.backo.duplex.fa > tiny.backo.duplex.bed')
+run('panpatch tiny.vg -r x -s backo -s duplex -f tiny.backo.duplex.fa --bed tiny.backo.duplex.bed.int > tiny.backo.duplex.bed.rep && cat tiny.backo.duplex.bed.rep tiny.backo.duplex.bed.int > tiny.backo.duplex.bed')
 run('diff tiny.backo.duplex.bed tiny.backo.duplex.bed.truth')
 run('diff tiny.backo.duplex.hap1.fa tiny.truth.fa')
 temp_files += ['tiny.backo.duplex.bed', 'tiny.backo.duplex.hap1.fa']
 
-run('panpatch tiny.vg -r x -s longo -s hifi -f tiny.longo.hifi.fa > tiny.longo.hifi.bed')
+run('panpatch tiny.vg -r x -s longo -s hifi -f tiny.longo.hifi.fa --bed tiny.longo.hifi.bed.int > tiny.longo.hifi.bed.rep && cat tiny.longo.hifi.bed.rep tiny.longo.hifi.bed.int > tiny.longo.hifi.bed')
 run('diff tiny.longo.hifi.bed tiny.longo.hifi.bed.truth')
 run('diff tiny.longo.hifi.hap1.fa tiny.longo.truth.fa')
 temp_files += ['tiny.longo.hifi.bed', 'tiny.longo.hifi.hap1.fa']
 
-run('panpatch tiny.vg -r x -s longo -s duplex -f tiny.longo.duplex.fa > tiny.longo.duplex.bed')
+run('panpatch tiny.vg -r x -s longo -s duplex -f tiny.longo.duplex.fa --bed tiny.longo.duplex.bed.int > tiny.longo.duplex.bed.rep && cat tiny.longo.duplex.bed.rep tiny.longo.duplex.bed.int > tiny.longo.duplex.bed')
 run('diff tiny.longo.duplex.bed tiny.longo.duplex.bed.truth')
 run('diff tiny.longo.duplex.hap1.fa tiny.longo.truth.fa')
 temp_files += ['tiny.longo.duplex.bed', 'tiny.longo.duplex.hap1.fa']
@@ -67,22 +67,22 @@ temp_files += ['tiny.longo.duplex.bed', 'tiny.longo.duplex.hap1.fa']
 run('vg convert telomere.gfa > telomere.vg')
 temp_files += ['telomere.vg']
 
-run('panpatch telomere.vg -r x -s verkko -s hifi > telomere.hifi.bed')
+run('panpatch telomere.vg -r x -s verkko -s hifi --bed telomere.hifi.bed.int > telomere.hifi.bed.rep && cat telomere.hifi.bed.rep telomere.hifi.bed.int > telomere.hifi.bed')
 run('diff telomere.hifi.bed telomere.hifi.bed.truth')
 temp_files += ['telomere.hifi.bed']
 
-run('panpatch telomere.vg -r x -s verkko -s noTelo -T > telomere.noTelo.T.bed')
+run('panpatch telomere.vg -r x -s verkko -s noTelo -T --bed telomere.noTelo.T.bed.int > telomere.noTelo.T.bed.rep && cat telomere.noTelo.T.bed.rep telomere.noTelo.T.bed.int > telomere.noTelo.T.bed')
 run('diff telomere.noTelo.T.bed telomere.noTelo.T.bed.truth')
 temp_files += ['telomere.noTelo.T.bed']
 
 # No-gaps message test: hifi has no N bases, so should get friendly message
-run('panpatch tiny.vg -r x -s hifi -s verkko > tiny.nogaps.bed')
+run('panpatch tiny.vg -r x -s hifi -s verkko --bed tiny.nogaps.bed.int > tiny.nogaps.bed.rep && cat tiny.nogaps.bed.rep tiny.nogaps.bed.int > tiny.nogaps.bed')
 run('diff tiny.nogaps.bed tiny.nogaps.bed.truth')
 temp_files += ['tiny.nogaps.bed']
 
 # BED exclusion test: exclude the gap region so it doesn't get patched
 run('printf "verkko#1#chrX#0\\t12\\t36\\n" > tiny.exclude.bed')
-run('panpatch tiny.vg -r x -s verkko -s hifi -b tiny.exclude.bed > tiny.exclude.bed.out')
+run('panpatch tiny.vg -r x -s verkko -s hifi -b tiny.exclude.bed --bed tiny.exclude.bed.out.int > tiny.exclude.bed.out.rep && cat tiny.exclude.bed.out.rep tiny.exclude.bed.out.int > tiny.exclude.bed.out')
 run('diff tiny.exclude.bed.out tiny.exclude.bed.truth')
 temp_files += ['tiny.exclude.bed', 'tiny.exclude.bed.out']
 
@@ -94,13 +94,13 @@ run('vg convert scaffold.gfa > scaffold.vg')
 temp_files += ['scaffold.vg']
 
 # without -T: ctgA and ctgB are stitched into a single chrX_hap_1 record
-run('panpatch scaffold.vg -r x -s frag -f scaffold.frag.fa > scaffold.frag.bed')
+run('panpatch scaffold.vg -r x -s frag -f scaffold.frag.fa --bed scaffold.frag.bed.int > scaffold.frag.bed.rep && cat scaffold.frag.bed.rep scaffold.frag.bed.int > scaffold.frag.bed')
 run('diff scaffold.frag.bed scaffold.frag.bed.truth')
 run('diff scaffold.frag.hap1.fa scaffold.frag.truth.fa')
 temp_files += ['scaffold.frag.bed', 'scaffold.frag.hap1.fa']
 
 # with -T: the join has no telomeres, so it must fail validation and revert to the inputs
-run('panpatch scaffold.vg -r x -s frag -T > scaffold.frag.T.bed')
+run('panpatch scaffold.vg -r x -s frag -T --bed scaffold.frag.T.bed.int > scaffold.frag.T.bed.rep && cat scaffold.frag.T.bed.rep scaffold.frag.T.bed.int > scaffold.frag.T.bed')
 run('diff scaffold.frag.T.bed scaffold.frag.T.bed.truth')
 temp_files += ['scaffold.frag.T.bed']
 
@@ -111,7 +111,7 @@ temp_files += ['scaffold.frag.T.bed']
 # contigs. The big flanks keep the length check satisfied so the guard is the sole reason to revert
 # (contrast with the legit cases above: end-to-end scaffolds and foreign-donor gap-fills are kept).
 run('vg convert interior_splice.gfa > interior_splice.vg')
-run('panpatch interior_splice.vg -r x -s frag > interior_splice.bed')
+run('panpatch interior_splice.vg -r x -s frag --bed interior_splice.bed.int > interior_splice.bed.rep && cat interior_splice.bed.rep interior_splice.bed.int > interior_splice.bed')
 run('diff interior_splice.bed interior_splice.bed.truth')
 temp_files += ['interior_splice.vg', 'interior_splice.bed']
 
@@ -121,7 +121,7 @@ temp_files += ['interior_splice.vg', 'interior_splice.bed']
 # scaffold pattern). The guard must reject discarding a real telomere and revert to the inputs.
 # Big interior nodes keep the length check satisfied so the guard is the sole reason to revert.
 run('vg convert telo_preserve.gfa > telo_preserve.vg')
-run('panpatch telo_preserve.vg -r x -s frag -T > telo_preserve.bed')
+run('panpatch telo_preserve.vg -r x -s frag -T --bed telo_preserve.bed.int > telo_preserve.bed.rep && cat telo_preserve.bed.rep telo_preserve.bed.int > telo_preserve.bed')
 run('diff telo_preserve.bed telo_preserve.bed.truth')
 temp_files += ['telo_preserve.vg', 'telo_preserve.bed']
 
@@ -141,12 +141,13 @@ temp_files += ['telo_preserve.vg', 'telo_preserve.bed']
 telo_filter = 'grep -v "^#Contig" | sed -E "s/kmer_recovery=[0-9.]+%/kmer_recovery=NA/"'
 for base in ['telopatch', 'telopatch_rev', 'telopatch_front', 'telopatch_multi', 'telopatch_buried']:
     run('vg convert {0}.gfa > {0}.vg'.format(base))
-    run('panpatch {0}.vg -r x -s frag -s donor -T -f {0}.fa 2>/dev/null | {1} > {0}.patch.bed'.format(base, telo_filter))
+    run('panpatch {0}.vg -r x -s frag -s donor -T --bed {0}.int -f {0}.fa 2>/dev/null | {1} > {0}.rep && cat {0}.rep {0}.int > {0}.patch.bed'.format(base, telo_filter))
     run('diff {0}.patch.bed {0}.bed.truth'.format(base))
     run('diff {0}.hap1.fa {0}.truth.fa'.format(base))
     temp_files += ['{0}.vg'.format(base), '{0}.patch.bed'.format(base), '{0}.hap1.fa'.format(base)]
 
 
+temp_files += [f for f in os.listdir('.') if f.endswith('.int') or f.endswith('.rep')]
 for f in temp_files:
     if os.path.isfile(f):
         os.remove(f)

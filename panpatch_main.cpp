@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 #include <algorithm>
+#include <sstream>
 #include <unistd.h>
 #include <getopt.h>
 #include <omp.h>
@@ -41,6 +42,8 @@ void help(char** argv) {
        << "    -s, --sample STRING          Input sample. Multiple allowed. Order specifies priority" << endl
        << "    -f, --fasta FILE             Output the patched assembly to FASTA, one file per haplotype" << endl
        << "                                 (FILE.hap1.fa, FILE.hap2.fa, ...); written only on full success" << endl
+       << "        --bed FILE               Write the patched-assembly intervals (BED) to FILE (default: none);" << endl
+       << "                                 written only on full success. The report still goes to stdout" << endl
        << "    -w, --window SIZE            Size of window used for computing identity for haplotype matching [1000]" << endl
        << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
@@ -62,6 +65,7 @@ int main(int argc, char** argv) {
     vector<string> sample_names;
     bool progress = false;
     string out_fasta_filename;
+    string out_bed_filename;
     string default_sample;
     string bed_filename;
     int c;
@@ -96,6 +100,7 @@ int main(int argc, char** argv) {
             {"graft-min-bp", required_argument, 0, 1004},
             {"min-flank", required_argument, 0, 1005},
             {"flank-window", required_argument, 0, 1006},
+            {"bed", required_argument, 0, 1007},
             {0, 0, 0, 0}
         };
 
@@ -171,6 +176,9 @@ int main(int argc, char** argv) {
             break;
         case 1006:
             flank_window = strtoll(optarg, nullptr, 10);
+            break;
+        case 1007:
+            out_bed_filename = optarg;
             break;
         case 'h':
         case '?':
@@ -249,6 +257,8 @@ int main(int argc, char** argv) {
 
     // haplotype -> accumulated FASTA; written to <FILE>.hap<N>.fa only after every graph succeeds (atomic)
     map<int64_t, string> fasta_by_hap;
+    // accumulated BED intervals; written to --bed only after every graph succeeds (atomic)
+    ostringstream bed_ss;
 
     for (const string& graph_filename : graph_filenames) {
         ifstream graph_stream(graph_filename);
@@ -413,8 +423,8 @@ int main(int argc, char** argv) {
         // log telomere information for contigs
         log_contig_telomeres(graph, patched_intervals, telo_threshold);
 
-        // print the intervals to cout
-        cout << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "
+        // emit the patched-assembly intervals to the BED buffer (the report comments stay on stdout)
+        bed_ss << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "
              << graph->get_sample_name(hap_tgts.second.front()) << "#"
              << graph->get_haplotype(hap_tgts.second.front()) << ":" << endl;
         if (reverted) {
@@ -423,12 +433,12 @@ int main(int argc, char** argv) {
             // for a single-contig list means the full contig (BED then matches the FASTA / #Contig
             // lengths instead of dropping each non-last contig's final node)
             for (const auto& interval : patched_intervals) {
-                print_intervals(graph, {interval});
+                print_intervals(graph, {interval}, bed_ss);
             }
         } else {
-            print_intervals(graph, patched_intervals);
+            print_intervals(graph, patched_intervals, bed_ss);
         }
-        cout << endl;
+        bed_ss << endl;
 
         // accumulate the FASTA into the per-haplotype buffer; nothing is written to disk until every
         // graph has been processed, so a failure never leaves a partial FASTA behind
@@ -462,6 +472,14 @@ int main(int argc, char** argv) {
         }
     }    // end haplotype loop
     }    // end per-graph loop
+
+    // atomic BED: now that every graph succeeded, write the accumulated intervals
+    if (!out_bed_filename.empty()) {
+        ofstream ob(out_bed_filename);
+        if (!ob) { cerr << "[panpatch] error: Unable to open bed file for writing: " << out_bed_filename << endl; return 1; }
+        ob << bed_ss.str();
+        if (progress) cerr << "[panpatch]: Wrote " << out_bed_filename << endl;
+    }
 
     // atomic FASTA: now that every graph succeeded, write one file per haplotype (<FILE>.hap<N>.fa)
     if (!out_fasta_filename.empty()) {
