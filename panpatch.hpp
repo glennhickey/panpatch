@@ -110,6 +110,26 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
                                                                       int64_t max_handoff=500000,
                                                                       bool verbose=false);
 
+// one row of the patch report: a candidate patch (telomere completion, gap-fill, or scaffold join),
+// with its similarity metrics and the accept/reject decision.  Accumulated in g_patch_records during a
+// run and printed as a TSV table to stdout by main.  chrom/hap are stamped by main; metrics default to
+// -1 ("n/a", e.g. flanks for a 1-sided telomere patch, or k-mer for a mostly-N gap fill).
+struct PatchRecord {
+    std::string chrom;
+    int64_t hap = 0;
+    std::string type;            // "telomere" | "gap-fill" | "scaffold"
+    std::string target;          // target contig name
+    int64_t target_bp = 0;
+    std::string donor = ".";     // donor contig name
+    int64_t donor_bp = 0;
+    int64_t replaced_bp = -1;    // target bp replaced/trimmed
+    double kmer = -1;            // k-mer recovery %
+    double flankL = -1, flankR = -1;  // flank anchoring % on each side
+    bool accepted = true;
+    std::string reason;          // why rejected ("" if accepted)
+};
+extern std::vector<PatchRecord> g_patch_records;
+
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,

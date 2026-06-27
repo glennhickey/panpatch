@@ -11,6 +11,17 @@
 //#define debug
 //#define ultra_debug
 
+// the patch report accumulated during a run (declared in panpatch.hpp); main stamps chrom/hap,
+// finalizes the accept/reject decision, prints it as a table, and clears it after each haplotype.
+vector<PatchRecord> g_patch_records;
+
+// total sequence length (bp) of a path
+static int64_t path_bp(const PathHandleGraph* g, path_handle_t p) {
+    int64_t n = 0;
+    g->for_each_step_in_path(p, [&](step_handle_t s) { n += g->get_length(g->get_handle_of_step(s)); });
+    return n;
+}
+
 unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGraph* graph,
                                                               const vector<path_handle_t>& tgt_paths,
                                                               const vector<path_handle_t>& other_paths,
@@ -1046,6 +1057,14 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                          << "): nearest donor handoff (" << graph->get_path_name(F) << ") would replace "
                          << walked << "bp of target, over the --max-telomere-patch cap of " << max_handoff
                          << "bp (rerun with -M " << walked << " to allow)" << endl;
+                    {
+                        PatchRecord pr;
+                        pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
+                        pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
+                        pr.replaced_bp = walked; pr.accepted = false;
+                        pr.reason = "handoff would replace " + std::to_string(walked) + "bp, over --max-telomere-patch " + std::to_string(max_handoff);
+                        g_patch_records.push_back(pr);
+                    }
                     return false;
                 }
 
@@ -1063,6 +1082,13 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 cout << "#Telomere patch (" << (is_front ? "front" : "back") << "): donor="
                      << graph->get_path_name(F) << " replaced=" << walked << "bp grafted=" << ext
                      << "bp kmer_recovery=" << rec_ss.str() << "%" << endl;
+                {
+                    PatchRecord pr;
+                    pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
+                    pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
+                    pr.replaced_bp = walked; pr.kmer = recovery;
+                    g_patch_records.push_back(pr);
+                }
 
                 out_s_i = s_i;
                 out_fi  = is_front ? make_tuple(f_last, s_F, f_forward)
@@ -1087,6 +1113,14 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                     "beyond simple patching; no donor provides a clean telomere here" << endl;
         } else {
             cout << "no telomere at this end and no donor assembly reaches one near it" << endl;
+        }
+        {
+            PatchRecord pr;
+            pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
+            pr.accepted = false;
+            pr.reason = buried ? "telomere present but buried/degraded; no clean donor telomere here"
+                               : "no telomere at this end and no donor reaches one";
+            g_patch_records.push_back(pr);
         }
         return false;
     };
@@ -1585,9 +1619,11 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
         graph->for_each_step_in_path(C, [&](step_handle_t s) { m[s] = p; p += graph->get_length(graph->get_handle_of_step(s)); });
         return m;
     };
+    vector<PatchRecord> kept_this_call;   // kept grafts from the current pass (final pass survives)
     bool changed = true;
     while (changed) {
         changed = false;
+        kept_this_call.clear();
         for (int i = 0; i + 1 < (int)intervals.size() && !changed; ++i) {
             path_handle_t C = graph->get_path_handle_of_step(get<0>(intervals[i]));
             if (graph->get_sample_name(C) != target_sample) continue;
@@ -1629,23 +1665,38 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 int64_t oa = max(p, lo), ob = min(p + l, hi); if (oa < ob) removed += graph->get_sequence(h).substr(oa - p, ob - oa); p += l; });
             int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
 
-            // Apply whichever test is authoritative for this graft:
-            //   * real (non-N) sequence was replaced -> k-mer recovery judges the CONTENT;
-            //   * mostly-N gap (nothing to recapitulate) -> flank anchoring judges the LOCUS, i.e. the
-            //     donor must stay homologous to C's own sequence over flank_window bp on both flanks.
-            double rec = -1.0, fl = -1.0, fr = -1.0; bool bad = false;
-            if (nonN >= min_replaced) {
-                vector<tuple<step_handle_t, step_handle_t, bool>> foreign(intervals.begin() + i + 1, intervals.begin() + j);
-                rec = kmer_recovery(removed, intervals_to_sequence(graph, foreign));
-                bad = (rec < min_recovery);
-            } else {
+            // Metrics for the report: k-mer recovery (CONTENT, when real sequence was replaced) AND flank
+            // anchoring (LOCUS, both sides) -- compute both so the table shows them.  The decision uses
+            // whichever is authoritative: k-mer for a non-N replacement, flank for a mostly-N gap fill.
+            double rec = -1.0, fl = -1.0, fr = -1.0;
+            vector<tuple<step_handle_t, step_handle_t, bool>> foreign(intervals.begin() + i + 1, intervals.begin() + j);
+            if (nonN >= min_replaced) rec = kmer_recovery(removed, intervals_to_sequence(graph, foreign));
+            {
                 unordered_set<nid_t> dL = path_node_set(graph, graph->get_path_handle_of_step(get<0>(intervals[i + 1])));
                 fl = flank_fraction(graph, get<1>(intervals[i]), get<2>(intervals[i]), dL, flank_window);
                 unordered_set<nid_t> dR = path_node_set(graph, graph->get_path_handle_of_step(get<0>(intervals[j - 1])));
                 fr = flank_fraction(graph, get<0>(intervals[j]), !get<2>(intervals[j]), dR, flank_window);
-                bad = (fl < min_flank || fr < min_flank);
             }
-            if (!bad) continue;                              // faithful (content) or anchored (locus) -- keep
+            bool bad = (nonN >= min_replaced) ? (rec < min_recovery) : (fl < min_flank || fr < min_flank);
+
+            // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
+            // from the top after every excision, so only the final settled pass's kept grafts should be
+            // reported -- avoids duplicates).  An excised graft is recorded now, since it is removed below
+            // and will not be rescanned.
+            PatchRecord pr;
+            pr.type = "gap-fill"; pr.target = graph->get_path_name(C); pr.target_bp = path_bp(graph, C);
+            path_handle_t dp = graph->get_path_handle_of_step(get<0>(intervals[i + 1]));
+            pr.donor = graph->get_path_name(dp); pr.donor_bp = path_bp(graph, dp);
+            pr.replaced_bp = removed.size(); pr.kmer = rec; pr.flankL = fl; pr.flankR = fr;
+            pr.accepted = !bad;
+            if (!bad) { kept_this_call.push_back(pr); continue; }   // faithful (content) or anchored (locus) -- keep
+            {
+                ostringstream rs; rs << fixed << setprecision(1);
+                if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
+                else          rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
+                pr.reason = rs.str();
+            }
+            g_patch_records.push_back(pr);
 
             ostringstream ss; ss << fixed << setprecision(1);
             if (rec >= 0) ss << "k-mer recovery " << rec << "%";
@@ -1663,6 +1714,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             changed = true;
         }
     }
+    // the final settled pass's kept grafts are the ones actually in the output
+    for (auto& kp : kept_this_call) g_patch_records.push_back(kp);
 }
 
 bool revert_bad_patch(const PathHandleGraph* graph,
