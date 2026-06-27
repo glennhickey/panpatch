@@ -4,6 +4,10 @@
 #include <string>
 #include <fstream>
 #include <memory>
+#include <vector>
+#include <map>
+#include <set>
+#include <algorithm>
 #include <unistd.h>
 #include <getopt.h>
 #include <omp.h>
@@ -28,14 +32,15 @@ static unique_ptr<PathHandleGraph> load_graph(istream& graph_stream);
 static const size_t fasta_width = 80;
 
 void help(char** argv) {
-  cerr << "usage: " << argv[0] << " [options] <graph> " << endl
+  cerr << "usage: " << argv[0] << " [options] <graph> [graph2 ...]" << endl
        << "Use a pangenome alignment (of single sample and reference) to make patched assembly" << endl
        << endl
        << "options: " << endl
        << "    -p, --progress               Print progress" << endl
        << "    -r, --reference STRING       Reference sample" << endl
        << "    -s, --sample STRING          Input sample. Multiple allowed. Order specifies priority" << endl
-       << "    -f, --fasta FILE             Output the patched assembly to this fasta file" << endl
+       << "    -f, --fasta FILE             Output the patched assembly to FASTA, one file per haplotype" << endl
+       << "                                 (FILE.hap1.fa, FILE.hap2.fa, ...); written only on full success" << endl
        << "    -w, --window SIZE            Size of window used for computing identity for haplotype matching [1000]" << endl
        << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
@@ -198,21 +203,15 @@ int main(int argc, char** argv) {
     if (graft_min_bp < 0) { cerr << "[panpatch] error: --graft-min-bp must be >= 0" << endl; return 1; }
     if (flank_window <= 0) { cerr << "[panpatch] error: --flank-window must be > 0" << endl; return 1; }
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
-    string graph_filename = argv[optind++];
-    ifstream graph_stream(graph_filename);
-    if (!graph_stream) {
-        cerr << "[panpatch] error: Unable to open input graph " << graph_filename << endl;
+    // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
+    vector<string> graph_filenames;
+    while (optind < argc) graph_filenames.push_back(argv[optind++]);
+    if (graph_filenames.empty()) {
+        cerr << "[panpatch] error: at least one input graph is required" << endl;
         return 1;
     }
-    ofstream out_fasta_file;
-    if (!out_fasta_filename.empty()) {
-        out_fasta_file.open(out_fasta_filename);
-        if (!out_fasta_file) {
-            cerr << "[panpatch] error: Unable to open fasta file for writing: " << out_fasta_filename << endl;
-            return 1;
-        }
-    }
-    
+    sort(graph_filenames.begin(), graph_filenames.end());
+
     BedRegions bed_regions;
     if (!bed_filename.empty()) {
         bed_regions = parse_bed_file(bed_filename);
@@ -227,11 +226,44 @@ int main(int argc, char** argv) {
     if (progress) {
         cerr << "[panpatch]: Using " << get_thread_count() << (get_thread_count() > 1 ? " threads" : " thread") << endl;
     }
-    unique_ptr<PathHandleGraph> base_graph = load_graph(graph_stream);
-    graph_stream.close();
-    if (progress) {
-        cerr << "[panpatch]: Loaded graph" << endl;
+
+    // pre-scan all inputs: a misspelled -r/-s sample fails here, before any patching (so no partial output)
+    {
+        set<string> present_samples;
+        for (const string& gf : graph_filenames) {
+            ifstream gs(gf);
+            if (!gs) { cerr << "[panpatch] error: Unable to open input graph " << gf << endl; return 1; }
+            unique_ptr<PathHandleGraph> g = load_graph(gs);
+            g->for_each_path_handle([&](path_handle_t p) { present_samples.insert(g->get_sample_name(p)); });
+        }
+        vector<string> missing;
+        if (!present_samples.count(ref_sample)) missing.push_back(ref_sample);
+        for (const string& s : sample_names) if (!present_samples.count(s)) missing.push_back(s);
+        if (!missing.empty()) {
+            cerr << "[panpatch] error: sample(s) not found in any input graph:";
+            for (const string& m : missing) cerr << " " << m;
+            cerr << endl;
+            return 1;
+        }
     }
+
+    // haplotype -> accumulated FASTA; written to <FILE>.hap<N>.fa only after every graph succeeds (atomic)
+    map<int64_t, string> fasta_by_hap;
+
+    for (const string& graph_filename : graph_filenames) {
+        ifstream graph_stream(graph_filename);
+        if (!graph_stream) {
+            cerr << "[panpatch] error: Unable to open input graph " << graph_filename << endl;
+            return 1;
+        }
+        if (progress) {
+            cerr << "[panpatch]: Processing " << graph_filename << endl;
+        }
+        unique_ptr<PathHandleGraph> base_graph = load_graph(graph_stream);
+        graph_stream.close();
+        if (progress) {
+            cerr << "[panpatch]: Loaded graph" << endl;
+        }
     bdsg::ReferencePathOverlayHelper overlay_helper;
     PathPositionHandleGraph* graph = overlay_helper.apply(base_graph.get());
     if (progress && dynamic_cast<PathPositionHandleGraph*>(base_graph.get()) == nullptr) {
@@ -244,9 +276,9 @@ int main(int argc, char** argv) {
         ref_paths.push_back(ref_path);
     });
     if (ref_paths.size() != 1) {
-        cerr << "[panpatch]: Exactly 1 path for reference sample " << ref_sample << " expected. " << ref_paths.size()
-             << " found. panpatch only works when there's 1 for now..." << endl;
-        return 1;        
+        cerr << "[panpatch]: skipping " << graph_filename << ": expected exactly 1 reference path for "
+             << ref_sample << ", found " << ref_paths.size() << endl;
+        continue;
     }
     path_handle_t ref_path = ref_paths.front();
     if (progress) {
@@ -273,9 +305,9 @@ int main(int argc, char** argv) {
         cerr << "[panpatch]: Target sample " << sample_names.front() << " has " << target_paths.size() << " paths" << endl;
     }
     if (target_paths.empty()) {
-        cerr << "[panpatch]: Error: No paths found for target sample " << sample_names.front()
-             << " in graph containing reference path " << graph->get_path_name(ref_path) << endl;
-        return 1;
+        cerr << "[panpatch]: skipping " << graph_filename << ": no paths for target sample "
+             << sample_names.front() << " (reference " << graph->get_path_name(ref_path) << ")" << endl;
+        continue;
     }
 
     // we patch each target haplotype independently, greedily selecting other haplotypes
@@ -398,36 +430,52 @@ int main(int argc, char** argv) {
         }
         cout << endl;
 
-        // save the intervals to the fasta
+        // accumulate the FASTA into the per-haplotype buffer; nothing is written to disk until every
+        // graph has been processed, so a failure never leaves a partial FASTA behind
         if (!out_fasta_filename.empty()) {
+            string& fa = fasta_by_hap[hap_tgts.first];
             if (reverted) {
-                // note: we have two modes, either we've reverted to the original contigs and
-                // we just write them out one by one.  Or we made a single t2t patch.
-                // todo: what isn't supported (and probably should be!!!) is partial patching
-                // where we patch a few contigs but output is not single t2t contig.
+                // either we reverted to the original contigs (write each out), or we made a single t2t patch
                 if (progress) {
-                    cerr << "[panpatch]: Writing input contig(s) to FASTA" << endl;
+                    cerr << "[panpatch]: Buffering input contig(s) for FASTA" << endl;
                 }
                 for (const auto& interval : patched_intervals) {
                     path_handle_t interval_path = graph->get_path_handle_of_step(get<0>(interval));
                     string contig_name = graph->get_path_name(interval_path);
                     string sequence = intervals_to_sequence(graph, {interval});
-                    out_fasta_file << ">" << contig_name << endl;
+                    fa += ">" + contig_name + "\n";
                     for (size_t written = 0; written < sequence.length(); written += fasta_width) {
-                        out_fasta_file << sequence.substr(written, min(fasta_width, sequence.length() - written)) << "\n";
+                        fa += sequence.substr(written, min(fasta_width, sequence.length() - written)) + "\n";
                     }
                 }
             } else {
                 if (progress) {
-                    cerr << "[panpatch]: Writing patched contig to FASTA" << endl;
-                }         
+                    cerr << "[panpatch]: Buffering patched contig for FASTA" << endl;
+                }
                 string contig_name = graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first);
                 string sequence = intervals_to_sequence(graph, patched_intervals);
-                out_fasta_file << ">" << contig_name << endl;
+                fa += ">" + contig_name + "\n";
                 for (size_t written = 0; written < sequence.length(); written += fasta_width) {
-                    out_fasta_file << sequence.substr(written, min(fasta_width, sequence.length() - written)) << "\n";
+                    fa += sequence.substr(written, min(fasta_width, sequence.length() - written)) + "\n";
                 }
             }
+        }
+    }    // end haplotype loop
+    }    // end per-graph loop
+
+    // atomic FASTA: now that every graph succeeded, write one file per haplotype (<FILE>.hap<N>.fa)
+    if (!out_fasta_filename.empty()) {
+        for (const auto& kv : fasta_by_hap) {
+            string tag = ".hap" + std::to_string(kv.first);
+            size_t slash = out_fasta_filename.find_last_of('/');
+            size_t dot = out_fasta_filename.find_last_of('.');
+            string fn = (dot == string::npos || (slash != string::npos && dot < slash))
+                        ? out_fasta_filename + tag
+                        : out_fasta_filename.substr(0, dot) + tag + out_fasta_filename.substr(dot);
+            ofstream of(fn);
+            if (!of) { cerr << "[panpatch] error: Unable to open fasta file for writing: " << fn << endl; return 1; }
+            of << kv.second;
+            if (progress) cerr << "[panpatch]: Wrote " << fn << endl;
         }
     }
     return 0;

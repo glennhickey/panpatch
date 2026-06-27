@@ -25,43 +25,43 @@ temp_files += ['tiny.x2.vg', 'tiny.vg', 'tiny.truth.fa', 'tiny.longo.truth.fa']
 
 run('panpatch tiny.vg -r x -s verkko -s hifi -f tiny.hifi.fa > tiny.hifi.bed')
 run('diff tiny.hifi.bed tiny.hifi.bed.truth')
-run('diff tiny.hifi.fa tiny.truth.fa')
-temp_files += ['tiny.hifi.bed', 'tiny.hifi.fa']
+run('diff tiny.hifi.hap1.fa tiny.truth.fa')
+temp_files += ['tiny.hifi.bed', 'tiny.hifi.hap1.fa']
 
 run('panpatch tiny.x2.vg -r x -s verkko -s hifi -f tiny.x2.hifi.fa > tiny.x2.hifi.bed')
 run('diff tiny.x2.hifi.bed tiny.x2.hifi.bed.truth')
-run('diff tiny.x2.hifi.fa tiny.truth.fa')
-temp_files += ['tiny.x2.hifi.bed', 'tiny.x2.hifi.fa']
+run('diff tiny.x2.hifi.hap1.fa tiny.truth.fa')
+temp_files += ['tiny.x2.hifi.bed', 'tiny.x2.hifi.hap1.fa']
 
 run('panpatch tiny.vg -r x -s verkko -s duplex -f tiny.duplex.fa > tiny.duplex.bed')
 run('diff tiny.duplex.bed tiny.duplex.bed.truth')
-run('diff tiny.duplex.fa tiny.truth.fa')
-temp_files += ['tiny.duplex.bed', 'tiny.duplex.fa']
+run('diff tiny.duplex.hap1.fa tiny.truth.fa')
+temp_files += ['tiny.duplex.bed', 'tiny.duplex.hap1.fa']
 
 run('panpatch tiny.x2.vg -r x -s verkko -s duplex -f tiny.x2.duplex.fa > tiny.x2.duplex.bed')
 run('diff tiny.x2.duplex.bed tiny.x2.duplex.bed.truth')
-run('diff tiny.x2.duplex.fa tiny.truth.fa')
-temp_files += ['tiny.x2.duplex.bed', 'tiny.x2.duplex.fa']
+run('diff tiny.x2.duplex.hap1.fa tiny.truth.fa')
+temp_files += ['tiny.x2.duplex.bed', 'tiny.x2.duplex.hap1.fa']
 
 run('panpatch tiny.vg -r x -s backo -s hifi -f tiny.backo.hifi.fa > tiny.backo.hifi.bed')
 run('diff tiny.backo.hifi.bed tiny.backo.hifi.bed.truth')
-run('diff tiny.backo.hifi.fa tiny.truth.fa')
-temp_files += ['tiny.backo.hifi.bed', 'tiny.backo.hifi.fa']
+run('diff tiny.backo.hifi.hap1.fa tiny.truth.fa')
+temp_files += ['tiny.backo.hifi.bed', 'tiny.backo.hifi.hap1.fa']
 
 run('panpatch tiny.vg -r x -s backo -s duplex -f tiny.backo.duplex.fa > tiny.backo.duplex.bed')
 run('diff tiny.backo.duplex.bed tiny.backo.duplex.bed.truth')
-run('diff tiny.backo.duplex.fa tiny.truth.fa')
-temp_files += ['tiny.backo.duplex.bed', 'tiny.backo.duplex.fa']
+run('diff tiny.backo.duplex.hap1.fa tiny.truth.fa')
+temp_files += ['tiny.backo.duplex.bed', 'tiny.backo.duplex.hap1.fa']
 
 run('panpatch tiny.vg -r x -s longo -s hifi -f tiny.longo.hifi.fa > tiny.longo.hifi.bed')
 run('diff tiny.longo.hifi.bed tiny.longo.hifi.bed.truth')
-run('diff tiny.longo.hifi.fa tiny.longo.truth.fa')
-temp_files += ['tiny.longo.hifi.bed', 'tiny.longo.hifi.fa']
+run('diff tiny.longo.hifi.hap1.fa tiny.longo.truth.fa')
+temp_files += ['tiny.longo.hifi.bed', 'tiny.longo.hifi.hap1.fa']
 
 run('panpatch tiny.vg -r x -s longo -s duplex -f tiny.longo.duplex.fa > tiny.longo.duplex.bed')
 run('diff tiny.longo.duplex.bed tiny.longo.duplex.bed.truth')
-run('diff tiny.longo.duplex.fa tiny.longo.truth.fa')
-temp_files += ['tiny.longo.duplex.bed', 'tiny.longo.duplex.fa']
+run('diff tiny.longo.duplex.hap1.fa tiny.longo.truth.fa')
+temp_files += ['tiny.longo.duplex.bed', 'tiny.longo.duplex.hap1.fa']
 
 # Telomere tests
 run('vg convert telomere.gfa > telomere.vg')
@@ -96,8 +96,8 @@ temp_files += ['scaffold.vg']
 # without -T: ctgA and ctgB are stitched into a single chrX_hap_1 record
 run('panpatch scaffold.vg -r x -s frag -f scaffold.frag.fa > scaffold.frag.bed')
 run('diff scaffold.frag.bed scaffold.frag.bed.truth')
-run('diff scaffold.frag.fa scaffold.frag.truth.fa')
-temp_files += ['scaffold.frag.bed', 'scaffold.frag.fa']
+run('diff scaffold.frag.hap1.fa scaffold.frag.truth.fa')
+temp_files += ['scaffold.frag.bed', 'scaffold.frag.hap1.fa']
 
 # with -T: the join has no telomeres, so it must fail validation and revert to the inputs
 run('panpatch scaffold.vg -r x -s frag -T > scaffold.frag.T.bed')
@@ -143,8 +143,8 @@ for base in ['telopatch', 'telopatch_rev', 'telopatch_front', 'telopatch_multi',
     run('vg convert {0}.gfa > {0}.vg'.format(base))
     run('panpatch {0}.vg -r x -s frag -s donor -T -f {0}.fa 2>/dev/null | {1} > {0}.patch.bed'.format(base, telo_filter))
     run('diff {0}.patch.bed {0}.bed.truth'.format(base))
-    run('diff {0}.fa {0}.truth.fa'.format(base))
-    temp_files += ['{0}.vg'.format(base), '{0}.patch.bed'.format(base), '{0}.fa'.format(base)]
+    run('diff {0}.hap1.fa {0}.truth.fa'.format(base))
+    temp_files += ['{0}.vg'.format(base), '{0}.patch.bed'.format(base), '{0}.hap1.fa'.format(base)]
 
 
 for f in temp_files:
