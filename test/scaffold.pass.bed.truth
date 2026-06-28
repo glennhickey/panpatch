@@ -1,6 +1,6 @@
-chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason
-scaffold	1	passthrough	frag#1#ctgB#0	41	.	0	.	.	.	.	accepted	unplaced (no reference chromosome)
-scaffold	1	passthrough	frag#1#ctgA#0	41	.	0	.	.	.	.	accepted	unplaced (no reference chromosome)
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason	target_start	target_end
+scaffold	1	passthrough	frag#1#ctgB#0	41	.	0	.	.	.	.	accepted	unplaced (no reference chromosome)	.	.
+scaffold	1	passthrough	frag#1#ctgA#0	41	.	0	.	.	.	.	accepted	unplaced (no reference chromosome)	.	.
 #Passthrough (unplaced) for frag#1:
 frag#1#ctgB#0	0	41	+
 

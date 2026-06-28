@@ -1720,6 +1720,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             path_handle_t dp = graph->get_path_handle_of_step(get<0>(intervals[i + 1]));
             pr.donor = graph->get_path_name(dp); pr.donor_bp = path_bp(graph, dp);
             pr.replaced_bp = removed.size(); pr.kmer = rec; pr.flankL = fl; pr.flankR = fr;
+            pr.target_start = lo; pr.target_end = hi;   // the target region this graft replaced (fwd coords)
             pr.accepted = !bad;
             if (!bad) { kept_this_call.push_back(pr); continue; }   // faithful (content) or anchored (locus) -- keep
             {

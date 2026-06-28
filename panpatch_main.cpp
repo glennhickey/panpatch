@@ -33,7 +33,7 @@ static unique_ptr<PathHandleGraph> load_graph(istream& graph_stream);
 
 // the per-patch report table (TSV) printed to stdout
 static const char* PATCH_TABLE_HEADER =
-    "chrom\thap\ttype\ttarget\ttarget_bp\tdonor\tdonor_bp\treplaced_bp\tkmer%\tflankL%\tflankR%\tdecision\treason";
+    "chrom\thap\ttype\ttarget\ttarget_bp\tdonor\tdonor_bp\treplaced_bp\tkmer%\tflankL%\tflankR%\tdecision\treason\ttarget_start\ttarget_end";
 static string fmt_pct(double v) { if (v < 0) return "."; ostringstream s; s << fixed << setprecision(1) << v; return s.str(); }
 static string fmt_bp(int64_t v) { return v < 0 ? string(".") : to_string(v); }
 // per-haplotype FASTA filename: insert ".hap<N>" before the extension of the -f base
@@ -51,7 +51,8 @@ static void print_patch_row(ostream& o, const PatchRecord& pr) {
       << fmt_bp(pr.replaced_bp) << '\t'
       << fmt_pct(pr.kmer) << '\t' << fmt_pct(pr.flankL) << '\t' << fmt_pct(pr.flankR) << '\t'
       << (pr.accepted ? "accepted" : "rejected") << '\t'
-      << (pr.reason.empty() ? "." : pr.reason) << '\n';
+      << (pr.reason.empty() ? "." : pr.reason) << '\t'
+      << fmt_bp(pr.target_start) << '\t' << fmt_bp(pr.target_end) << '\n';
 }
 
 static const size_t fasta_width = 80;

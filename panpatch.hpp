@@ -127,6 +127,7 @@ struct PatchRecord {
     double flankL = -1, flankR = -1;  // flank anchoring % on each side
     bool accepted = true;
     std::string reason;          // why rejected ("" if accepted)
+    int64_t target_start = -1, target_end = -1;  // replaced region in the target contig (fwd coords; -1 = n/a)
 };
 extern std::vector<PatchRecord> g_patch_records;
 

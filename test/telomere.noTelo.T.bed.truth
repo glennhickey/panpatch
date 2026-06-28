@@ -1,6 +1,6 @@
-chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason
-chrX	1	telomere	verkko#1#chrX#0	1233	.	0	.	.	.	.	rejected	telomere present but buried/degraded; no clean donor telomere here
-chrX	1	telomere	verkko#1#chrX#0	1233	.	0	.	.	.	.	rejected	telomere present but buried/degraded; no clean donor telomere here
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason	target_start	target_end
+chrX	1	telomere	verkko#1#chrX#0	1233	.	0	.	.	.	.	rejected	telomere present but buried/degraded; no clean donor telomere here	.	.
+chrX	1	telomere	verkko#1#chrX#0	1233	.	0	.	.	.	.	rejected	telomere present but buried/degraded; no clean donor telomere here	.	.
 #Contig verkko#1#chrX#0 len=1233bp left=YES(0.990) right=YES(0.990)
 #Patched assembly on chrX for verkko#1:
 verkko#1#chrX#0	0	1233	+

@@ -1,5 +1,5 @@
-chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason
-chrX	1	telomere	frag#1#ctg#0	25004	donor#1#ctg#0	32004	3000	0.0	.	.	accepted	.
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason	target_start	target_end
+chrX	1	telomere	frag#1#ctg#0	25004	donor#1#ctg#0	32004	3000	0.0	.	.	accepted	.	.	.
 #Patched assembly on chrX for frag#1:
 frag#1#ctg#0	0	12004	+
 donor#1#ctg#0	10000	32004	+
