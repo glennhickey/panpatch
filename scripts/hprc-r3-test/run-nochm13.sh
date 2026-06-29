@@ -1,44 +1,39 @@
 #!/usr/bin/env bash
-# Run panpatch in self-reference (no-CHM13) mode on every chromosome graph in a directory.
-# reference == target (the verkko haplotype itself); donor is the diploid hifiasm of the same sample.
+# Self-reference (no-CHM13) patching: ONE multi-graph panpatch run per (sample, haplotype).
+# reference == target == the verkko haplotype itself; donor = diploid hifiasm of the same sample.
+# Writes the deliverable layout directly:
+#   deliverable/self-ref/<id>.hap<h>/report      (the TSV report, stdout)
+#   deliverable/self-ref/<id>.hap<h>/out.bed     (patched-assembly intervals)
+#   deliverable/self-ref/<id>.hap<h>/out.hap0.fa (FASTA, from -f; self-ref haplotype field is 0)
+#   deliverable/self-ref/<id>.hap<h>/stderr
+# Resumable: skipped if the report already exists.
+#
 # usage: ./run-nochm13.sh <chroms_dir> <ref/target_sample> <donor_sample> [out_dir]
 #   e.g. ./run-nochm13.sh HG01074.no-chm13.1.chroms verkko-R3-HG01074_1 hifiasm-R2-HG01074
+#   env: PANPATCH (default ~/dev/panpatch/panpatch), THREADS (default 8)
 set -uo pipefail
-PANPATCH="$HOME/dev/panpatch/panpatch"
+
+PANPATCH="${PANPATCH:-$HOME/dev/panpatch/panpatch}"
 DIR="$1"; REF="$2"; DONOR="$3"
-OUT="${4:-${DIR%.chroms}.runs}"
-THREADS=8
-JOBS=3
-mkdir -p "$OUT"
+OUT="${4:-deliverable}"
+THREADS="${THREADS:-8}"
 
-run_one() {
-  local vg base
-  vg="$1"; base=$(basename "$vg" .full.vg)
-  [ "$base" = "chrOther" ] && return 0
-  [ -f "$OUT/$base.status" ] && { echo "[skip] $base"; return 0; }
-  echo "[run ] $base"
-  "$PANPATCH" "$vg" -r "$REF" -s "$REF" -s "$DONOR" -T -t "$THREADS" -p > "$OUT/$base.bed" 2> "$OUT/$base.stderr"
-  echo "$?" > "$OUT/$base.status"
-  echo "[done] $base"
-}
-export -f run_one; export PANPATCH OUT REF DONOR THREADS
+# derive <id> and <h> from REF = verkko-R3-<id>_<h>
+idh="${REF#verkko-R3-}"            # <id>_<h>
+id="${idh%_*}"; h="${idh##*_}"
+dest="$OUT/self-ref/$id.hap$h"
+mkdir -p "$dest"
 
-ls "$DIR"/haplotype*.full.vg | xargs -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}
-
-# classify (one bed == one chromosome/haplotype in self-reference mode)
-printf "contig\texit\tresult\n" > "$OUT/summary.tsv"
-for b in "$OUT"/haplotype*.bed; do
-  base=$(basename "$b" .bed); rc=$(cat "$OUT/$base.status" 2>/dev/null || echo "?")
-  if   [ "$rc" != 0 ];                                          then res="ERROR"
-  elif grep -q '^#Reverting patch'             "$b";           then res="GUARD_REVERTED"
-  elif grep -q '^#Reverting failed patch'      "$b";           then res="LENGTH_REVERTED"
-  elif grep -q '^#Telomere validation failed'  "$b";           then res="TELO_VALIDATION_FAILED"
-  elif grep -q '^#Reverting to input'          "$b";           then res="REVERTED_HAS_GAPS"
-  elif grep -q '^#Telomere patch'              "$b";           then res="TELOMERE_PATCHED"
-  elif grep -q '^#Interior graft'              "$b";           then res="GAP_FILLED"
-  elif grep -q '^#No patching is required'     "$b";           then res="NO_PATCH_NEEDED"
-  else                                                              res="OTHER"
-  fi
-  printf "%s\t%s\t%s\n" "$base" "$rc" "$res" >> "$OUT/summary.tsv"
-done
-echo "=== SUMMARY ($OUT/summary.tsv) ==="; column -t "$OUT/summary.tsv"
+report="$dest/report"
+if [ -f "$report" ]; then echo "[skip] $id hap$h (have $report)"; exit 0; fi
+echo "[run ] $id hap$h ..."
+# *.full.vg includes the chrOther graph (many unplaced contigs) -> panpatch passes it through; keep it.
+"$PANPATCH" "$DIR"/*.full.vg -r "$REF" -s "$REF" -s "$DONOR" \
+    -T -t "$THREADS" -p --bed "$dest/out.bed" -f "$dest/out" \
+    > "$report" 2> "$dest/stderr"
+rc=$?
+echo "[done] $id hap$h rc=$rc"
+[ "$rc" -ne 0 ] && { echo "  ERROR (see $dest/stderr)"; exit "$rc"; }
+# per-run summary, straight from the report TSV (type=$3, decision=$12)
+awk -F'\t' 'NR>1 && $3!="" && $3!="type" {c[$3" "$12]++}
+     END{for (k in c) printf "    %-22s %d\n", k, c[k]}' "$report" | sort
