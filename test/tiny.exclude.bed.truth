@@ -1,4 +1,4 @@
-#Reverting to input assembly because no patches from other assemblies were found
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason	target_start	target_end
 #Patched assembly on chrX for verkko#1:
 verkko#1#chrX#0	0	46	+
 

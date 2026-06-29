@@ -11,6 +11,17 @@
 //#define debug
 //#define ultra_debug
 
+// the patch report accumulated during a run (declared in panpatch.hpp); main stamps chrom/hap,
+// finalizes the accept/reject decision, prints it as a table, and clears it after each haplotype.
+vector<PatchRecord> g_patch_records;
+
+// total sequence length (bp) of a path
+int64_t path_bp(const PathHandleGraph* g, path_handle_t p) {
+    int64_t n = 0;
+    g->for_each_step_in_path(p, [&](step_handle_t s) { n += g->get_length(g->get_handle_of_step(s)); });
+    return n;
+}
+
 unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGraph* graph,
                                                               const vector<path_handle_t>& tgt_paths,
                                                               const vector<path_handle_t>& other_paths,
@@ -168,99 +179,6 @@ unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHand
     }
 
     return result;
-}
-
-multimap<pair<int64_t, int64_t>, path_handle_t> sort_overlapping_paths(const PathHandleGraph* graph,
-                                                                       const path_handle_t& tgt_path,
-                                                                       const vector<path_handle_t>& other_paths) {
-
-    // note: this logic only works properly on acyclic reference path
-    unordered_map<int64_t, int64_t> id2pos;
-    int64_t pos = 0;
-    graph->for_each_step_in_path(tgt_path, [&](step_handle_t step) {
-        id2pos[graph->get_id(graph->get_handle_of_step(step))] = pos;
-        pos += graph->get_length(graph->get_handle_of_step(step));
-    });
-
-
-    multimap<pair<int64_t, int64_t>, path_handle_t> result;
-
-    for (path_handle_t other_path : other_paths) {
-        int64_t min_pos = numeric_limits<int64_t>::max();
-        int64_t max_pos = 0;
-        graph->for_each_step_in_path(other_path, [&](step_handle_t step) {
-            int64_t node_id = graph->get_id(graph->get_handle_of_step(step));
-            if (id2pos.count(node_id)) {
-                int64_t pos = id2pos[node_id];
-                min_pos = min(min_pos, pos);
-                max_pos = max(max_pos, pos);
-            }
-        });
-
-        if (min_pos < max_pos) {
-            pair<int64_t, int64_t> key = make_pair(min_pos, max_pos);
-            result.insert(make_pair(key, other_path));
-        }
-    }
-
-    return result;
-}
-
-pair<int64_t, int64_t> find_telomeres(const PathHandleGraph* graph,
-                                      const path_handle_t path,
-                                      double threshold) {
-
-    // quick and dirty telomere checker!!
-    
-    static const int64_t min_len = 50;
-    string path_str;
-    graph->for_each_step_in_path(path, [&](step_handle_t step){
-        path_str += graph->get_sequence(graph->get_handle_of_step(step));
-    });
-
-    // forward
-    int64_t fw_count = 0;
-    int64_t r_count = 0;
-    int64_t pos;
-    for (pos = 0; pos < path_str.length()-7; ++pos) {
-        if (path_str.substr(pos, 6) == "TTAGGG") {
-            ++fw_count;
-            pos+= 5;
-        } else if (path_str.substr(pos, 6) == "CCCTAA") {
-            ++r_count;
-            pos+= 5;
-        }
-        if (pos > min_len) {
-            double fw_density = 6. * ((double)fw_count / (double) pos);
-            double r_density = 6. * ((double)r_count / (double) pos);
-            if (fw_density < threshold && r_density < threshold) {
-                break;
-            }
-        }
-    }
-
-    // reverse
-    fw_count = 0;
-    r_count = 0;
-    int64_t r_pos;
-    for (r_pos = 0; r_pos < path_str.length()-7; ++r_pos) {
-        if (path_str.substr(path_str.length() - 7 - r_pos, 6) == "TTAGGG") {
-            ++fw_count;
-            r_pos+= 5;
-        } else if (path_str.substr(path_str.length() - 7 - r_pos, 6) == "CCCTAA") {
-            ++r_count;
-            r_pos+= 5;
-        }
-        if (r_pos > min_len) {
-            double fw_density = 6. * ((double)fw_count / (double) r_pos);
-            double r_density = 6. * ((double)r_count / (double) r_pos);
-            if (fw_density < threshold && r_density < threshold) {
-                break;
-            }
-        }
-    }
-
-    return make_pair(pos, r_pos);
 }
 
 BedRegions parse_bed_file(const string& bed_filename) {
@@ -734,28 +652,89 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHan
     return extended_intervals;
 }
 
-// telomere repeat density (max of forward/reverse hexamer density) over a sequence
-static double telomere_density(const string& s) {
-    if (s.empty()) return 0.0;
-    int64_t fw = 0, rv = 0;
-    for (size_t i = 0; i + 6 <= s.size(); ) {
-        if (s.compare(i, 6, "TTAGGG") == 0) { ++fw; i += 6; }
-        else if (s.compare(i, 6, "CCCTAA") == 0) { ++rv; i += 6; }
-        else ++i;
+// Find where a telomere run anchored at a tip ends/begins within sequence[search_start, search_end).
+//   scan_forward : telomere anchored at search_start; returns the index where the run ends (-1 if none).
+//  !scan_forward : telomere anchored at search_end;   returns the index where the run begins (-1 if none).
+// Slides a 500bp window inward from the tip, extending the run while window density stays >= 0.7.
+static int64_t find_telomere_boundary(const string& sequence, int64_t search_start, int64_t search_end,
+                                      bool scan_forward) {
+    const int64_t window_size = 500;
+    const double min_density = 0.7;
+    if (scan_forward) {
+        int64_t telomere_end = search_start;
+        for (int64_t win_start = search_start; win_start + window_size < search_end; win_start += 100) {
+            int64_t repeats = 0;
+            for (int64_t pos = win_start; pos < min(win_start + window_size, search_end - 6); ++pos) {
+                if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") { ++repeats; pos += 5; }
+            }
+            double density = 6.0 * (double)repeats / (double)window_size;
+            if (density >= min_density) telomere_end = win_start + window_size;
+            else if (telomere_end > search_start) break;
+        }
+        return telomere_end > search_start ? telomere_end : -1;
+    } else {
+        int64_t telomere_start = search_end;
+        for (int64_t win_end = search_end; win_end - window_size > search_start; win_end -= 100) {
+            int64_t win_start = max(search_start, win_end - window_size);
+            int64_t repeats = 0;
+            for (int64_t pos = win_start; pos < win_end - 6; ++pos) {
+                if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") { ++repeats; pos += 5; }
+            }
+            double density = 6.0 * (double)repeats / (double)window_size;
+            if (density >= min_density) telomere_start = win_start;
+            else if (telomere_start < search_end) break;
+        }
+        return telomere_start < search_end ? telomere_start : -1;
     }
-    double n = (double)s.size();
-    return max(6.0 * (double)fw / n, 6.0 * (double)rv / n);
 }
 
-// true if a telomere is present anywhere in the sequence: scan 500bp windows and require one
-// to clear the density threshold.  (real telomeres are often slightly inset or degenerate, so a
-// flat density over a fixed tip window under-calls them - mirror validate_telomeres' windowing.)
-static bool region_has_telomere(const string& s, double threshold) {
+// Canonical "does this region carry a telomere?" test, shared by telomere validation and patching.
+// When find_boundary is set, the region is first narrowed to the telomeric run anchored at the tip
+// (is_right_end => tip at max_end, else tip at start); the run must then be >=500bp and reach the
+// density threshold.  Averaging over the actual run (rather than accepting any single dense window)
+// is what makes a telomere buried under terminal junk, or a short/degraded telomere, read as absent.
+static bool seq_has_telomere(const string& sequence, int64_t start, int64_t max_end,
+                             bool find_boundary, bool is_right_end, double threshold,
+                             double* out_density = nullptr) {
+    int64_t actual_start = start;
+    int64_t actual_end = max_end;
+    if (find_boundary) {
+        if (is_right_end) {
+            int64_t telomere_start = find_telomere_boundary(sequence, start, max_end, false);
+            if (telomere_start >= start && telomere_start < max_end) actual_start = telomere_start;
+        } else {
+            int64_t telomere_end = find_telomere_boundary(sequence, start, max_end, true);
+            if (telomere_end > start) actual_end = telomere_end;
+        }
+    }
+    int64_t fw_count = 0, r_count = 0;
+    for (int64_t pos = actual_start; pos < actual_end - 6; ++pos) {
+        if (sequence.substr(pos, 6) == "TTAGGG") { ++fw_count; pos += 5; }
+        else if (sequence.substr(pos, 6) == "CCCTAA") { ++r_count; pos += 5; }
+    }
+    int64_t region_len = actual_end - actual_start;
+    if (region_len < 500) { if (out_density) *out_density = 0.0; return false; }
+    double fw_density = 6. * ((double)fw_count / (double)region_len);
+    double r_density = 6. * ((double)r_count / (double)region_len);
+    if (out_density) *out_density = max(fw_density, r_density);
+    return (fw_density >= threshold || r_density >= threshold);
+}
+
+// lenient telomere presence: true if ANY 500bp window in s clears the density threshold. Unlike
+// seq_has_telomere (which requires a clean terminal telomere), this just detects that telomeric
+// repeats exist somewhere in the region - used only to explain *why* a capless tip wasn't patched
+// (e.g. a telomere buried under terminal junk, or a degraded/fragmented one).
+static bool has_telomeric_window(const string& s, double threshold) {
     const int64_t W = 500;
     int64_t n = (int64_t)s.size();
-    if (n < W) return telomere_density(s) >= threshold;
     for (int64_t i = 0; i + W <= n; i += 100) {
-        if (telomere_density(s.substr(i, W)) >= threshold) return true;
+        int64_t fw = 0, rv = 0;
+        for (int64_t p = i; p < i + W - 6; ) {
+            if (s.compare(p, 6, "TTAGGG") == 0) { ++fw; p += 6; }
+            else if (s.compare(p, 6, "CCCTAA") == 0) { ++rv; p += 6; }
+            else ++p;
+        }
+        if (6.0 * (double)max(fw, rv) / (double)W >= threshold) return true;
     }
     return false;
 }
@@ -872,8 +851,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
     // precompute, once per cover, whether each of its two ends carries a telomere
     unordered_map<path_handle_t, bool> telo_begin, telo_end;
     for (const path_handle_t& F : foreign) {
-        telo_begin[F] = region_has_telomere(terminal_seq(F, false), telo_threshold);
-        telo_end[F]   = region_has_telomere(terminal_seq(F, true), telo_threshold);
+        // terminal_seq(F,false) is in path order with the path_begin tip first; terminal_seq(F,true)
+        // has the path_back tip last (is_right_end).
+        string tseq_b = terminal_seq(F, false);
+        string tseq_e = terminal_seq(F, true);
+        telo_begin[F] = seq_has_telomere(tseq_b, 0, (int64_t)tseq_b.size(), true, false, telo_threshold);
+        telo_end[F]   = seq_has_telomere(tseq_e, 0, (int64_t)tseq_e.size(), true, true,  telo_threshold);
         if (verbose) cerr << "[panpatch] telomere-patch cover " << graph->get_path_name(F)
                           << " telomere begin=" << telo_begin[F] << " end=" << telo_end[F] << endl;
     }
@@ -901,19 +884,27 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
             else           return rev ? graph->get_previous_step(s) : graph->get_next_step(s);
         };
 
-        // 1) if the tip already carries a telomere, nothing to do
+        // 1) if the tip already carries a telomere, nothing to do.
+        // Build the outermost OUTER bp of this end in true assembly 5'->3' order so the boundary
+        // detection in seq_has_telomere agrees with validate_telomeres (front tip -> sequence start,
+        // is_right_end=false; back tip -> sequence end, is_right_end=true).  (Walking from the tip
+        // inward visits nodes in reverse order for the back end, so prepend there.)
+        bool buried = false;  // capless tip, but telomeric repeats are present nearby
         {
             string tip_seq;
             step_handle_t s = tip_step;
             while ((int64_t)tip_seq.size() < OUTER) {
-                tip_seq += graph->get_sequence(asm_handle(s));
+                string node_seq = graph->get_sequence(asm_handle(s));
+                if (is_front) tip_seq += node_seq;          // front tip at index 0
+                else          tip_seq = node_seq + tip_seq;  // back tip at the end
                 if (s == inner_bound) break;
                 s = inward(s);
             }
-            bool has = region_has_telomere(tip_seq, telo_threshold);
+            bool has = seq_has_telomere(tip_seq, 0, (int64_t)tip_seq.size(), true, !is_front, telo_threshold);
             if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
                               << " tip of " << graph->get_path_name(P) << ": telomere=" << has << endl;
             if (has) return false;
+            buried = has_telomeric_window(tip_seq, telo_threshold);
         }
 
         // 2) walk inward looking for a shared-node handoff to a foreign cover with a telomere
@@ -971,10 +962,14 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
 
                 if (!within_cap) {
                     // nearest usable handoff is too far in: replacing this much target is risky, so skip
-                    cout << "#Telomere not patched (" << (is_front ? "front" : "back")
-                         << "): nearest donor handoff (" << graph->get_path_name(F) << ") would replace "
-                         << walked << "bp of target, over the --max-telomere-patch cap of " << max_handoff
-                         << "bp (rerun with -M " << walked << " to allow)" << endl;
+                    {
+                        PatchRecord pr;
+                        pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
+                        pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
+                        pr.replaced_bp = walked; pr.accepted = false;
+                        pr.reason = "handoff would replace " + std::to_string(walked) + "bp, over --max-telomere-patch " + std::to_string(max_handoff);
+                        g_patch_records.push_back(pr);
+                    }
                     return false;
                 }
 
@@ -984,14 +979,13 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                     removed_seq += graph->get_sequence(asm_handle(s));
                 }
                 double recovery = kmer_recovery(removed_seq, added_seq);
-                // format the percentage in a local stream so we don't leave cout stuck in
-                // fixed/setprecision state (those manipulators are sticky and would corrupt
-                // later default-formatted floats, e.g. the revert ratio in revert_bad_patch)
-                ostringstream rec_ss;
-                rec_ss << fixed << setprecision(1) << recovery;
-                cout << "#Telomere patch (" << (is_front ? "front" : "back") << "): donor="
-                     << graph->get_path_name(F) << " replaced=" << walked << "bp grafted=" << ext
-                     << "bp kmer_recovery=" << rec_ss.str() << "%" << endl;
+                {
+                    PatchRecord pr;
+                    pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
+                    pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
+                    pr.replaced_bp = walked; pr.kmer = recovery;
+                    g_patch_records.push_back(pr);
+                }
 
                 out_s_i = s_i;
                 out_fi  = is_front ? make_tuple(f_last, s_F, f_forward)
@@ -1001,12 +995,20 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
 
             if (s_i == inner_bound) break;
             walked += graph->get_length(under);
-            if (walked > max_handoff + REPORT_MARGIN) {
-                if (verbose) cerr << "[panpatch]   no donor handoff found within "
-                                  << (max_handoff + REPORT_MARGIN) << "bp" << endl;
-                break;
-            }
+            if (walked > max_handoff + REPORT_MARGIN) break;
             s_i = inward(s_i);
+        }
+
+        // capless end with no usable donor handoff in range: record why, so the user can see which ends
+        // were left as-is and whether it's a simple gap (no telomere anywhere, no donor) or an assembly
+        // issue beyond panpatch's scope (a telomere present but buried/degraded at the tip).
+        {
+            PatchRecord pr;
+            pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
+            pr.accepted = false;
+            pr.reason = buried ? "telomere present but buried/degraded; no clean donor telomere here"
+                               : "no telomere at this end and no donor reaches one";
+            g_patch_records.push_back(pr);
         }
         return false;
     };
@@ -1061,7 +1063,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
 }
 
 void print_intervals(const PathHandleGraph* graph,
-                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals) {
+                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                     ostream& out) {
 
     // manually index all paths in the interval cover
     // todo: use some kind of position overlay!
@@ -1096,9 +1099,9 @@ void print_intervals(const PathHandleGraph* graph,
                 pos_1 -= graph->get_length(graph->get_handle_of_step(get<1>(interval)));
             }
         }
-        cout << graph->get_path_name(path) << "\t" << pos_1 << "\t" << pos_2
+        out << graph->get_path_name(path) << "\t" << pos_1 << "\t" << pos_2
              << "\t" << (get<2>(interval) ? '-' : '+') << endl;
-        
+
     }
 }
 
@@ -1247,6 +1250,407 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     return extended_intervals;
 }
 
+// Sanity guard for repeat-region misjoins.
+//
+// Detects when a contig is used in two or more disjoint pieces and another contig OF THE SAME
+// SAMPLE is spliced into the interior between them.  This is the signature of the acrocentric /
+// pericentromeric misjoins: the threading bounces through ambiguous satellite/segdup anchors and
+// splices the target assembly's own spare fragments into the middle of a contig that already spans
+// the region, producing scrambled / collapsed output.
+//
+// Legitimate operations are unaffected:
+//  - a genuine gap-fill bridges with a FOREIGN donor (different sample), so the interior material
+//    is not same-sample and is allowed;
+//  - end-to-end scaffolds and telomere patches use each contig contiguously (a single block), so
+//    there is no interior to splice into.
+// Restricted to the target sample's own contigs: the misjoin we care about is the target assembly's
+// spare fragments spliced into the target's main contig. (This also avoids a donor-vs-donor case --
+// e.g. one donor grafted at both telomeres with a same-donor gap-fill between -- reverting a valid
+// telomere-completed assembly.)
+static bool splices_same_sample_interior(const PathHandleGraph* graph,
+                                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                         const string& target_sample,
+                                         string& detail) {
+    // first and last position at which each contig appears in the output (list) order; an interval
+    // between those two positions that is on a different contig is "interior" material
+    unordered_map<path_handle_t, pair<int, int>> span;
+    vector<path_handle_t> idx_path(intervals.size());
+    for (int i = 0; i < (int)intervals.size(); ++i) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(intervals[i]));
+        idx_path[i] = p;
+        auto it = span.find(p);
+        if (it == span.end()) span[p] = make_pair(i, i);
+        else it->second.second = i;
+    }
+    for (const auto& kv : span) {
+        int lo = kv.second.first, hi = kv.second.second;
+        if (hi <= lo) continue;  // contig used as a single contiguous block: no interior to splice
+        string c_sample = graph->get_sample_name(kv.first);
+        if (c_sample != target_sample) continue;  // only judge the target's own contigs
+        for (int j = lo + 1; j < hi; ++j) {
+            if (idx_path[j] == kv.first) continue;            // another piece of the same contig
+            if (graph->get_sample_name(idx_path[j]) == c_sample) {
+                detail = "contig " + graph->get_path_name(kv.first)
+                       + " was used non-contiguously with same-sample fragment "
+                       + graph->get_path_name(idx_path[j]) + " spliced into its interior";
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Second guard (complements splices_same_sample_interior, which only catches same-sample
+// interior splices).  When a *foreign* donor is spliced into the interior of a target contig (a
+// gap-fill / replacement), measure how much of the replaced target sequence the graft actually
+// recapitulates with the same canonical-31-mer recovery used for telomere grafts.  A graft that
+// shares almost none of the replaced sequence's k-mers came from a different locus/paralog (a
+// repeat-region misjoin), not a faithful fill -- revert it.  Only interior replacements are judged;
+// terminal telomere grafts legitimately have low recovery (divergent subtelomeres) and are not
+// considered here.  Restricted to the target sample's own contigs (avoids donor-vs-donor cases).
+static bool interior_graft_low_recovery(const PathHandleGraph* graph,
+                                        const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                        const string& target_sample,
+                                        double min_recovery, int64_t min_replaced,
+                                        const unordered_map<path_handle_t, int64_t>& excised_nonN,
+                                        string& detail) {
+    // step -> forward position index per contig used
+    unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> path_index;
+    for (const auto& iv : intervals) path_index[graph->get_path_handle_of_step(get<0>(iv))] = {};
+    for (auto& pm : path_index) {
+        int64_t pos = 0;
+        graph->for_each_step_in_path(pm.first, [&](step_handle_t s) {
+            pm.second[s] = pos; pos += graph->get_length(graph->get_handle_of_step(s));
+        });
+    }
+    // used forward ranges + list-index span per contig
+    unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>> used;
+    unordered_map<path_handle_t, pair<int, int>> span;
+    for (int i = 0; i < (int)intervals.size(); ++i) {
+        const auto& iv = intervals[i];
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+        int64_t a, b;
+        if (!get<2>(iv)) { a = path_index[p][get<0>(iv)]; b = path_index[p][get<1>(iv)] + graph->get_length(graph->get_handle_of_step(get<1>(iv))); }
+        else             { a = path_index[p][get<1>(iv)]; b = path_index[p][get<0>(iv)] + graph->get_length(graph->get_handle_of_step(get<0>(iv))); }
+        used[p].push_back(make_pair(a, b));
+        auto it = span.find(p); if (it == span.end()) span[p] = make_pair(i, i); else it->second.second = i;
+    }
+    for (auto& kv : used) {
+        path_handle_t C = kv.first;
+        if (graph->get_sample_name(C) != target_sample) continue;     // only the target's own contigs
+        auto& r = kv.second;
+        if (r.size() < 2) continue;
+        sort(r.begin(), r.end());
+        vector<pair<int64_t, int64_t>> gaps;
+        for (size_t i = 1; i < r.size(); ++i) { int64_t ga = r[i-1].second, gb = r[i].first; if (gb > ga) gaps.push_back(make_pair(ga, gb)); }
+        if (gaps.empty()) continue;
+        // foreign intervals spliced between C's first and last appearance
+        int lo = span[C].first, hi = span[C].second;
+        vector<tuple<step_handle_t, step_handle_t, bool>> foreign;
+        for (int j = lo + 1; j < hi; ++j) {
+            path_handle_t pj = graph->get_path_handle_of_step(get<0>(intervals[j]));
+            if (pj == C) continue;
+            if (graph->get_sample_name(pj) != target_sample) foreign.push_back(intervals[j]);
+        }
+        if (foreign.empty()) continue;   // same-sample interior is handled by the other guard
+        // removed = the target sequence skipped over in C's interior
+        string removed;
+        int64_t pos = 0;
+        graph->for_each_step_in_path(C, [&](step_handle_t s) {
+            handle_t h = graph->get_handle_of_step(s); int64_t len = graph->get_length(h);
+            int64_t na = pos, nb = pos + len; pos = nb;
+            for (auto& g : gaps) { int64_t oa = max(na, g.first), ob = min(nb, g.second);
+                if (oa < ob) removed += graph->get_sequence(h).substr(oa - na, ob - oa); }
+        });
+        int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
+        // count non-N already excised from this contig by the partial-patch pass toward the gate, so
+        // excising one graft doesn't drop the remainder below the threshold and disable this backstop
+        // for a second still-bad graft (a regression vs. the pre-excise lumped full-revert)
+        auto eit = excised_nonN.find(C); if (eit != excised_nonN.end()) nonN += eit->second;
+        if (nonN < min_replaced) continue;   // too little real sequence replaced to judge reliably
+        string added = intervals_to_sequence(graph, foreign);
+        double rec = kmer_recovery(removed, added);
+        if (rec < min_recovery) {
+            ostringstream rs; rs << fixed << setprecision(1) << rec;
+            detail = "contig " + graph->get_path_name(C) + " interior (" + to_string(removed.size())
+                   + "bp) was replaced by a foreign graft sharing only " + rs.str() + "% of its k-mers";
+            return true;
+        }
+    }
+    return false;
+}
+
+// Telomere-preservation guard.  A scaffold or graft must never discard a real telomere: if a
+// target contig is capped at a natural end but the patch uses that contig starting (or ending)
+// well past the cap, the contig was already complete there and the join is redundant/erroneous.
+// (Surfaced by the no-CHM13 self-reference comparison: CHM13's divergent subtelomere made panpatch
+// trim a telomere-bearing tip to bolt on an overlapping same-haplotype fragment -- HG01074 chr14,
+// where the main contig alone was already T2T.)  Legitimate operations are unaffected: telomere
+// patches trim a *capless* tip, gap-fills trim only the interior, end-to-end scaffolds use each
+// contig in full.  Restricted to the target sample's own contigs.
+static bool discards_target_telomere(const PathHandleGraph* graph,
+                                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                     const string& target_sample, double telo_threshold,
+                                     string& detail) {
+    const int64_t OUTER = 20000;   // telomere window; also the minimum end-trim to consider the cap "dropped"
+    unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> idx;
+    for (const auto& iv : intervals) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+        if (graph->get_sample_name(p) == target_sample) idx[p] = {};
+    }
+    for (auto& pm : idx) {
+        int64_t pos = 0;
+        graph->for_each_step_in_path(pm.first, [&](step_handle_t s) { pm.second[s] = pos; pos += graph->get_length(graph->get_handle_of_step(s)); });
+    }
+    unordered_map<path_handle_t, pair<int64_t, int64_t>> used;   // min start, max end (forward contig coords)
+    unordered_map<path_handle_t, int64_t> length;
+    for (const auto& iv : intervals) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+        if (!idx.count(p)) continue;
+        int64_t a, b;
+        if (!get<2>(iv)) { a = idx[p][get<0>(iv)]; b = idx[p][get<1>(iv)] + graph->get_length(graph->get_handle_of_step(get<1>(iv))); }
+        else             { a = idx[p][get<1>(iv)]; b = idx[p][get<0>(iv)] + graph->get_length(graph->get_handle_of_step(get<0>(iv))); }
+        auto it = used.find(p);
+        if (it == used.end()) used[p] = make_pair(a, b);
+        else { it->second.first = min(it->second.first, a); it->second.second = max(it->second.second, b); }
+    }
+    for (auto& kv : idx) {
+        int64_t len = 0;
+        graph->for_each_step_in_path(kv.first, [&](step_handle_t s) { len += graph->get_length(graph->get_handle_of_step(s)); });
+        length[kv.first] = len;
+    }
+    for (auto& kv : used) {
+        path_handle_t C = kv.first;
+        int64_t lo = kv.second.first, hi = kv.second.second, len = length[C];
+        if (lo >= OUTER) {                       // 5' end trimmed -> does the natural 5' carry a telomere?
+            string tip;
+            for (step_handle_t s = graph->path_begin(C); ; s = graph->get_next_step(s)) {
+                tip += graph->get_sequence(graph->get_handle_of_step(s));
+                if ((int64_t)tip.size() >= OUTER || s == graph->path_back(C)) break;
+            }
+            if (seq_has_telomere(tip, 0, (int64_t)tip.size(), true, false, telo_threshold)) {
+                detail = "patch trimmed the telomere-bearing 5' end of " + graph->get_path_name(C)
+                       + " (used from " + to_string(lo) + "bp)";
+                return true;
+            }
+        }
+        if (len - hi >= OUTER) {                 // 3' end trimmed -> does the natural 3' carry a telomere?
+            string tip;
+            for (step_handle_t s = graph->path_back(C); ; s = graph->get_previous_step(s)) {
+                tip = graph->get_sequence(graph->get_handle_of_step(s)) + tip;
+                if ((int64_t)tip.size() >= OUTER || s == graph->path_begin(C)) break;
+            }
+            if (seq_has_telomere(tip, 0, (int64_t)tip.size(), true, true, telo_threshold)) {
+                detail = "patch trimmed the telomere-bearing 3' end of " + graph->get_path_name(C)
+                       + " (used up to " + to_string(hi) + "bp of " + to_string(len) + ")";
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// every node id a path traverses (used to test donor/target homology by shared nodes)
+static unordered_set<nid_t> path_node_set(const PathHandleGraph* g, path_handle_t p) {
+    unordered_set<nid_t> s;
+    g->for_each_step_in_path(p, [&](step_handle_t st) { s.insert(g->get_id(g->get_handle_of_step(st))); });
+    return s;
+}
+
+// Fraction (0-100) of a `window`-bp walk along a path -- starting at `start`, stepping `nxt` (next) or
+// !nxt (previous) -- that lands on nodes in `donor_nodes`.  Measuring a fraction over a *fixed window*
+// (not a contiguous run) is tolerant of SNP bubbles: a SNP splits one homologous node into a small
+// bubble, costing only a few bp.  A faithful fill stays homologous to the target's own flank (high
+// fraction); a repeat-region misjoin diverges into different sequence (low fraction).  Crucially this
+// works even for N-gap fills, where k-mer recovery cannot judge (the replaced region has no sequence).
+static double flank_fraction(const PathHandleGraph* g, step_handle_t start, bool nxt,
+                             const unordered_set<nid_t>& donor_nodes, int64_t window) {
+    // step off the shared junction node first: it is trivially shared by both paths and would inflate
+    // the fraction for short / contig-end flanks
+    if (nxt ? !g->has_next_step(start) : !g->has_previous_step(start)) return 0.0;
+    step_handle_t s = nxt ? g->get_next_step(start) : g->get_previous_step(start);
+    int64_t walked = 0, shared = 0;
+    while (walked < window) {
+        handle_t h = g->get_handle_of_step(s);
+        int64_t use = min((int64_t)g->get_length(h), window - walked);
+        walked += use;
+        if (donor_nodes.count(g->get_id(h))) shared += use;
+        if (nxt ? !g->has_next_step(s) : !g->has_previous_step(s)) break;
+        s = nxt ? g->get_next_step(s) : g->get_previous_step(s);
+    }
+    return walked ? 100.0 * shared / walked : 0.0;
+}
+
+// Record scaffold joins (where the patch spans more than one of the target's own contigs) as report
+// rows, and guard foreign-bridged joins.  A join [contig A | foreign run | contig B] is a foreign
+// bridge: the bridging donor must anchor to A's and B's own sequence over flank_window bp (>= min_flank
+// %) on both sides, else it is a wrong-locus misjoin and the whole scaffold must be reverted.  A join
+// where A and B are simply adjacent (no foreign bridge) is a plain target-to-target scaffold and is
+// recorded but not flank-guarded (telomere validation, if requested, gates it instead).  Returns true
+// (+ bridge_detail) if any foreign bridge fails the flank check, so the caller can revert.
+bool record_scaffolds(const PathHandleGraph* graph,
+                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                      const string& target_sample, double min_flank, int64_t flank_window,
+                      string& bridge_detail) {
+    bool bad = false;
+    unordered_set<path_handle_t> seen;   // target contigs already recorded (so [A|B|A] splices give one row)
+    int prev_tgt = -1;       // index of the most recent target-sample interval
+    int foreign_start = -1;  // index where a foreign run began since prev_tgt (-1 = none)
+    for (int i = 0; i < (int)intervals.size(); ++i) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(intervals[i]));
+        if (graph->get_sample_name(p) != target_sample) { if (foreign_start < 0) foreign_start = i; continue; }
+        if (prev_tgt >= 0) {
+            path_handle_t pc = graph->get_path_handle_of_step(get<0>(intervals[prev_tgt]));
+            if (p != pc && !seen.count(p)) {   // a join into a not-yet-seen target contig
+                PatchRecord pr; pr.type = "scaffold";
+                pr.target = graph->get_path_name(pc); pr.target_bp = path_bp(graph, pc);
+                if (foreign_start >= 0 && foreign_start < i) {
+                    // foreign-bridged: flank-check the bridge against both contigs' own sequence
+                    path_handle_t donor = graph->get_path_handle_of_step(get<0>(intervals[foreign_start]));
+                    unordered_set<nid_t> dn = path_node_set(graph, donor);
+                    double fl = flank_fraction(graph, get<1>(intervals[prev_tgt]), get<2>(intervals[prev_tgt]), dn, flank_window);
+                    double fr = flank_fraction(graph, get<0>(intervals[i]), !get<2>(intervals[i]), dn, flank_window);
+                    pr.donor = graph->get_path_name(donor); pr.donor_bp = path_bp(graph, donor);
+                    pr.flankL = fl; pr.flankR = fr;
+                    pr.accepted = (fl >= min_flank && fr >= min_flank);
+                    if (!pr.accepted) {
+                        ostringstream rs; rs << fixed << setprecision(1)
+                           << "foreign bridge anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
+                        pr.reason = rs.str();
+                        bridge_detail = "contig " + pr.target + " scaffolded to " + graph->get_path_name(p)
+                                      + " by foreign " + pr.donor + ": " + rs.str();
+                        bad = true;
+                    }
+                } else {   // adjacent target-to-target scaffold (no foreign bridge)
+                    pr.donor = graph->get_path_name(p); pr.donor_bp = path_bp(graph, p);
+                }
+                g_patch_records.push_back(pr);
+            }
+        }
+        seen.insert(p);
+        prev_tgt = i;
+        foreign_start = -1;
+    }
+    return bad;
+}
+
+// Partial-patch cleanup (run before revert_bad_patch).  For each foreign interior graft of the shape
+// [C-piece | foreign run | same-C-piece], excise it -- drop the foreign run and merge the two flanking
+// C-pieces, splicing C's own sequence back in -- when it is a repeat-region misjoin by either test:
+//   * k-mer content: it replaced >= min_replaced non-N bp of C but shares < min_recovery of C's k-mers
+//     (the donor came from a different locus/array); or
+//   * flank anchoring: the donor is not homologous to C's own sequence over flank_window bp on one of
+//     the two flanks (< min_flank %), i.e. the graft is not anchored at the right locus.  This catches
+//     N-gap fills (which k-mer cannot judge) and any join that rides a long repeat before diverging.
+// The rest of the patch (telomere completions, faithful fills) is kept instead of reverting the whole
+// contig.  Anything that doesn't fit this clean shape is left to revert_bad_patch's full-revert guard.
+void excise_bad_interior_grafts(const PathHandleGraph* graph,
+                                vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                const string& target_sample,
+                                double min_recovery, int64_t min_replaced,
+                                double min_flank, int64_t flank_window,
+                                unordered_map<path_handle_t, int64_t>& excised_nonN) {
+    unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
+    auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
+        auto it = posidx.find(C);
+        if (it != posidx.end()) return it->second;
+        auto& m = posidx[C]; int64_t p = 0;
+        graph->for_each_step_in_path(C, [&](step_handle_t s) { m[s] = p; p += graph->get_length(graph->get_handle_of_step(s)); });
+        return m;
+    };
+    vector<PatchRecord> kept_this_call;   // kept grafts from the current pass (final pass survives)
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        kept_this_call.clear();
+        for (int i = 0; i + 1 < (int)intervals.size() && !changed; ++i) {
+            path_handle_t C = graph->get_path_handle_of_step(get<0>(intervals[i]));
+            if (graph->get_sample_name(C) != target_sample) continue;
+            int j = -1; bool only_foreign = true;
+            for (int k = i + 1; k < (int)intervals.size(); ++k) {
+                path_handle_t pk = graph->get_path_handle_of_step(get<0>(intervals[k]));
+                if (pk == C) { j = k; break; }
+                if (graph->get_sample_name(pk) == target_sample) { only_foreign = false; break; }   // a different target contig: not a simple foreign graft
+            }
+            if (j < 0 || !only_foreign || j == i + 1) continue;
+            if (get<2>(intervals[i]) != get<2>(intervals[j])) continue;   // inconsistent orientation: leave to the full-revert guard
+            auto& pos = pos_of(C);
+            // forward [start,end) range of an interval, orientation-aware: for a reverse interval the
+            // convention is swapped (intervals_to_sequence walks get<0> backward to get<1>), so get<1>
+            // is the lower-position step and get<0> the higher.
+            auto fwd_range = [&](const tuple<step_handle_t, step_handle_t, bool>& iv) {
+                int64_t p0 = pos[get<0>(iv)], l0 = graph->get_length(graph->get_handle_of_step(get<0>(iv)));
+                int64_t p1 = pos[get<1>(iv)], l1 = graph->get_length(graph->get_handle_of_step(get<1>(iv)));
+                return get<2>(iv) ? make_pair(p1, p0 + l0) : make_pair(p0, p1 + l1);
+            };
+            pair<int64_t, int64_t> rgi = fwd_range(intervals[i]), rgj = fwd_range(intervals[j]);
+            int64_t lo, hi;
+            // The merge below is (get<0> of i, get<1> of j, orient of i): valid ONLY when the patch
+            // visits the two pieces in their on-contig order for that orientation -- forward => piece i
+            // is lower, reverse => piece i is higher (piece j lower).  A transposed revisit (order vs.
+            // orientation disagree) would make intervals_to_sequence walk off the path end (crash), so
+            // bail and leave it to the full-revert backstop.
+            if (!get<2>(intervals[i])) {                     // forward: piece i must be the lower piece
+                if (rgi.second > rgj.first) continue;
+                lo = rgi.second; hi = rgj.first;
+            } else {                                         // reverse: piece j must be the lower piece
+                if (rgj.second > rgi.first) continue;
+                lo = rgj.second; hi = rgi.first;
+            }
+            if (hi <= lo) continue;                          // pieces adjacent: nothing of C was replaced
+            string removed; int64_t p = 0;
+            graph->for_each_step_in_path(C, [&](step_handle_t s) {
+                handle_t h = graph->get_handle_of_step(s); int64_t l = graph->get_length(h);
+                int64_t oa = max(p, lo), ob = min(p + l, hi); if (oa < ob) removed += graph->get_sequence(h).substr(oa - p, ob - oa); p += l; });
+            int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
+
+            // Metrics for the report: k-mer recovery (CONTENT, when real sequence was replaced) AND flank
+            // anchoring (LOCUS, both sides) -- compute both so the table shows them.  The decision uses
+            // whichever is authoritative: k-mer for a non-N replacement, flank for a mostly-N gap fill.
+            double rec = -1.0, fl = -1.0, fr = -1.0;
+            vector<tuple<step_handle_t, step_handle_t, bool>> foreign(intervals.begin() + i + 1, intervals.begin() + j);
+            if (nonN >= min_replaced) rec = kmer_recovery(removed, intervals_to_sequence(graph, foreign));
+            {
+                unordered_set<nid_t> dL = path_node_set(graph, graph->get_path_handle_of_step(get<0>(intervals[i + 1])));
+                fl = flank_fraction(graph, get<1>(intervals[i]), get<2>(intervals[i]), dL, flank_window);
+                unordered_set<nid_t> dR = path_node_set(graph, graph->get_path_handle_of_step(get<0>(intervals[j - 1])));
+                fr = flank_fraction(graph, get<0>(intervals[j]), !get<2>(intervals[j]), dR, flank_window);
+            }
+            bool bad = (nonN >= min_replaced) ? (rec < min_recovery) : (fl < min_flank || fr < min_flank);
+
+            // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
+            // from the top after every excision, so only the final settled pass's kept grafts should be
+            // reported -- avoids duplicates).  An excised graft is recorded now, since it is removed below
+            // and will not be rescanned.
+            PatchRecord pr;
+            pr.type = "gap-fill"; pr.target = graph->get_path_name(C); pr.target_bp = path_bp(graph, C);
+            path_handle_t dp = graph->get_path_handle_of_step(get<0>(intervals[i + 1]));
+            pr.donor = graph->get_path_name(dp); pr.donor_bp = path_bp(graph, dp);
+            pr.replaced_bp = removed.size(); pr.kmer = rec; pr.flankL = fl; pr.flankR = fr;
+            pr.target_start = lo; pr.target_end = hi;   // the target region this graft replaced (fwd coords)
+            pr.accepted = !bad;
+            if (!bad) { kept_this_call.push_back(pr); continue; }   // faithful (content) or anchored (locus) -- keep
+            {
+                ostringstream rs; rs << fixed << setprecision(1);
+                if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
+                else          rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
+                pr.reason = rs.str();
+            }
+            g_patch_records.push_back(pr);
+            excised_nonN[C] += nonN;   // so the revert backstop's threshold still sees this replaced bp
+            // the patch visits piece i then piece j; merging them spans the whole region in the patch's
+            // own direction -- (get<0> of i, get<1> of j) works for forward and reverse alike.
+            tuple<step_handle_t, step_handle_t, bool> merged =
+                make_tuple(get<0>(intervals[i]), get<1>(intervals[j]), get<2>(intervals[i]));
+            intervals.erase(intervals.begin() + i, intervals.begin() + j + 1);
+            intervals.insert(intervals.begin() + i, merged);
+            changed = true;
+        }
+    }
+    // the final settled pass's kept grafts are the ones actually in the output
+    for (auto& kp : kept_this_call) g_patch_records.push_back(kp);
+}
+
 bool revert_bad_patch(const PathHandleGraph* graph,
                       const path_handle_t& ref_path,
                       const vector<path_handle_t>& tgt_paths,
@@ -1254,9 +1658,14 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
                       string default_sample,
-                      double threshold) {
+                      double threshold,
+                      double graft_recovery,
+                      int64_t graft_min_bp,
+                      double telo_threshold,
+                      const unordered_map<path_handle_t, int64_t>& excised_nonN,
+                      string& revert_reason) {
 
-    out_intervals.clear();    
+    out_intervals.clear();
     
     vector<path_handle_t> first_tgt_paths;
     int64_t tgt_length = 0;
@@ -1274,8 +1683,34 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     // we replace the patch with the input because it was too short
     bool to_revert = (double)patch_length / (double)tgt_length < threshold;
     if (to_revert) {
-        cout << "#Reverting failed patch as it covers only " << ((double)patch_length / (double)tgt_length)
-             << " of target" << endl;
+        ostringstream rr; rr << "patch covers only " << ((double)patch_length / (double)tgt_length) << " of target (< --min-cover)";
+        revert_reason = rr.str();
+    }
+
+    // sanity guard: reject patches that replaced real interior sequence of a contig without an
+    // assembly gap to justify it (repeat-region misjoin -- e.g. fragments spliced into satellite/
+    // segdup through ambiguous anchors).  this overrides an otherwise-accepted (even telomere-valid)
+    // patch and reverts to the input contigs.
+    string interior_detail;
+    if (splices_same_sample_interior(graph, in_intervals, sample_names[0], interior_detail)) {
+        revert_reason = interior_detail + " (repeat-region misjoin)";
+        to_revert = true;
+    }
+
+    // reject a foreign interior graft that recapitulates almost none of the target sequence it
+    // replaced -- a repeat-region misjoin where the donor came from a different locus
+    // (thresholds controlled by --graft-recovery / --graft-min-bp)
+    string graft_detail;
+    if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, excised_nonN, graft_detail)) {
+        revert_reason = graft_detail + " (repeat-region misjoin)";
+        to_revert = true;
+    }
+
+    // telomere-preservation: a patch must not discard a telomere the target already had
+    string telo_detail;
+    if (discards_target_telomere(graph, in_intervals, sample_names[0], telo_threshold, telo_detail)) {
+        revert_reason = telo_detail + " (target was already capped)";
+        to_revert = true;
     }
 
     if (!default_sample.length() && !to_revert) {
@@ -1316,11 +1751,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                 });
                 if (has_gaps) break;
             }
-            if (!has_gaps) {
-                cout << "#No patching is required (the sequence contains no gaps)" << endl;
-            } else {
-                cout << "#Reverting to input assembly because no patches from other assemblies were found" << endl;
-            }
+            revert_reason = has_gaps ? "no patches from other assemblies were found"
+                                     : "no patching required (no gaps)";
         }
     }
 
@@ -1401,111 +1833,20 @@ bool validate_telomeres(const PathHandleGraph* graph,
     // Search window - check up to 50kb from each end
     int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
 
-    // Helper to find where telomere ends (scans forward from start)
-    // OR find where telomere starts (scans backward from end)
-    // Uses sliding window to detect where repeat density drops below threshold
-    auto find_telomere_boundary = [&](int64_t search_start, int64_t search_end, bool scan_forward) -> int64_t {
-        const int64_t window_size = 500;  // 500bp sliding window
-        const double min_density = 0.7;   // Require 70% telomeric content in window
-
-        if (scan_forward) {
-            // Scan forward from start to find where telomere ends
-            int64_t telomere_end = search_start;
-            for (int64_t win_start = search_start; win_start + window_size < search_end; win_start += 100) {
-                int64_t repeats = 0;
-                for (int64_t pos = win_start; pos < min(win_start + window_size, search_end - 6); ++pos) {
-                    if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") {
-                        ++repeats;
-                        pos += 5;
-                    }
-                }
-                double density = 6.0 * (double)repeats / (double)window_size;
-                if (density >= min_density) {
-                    telomere_end = win_start + window_size;
-                } else if (telomere_end > search_start) {
-                    break;
-                }
-            }
-            return telomere_end > search_start ? telomere_end : -1;
-        } else {
-            // Scan backward from end to find where telomere starts
-            int64_t telomere_start = search_end;
-            for (int64_t win_end = search_end; win_end - window_size > search_start; win_end -= 100) {
-                int64_t win_start = max(search_start, win_end - window_size);
-                int64_t repeats = 0;
-                for (int64_t pos = win_start; pos < win_end - 6; ++pos) {
-                    if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") {
-                        ++repeats;
-                        pos += 5;
-                    }
-                }
-                double density = 6.0 * (double)repeats / (double)window_size;
-                if (density >= min_density) {
-                    telomere_start = win_start;
-                } else if (telomere_start < search_end) {
-                    break;
-                }
-            }
-            return telomere_start < search_end ? telomere_start : -1;
-        }
-    };
-
-    // Helper function to check for telomere repeats in actual telomeric region
-    auto has_telomere = [&](int64_t start, int64_t max_end, bool find_boundary, bool is_right_end) -> bool {
-        int64_t actual_start = start;
-        int64_t actual_end = max_end;
-
-        if (find_boundary) {
-            if (is_right_end) {
-                // For right telomere, scan backward to find start
-                int64_t telomere_start = find_telomere_boundary(start, max_end, false);
-                if (telomere_start >= start && telomere_start < max_end) {
-                    actual_start = telomere_start;
-                }
-            } else {
-                // For left telomere, scan forward to find end
-                int64_t telomere_end = find_telomere_boundary(start, max_end, true);
-                if (telomere_end > start) {
-                    actual_end = telomere_end;
-                }
-            }
-        }
-
-        int64_t fw_count = 0;
-        int64_t r_count = 0;
-
-        for (int64_t pos = actual_start; pos < actual_end - 6; ++pos) {
-            if (sequence.substr(pos, 6) == "TTAGGG") {
-                ++fw_count;
-                pos += 5;
-            } else if (sequence.substr(pos, 6) == "CCCTAA") {
-                ++r_count;
-                pos += 5;
-            }
-        }
-
-        int64_t region_len = actual_end - actual_start;
-        if (region_len < 500) {  // Need at least 500bp
-            return false;
-        }
-
-        double fw_density = 6. * ((double)fw_count / (double)region_len);
-        double r_density = 6. * ((double)r_count / (double)region_len);
-
-        return (fw_density >= threshold || r_density >= threshold);
-    };
+    // Telomere detection uses the shared seq_has_telomere() helper (also used by the patcher, so
+    // the two cannot disagree). Tips use boundary detection; the internal check does not.
 
     // Check for telomeres at the start (find boundary scanning forward)
-    bool has_start_telomere = has_telomere(0, tip_check_len, true, false);
+    bool has_start_telomere = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold);
 
     // Check for telomeres at the end (find boundary scanning backward)
-    bool has_end_telomere = has_telomere(max((int64_t)0, seq_len - tip_check_len), seq_len, true, true);
+    bool has_end_telomere = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold);
 
     // Check for telomeres in the middle (internal telomeres - should NOT exist)
     // Don't find boundary here - we want to detect any telomeric sequence
     bool has_internal_telomere = false;
     if (seq_len > 2 * tip_check_len) {
-        has_internal_telomere = has_telomere(tip_check_len, seq_len - tip_check_len, false, false);
+        has_internal_telomere = seq_has_telomere(sequence, tip_check_len, seq_len - tip_check_len, false, false, threshold);
     }
 
     if (verbose) {
@@ -1527,105 +1868,6 @@ void log_contig_telomeres(const PathHandleGraph* graph,
         return;
     }
 
-    // Dummy string for lambda capture - will be set per contig
-    string sequence;
-
-    // Helper function to find where telomere region ends (direction=1) or starts (direction=-1)
-    // Uses sliding window to detect where repeat density drops
-    auto find_telomere_end = [&](int64_t start_pos, int direction, int64_t max_search) -> int64_t {
-        const int64_t window_size = 500;
-        const double min_density = 0.7;
-        int64_t search_limit = direction > 0 ?
-            min(start_pos + max_search, (int64_t)sequence.length()) :
-            max(start_pos - max_search, (int64_t)0);
-
-        if (direction > 0) {
-            // Scan forward to find where telomere ends
-            int64_t telomere_end = start_pos;
-            for (int64_t win_start = start_pos; win_start + window_size < search_limit; win_start += 100) {
-                int64_t repeats = 0;
-                for (int64_t pos = win_start; pos < min(win_start + window_size, search_limit - 6); ++pos) {
-                    if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") {
-                        ++repeats;
-                        pos += 5;
-                    }
-                }
-                double density = 6.0 * (double)repeats / (double)window_size;
-                if (density >= min_density) {
-                    telomere_end = win_start + window_size;
-                } else if (telomere_end > start_pos) {
-                    break;
-                }
-            }
-            return telomere_end > start_pos ? telomere_end : -1;
-        } else {
-            // Scan backward to find where telomere starts
-            int64_t telomere_start = start_pos;
-            for (int64_t win_end = start_pos; win_end - window_size > search_limit; win_end -= 100) {
-                int64_t win_start = max(search_limit, win_end - window_size);
-                int64_t repeats = 0;
-                for (int64_t pos = win_start; pos < win_end - 6; ++pos) {
-                    if (sequence.substr(pos, 6) == "TTAGGG" || sequence.substr(pos, 6) == "CCCTAA") {
-                        ++repeats;
-                        pos += 5;
-                    }
-                }
-                double density = 6.0 * (double)repeats / (double)window_size;
-                if (density >= min_density) {
-                    telomere_start = win_start;
-                } else if (telomere_start < start_pos) {
-                    break;
-                }
-            }
-            return telomere_start < start_pos ? telomere_start : -1;
-        }
-    };
-
-    // Helper function to check for telomere density in a region
-    // This version finds the actual telomere boundary instead of using fixed windows
-    auto check_telomere_density = [&](int64_t start, int64_t end, bool find_boundary, bool is_right_end) -> pair<double, double> {
-        int64_t fw_count = 0;
-        int64_t r_count = 0;
-        int64_t actual_start = start;
-        int64_t actual_end = end;
-
-        // If requested, find where telomere actually ends/starts
-        if (find_boundary) {
-            if (is_right_end) {
-                // Scan backward from end to find where telomere starts
-                int64_t telomere_start = find_telomere_end(end, -1, end - start);
-                if (telomere_start >= start && telomere_start < end) {
-                    actual_start = telomere_start;
-                }
-            } else {
-                // Scan forward from start to find where telomere ends
-                int64_t telomere_end = find_telomere_end(start, 1, end - start);
-                if (telomere_end > start) {
-                    actual_end = telomere_end;
-                }
-            }
-        }
-
-        for (int64_t pos = actual_start; pos < actual_end - 6; ++pos) {
-            if (sequence.substr(pos, 6) == "TTAGGG") {
-                ++fw_count;
-                pos += 5;
-            } else if (sequence.substr(pos, 6) == "CCCTAA") {
-                ++r_count;
-                pos += 5;
-            }
-        }
-
-        int64_t region_len = actual_end - actual_start;
-        if (region_len < 500) {  // Require at least 500bp of telomere
-            return make_pair(0.0, 0.0);
-        }
-
-        double fw_density = 6. * ((double)fw_count / (double)region_len);
-        double r_density = 6. * ((double)r_count / (double)region_len);
-
-        return make_pair(fw_density, r_density);
-    };
 
     // Group intervals by path to analyze each contig separately
     unordered_map<path_handle_t, vector<tuple<step_handle_t, step_handle_t, bool>>> path_intervals;
@@ -1639,7 +1881,7 @@ void log_contig_telomeres(const PathHandleGraph* graph,
         path_handle_t path = path_int.first;
         const auto& path_ints = path_int.second;
 
-        sequence = intervals_to_sequence(graph, path_ints);
+        string sequence = intervals_to_sequence(graph, path_ints);
         int64_t seq_len = sequence.length();
 
         if (seq_len < 50) {
@@ -1649,14 +1891,11 @@ void log_contig_telomeres(const PathHandleGraph* graph,
         // Check tip regions - use up to 50kb search window
         int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
 
-        auto left_densities = check_telomere_density(0, tip_check_len, true, false);
-        auto right_densities = check_telomere_density(max((int64_t)0, seq_len - tip_check_len), seq_len, true, true);
-
-        double left_max_density = max(left_densities.first, left_densities.second);
-        double right_max_density = max(right_densities.first, right_densities.second);
-
-        bool has_left = left_max_density >= threshold;
-        bool has_right = right_max_density >= threshold;
+        // use the shared seq_has_telomere (the patcher/validator's detector) so this printed status
+        // cannot disagree with the patch decisions; report the density it measured
+        double left_max_density = 0.0, right_max_density = 0.0;
+        bool has_left  = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold, &left_max_density);
+        bool has_right = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold, &right_max_density);
 
         // Log all contigs with telomere information
         cout << "#Contig " << graph->get_path_name(path)

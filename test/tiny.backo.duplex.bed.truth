@@ -1,3 +1,5 @@
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason	target_start	target_end
+chrX	1	gap-fill	backo#1#chrX#0	46	duplex#2#chrX#0	46	23	.	100.0	100.0	accepted	.	10	33
 #Patched assembly on chrX for backo#1:
 backo#1#chrX#0	36	46	-
 duplex#2#chrX#0	10	36	-

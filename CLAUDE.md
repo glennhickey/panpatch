@@ -57,7 +57,7 @@ The patching algorithm follows this pipeline:
 2. **Anchor Finding** (`find_anchors`): Identifies nodes on the reference path where assembly paths start, end, or branch
 3. **Path Threading** (`thread_intervals`): Searches left-to-right through anchors, greedily selecting highest-priority paths at each junction
 4. **Smoothing & Extension** (`smooth_intervals`, `extend_intervals`): Merges adjacent intervals on the same path and extends to telomeres
-5. **Validation** (`revert_bad_patch`): Reverts to original contigs if patching fails quality checks
+5. **Validation** (`excise_bad_interior_grafts` then `revert_bad_patch`): First a partial-patch pass excises repeat-region-misjoin foreign interior grafts in place (splicing the target's own sequence back, keeping the rest of the patch) — judging each graft by content if it replaced real sequence (k-mer recovery, `--graft-recovery`/`--graft-min-bp`) or by flank anchoring if it filled an N-gap (`--min-flank`/`--flank-window`, since there is no replaced sequence to recapitulate). Then `revert_bad_patch` reverts the whole contig to the input if it still fails a quality check — too short (`--min-cover`), a same-sample interior splice or un-excisable foreign graft, a discarded target telomere, or (with `-T`) failed telomere validation. See the README *Why a patch is rejected* section for the full list and the messages each emits.
 
 **Graph Representation:**
 - Uses `bdsg::PathHandleGraph` interface from libbdsg for graph access
@@ -80,14 +80,17 @@ OpenMP is used for parallelization. Configure with:
 ## Usage Pattern
 
 ```bash
-panpatch <graph.vg> -r <reference> -s <sample-to-patch> -s <patch-source-1> -s <patch-source-2> ...
+panpatch <graph.vg> [graph2.vg ...] -r <reference> -s <sample-to-patch> -s <patch-source-1> -s <patch-source-2> ...
 ```
 
 Sample names come from minigraph-cactus seqfile (first column, without `.1/.2` haplotype suffixes). Priority is determined by order of `-s` flags.
 
+**Multiple graphs / output model:** one or more graphs may be given (e.g. `panpatch chr*.vg`), processed in lexicographic order with concatenated output. A pre-scan verifies the `-r`/`-s` samples exist in some input (typo → immediate error); graphs lacking the target are skipped, and a graph with no single reference path (e.g. a `chrOther` unplaced-contigs graph) has its target contigs **passed through** unchanged (`passthrough` rows). Three sinks: the **report → stdout** (a TSV table, one row per candidate patch — `chrom hap type target:bp donor:bp replaced_bp kmer% flankL% flankR% decision reason` — streamed per contig, followed by `#Contig` cap-status lines), **`--bed FILE`** → patched intervals (BED), **`-f/--fasta FILE`** → one FASTA per haplotype (`FILE.hap1.fa`, ...). The table is built from a `g_patch_records` accumulator (populated in `find_end_patch`/`excise_bad_interior_grafts`/`record_scaffolds`); main stamps chrom/hap, finalizes each accept/reject (a whole-contig revert cascades onto its rows), and prints the rows. The BED (held in memory) and each per-haplotype FASTA (streamed to a `*.tmp` file as graphs are processed, so the genome is never all in RAM) are renamed to their final names only after every graph succeeds — atomic, no partial output on failure. The hap/graph loops are serial (no OpenMP).
+
 **Common Options:**
-- `-f/--fasta FILE`: Output patched assembly as FASTA
-- `-b/--exclude-bed FILE`: BED file of target assembly regions to exclude from patching (coordinates in first `-s` sample space)
+- `-f/--fasta FILE`: Output patched assembly as FASTA, one file per haplotype (`FILE.hap<N>.fa`); atomic
+- `--bed FILE`: Output the patched-assembly intervals (BED); atomic
+- `-b/--exclude-bed FILE`: BED file of target assembly regions to exclude from patching (coordinates in first `-s` sample space; input filter, distinct from `--bed`)
 - `-w/--window SIZE`: Window size for identity calculation (default: 1000)
 - `-e/--default-sample`: Fallback sample if patching fails
 - `-p/--progress`: Enable progress output
@@ -109,7 +112,8 @@ Sample names come from minigraph-cactus seqfile (first column, without `.1/.2` h
 - Reference-dependent: If graph doesn't align contigs to reference, no anchors will be found
 - Left-to-right search is simplistic; some cases could benefit from more general graph search
 - Nested patches not currently supported (requires target path restriction removal)
-- No sophisticated quality checking for bad patches (telomere preservation, alignment quality, sequence length reasonableness)
+- Patch quality control is heuristic — k-mer recovery, telomere preservation, and length sanity catch the common misjoins (see the README *Why a patch is rejected* section), but there is no full alignment-based scoring
+- The N-gap-fill flank-anchoring guard (`--min-flank`/`--flank-window`) tests donor↔target homology by *shared graph-node ids*. In fully-collapsed satellite/segdup, a misjoined donor and the target's own flank can traverse the *same* collapsed nodes, so the fraction reads ~100% and the test cannot tell a misjoin from a faithful same-locus fill — it is best-effort exactly in those repeat regions. This is why the per-patch k-mer and flank numbers are printed to stdout: so the user can scrutinize borderline calls and retune the guards for their own assemblies. Other known holes (multi-donor runs averaging a misjoin away; non-clean graft shapes bypassing excise) are likewise best-effort, not guaranteed
 
 ### Coordinate System
 - Intervals use half-open coordinates `[start, end)` except for the last interval which is closed

@@ -1,4 +1,4 @@
-#No patching is required (the sequence contains no gaps)
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason	target_start	target_end
 #Patched assembly on chrX for hifi#1:
 hifi#1#chrX#0	0	46	+
 

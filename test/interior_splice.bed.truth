@@ -1,0 +1,8 @@
+chrom	hap	type	target	target_bp	donor	donor_bp	replaced_bp	kmer%	flankL%	flankR%	decision	reason	target_start	target_end
+chrX	1	scaffold	frag#1#main#0	12060	frag#1#alt#0	60	.	.	.	.	rejected	contig reverted: contig frag#1#main#0 was used non-contiguously with same-sample fragment frag#1#alt#0 spliced into its interior (repeat-region misjoin)	.	.
+#Contig frag#1#main#0 len=12060bp left=NO(0.006) right=NO(0.006)
+#Contig frag#1#alt#0 len=60bp left=NO(0.000) right=NO(0.000)
+#Patched assembly on chrX for frag#1:
+frag#1#alt#0	0	60	+
+frag#1#main#0	0	12060	+
+

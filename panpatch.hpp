@@ -30,19 +30,6 @@ unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGr
 unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHandleGraph* graph,
                                                                   const unordered_map<path_handle_t, double>& coverage_map);
 
-// sort contigs against a given reference genome
-// it's expected that the other_paths are all part of the same sample and haplotype
-// (see above function to parse them out)
-multimap<pair<int64_t, int64_t>, path_handle_t> sort_overlapping_paths(const PathHandleGraph* graph,
-                                                                       const path_handle_t& ref_path,
-                                                                       const vector<path_handle_t>& other_paths);
-
-// quick and dirty telomere checker!!
-// returns position of left and right telomere (wrt to respective ends)
-pair<int64_t, int64_t> find_telomeres(const PathHandleGraph* graph,
-                                      const path_handle_t path,
-                                      double threshold=0.95);
-
 // parse a BED file into regions keyed by contig name
 // skips comment/header lines (starting with #, track, browser)
 BedRegions parse_bed_file(const string& bed_filename);
@@ -110,9 +97,41 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
                                                                       int64_t max_handoff=500000,
                                                                       bool verbose=false);
 
+// one row of the patch report: a candidate patch (telomere completion, gap-fill, or scaffold join),
+// with its similarity metrics and the accept/reject decision.  Accumulated in g_patch_records during a
+// run and printed as a TSV table to stdout by main.  chrom/hap are stamped by main; metrics default to
+// -1 ("n/a", e.g. flanks for a 1-sided telomere patch, or k-mer for a mostly-N gap fill).
+struct PatchRecord {
+    std::string chrom;
+    int64_t hap = 0;
+    std::string type;            // "telomere" | "gap-fill" | "scaffold"
+    std::string target;          // target contig name
+    int64_t target_bp = 0;
+    std::string donor = ".";     // donor contig name
+    int64_t donor_bp = 0;
+    int64_t replaced_bp = -1;    // target bp replaced/trimmed
+    double kmer = -1;            // k-mer recovery %
+    double flankL = -1, flankR = -1;  // flank anchoring % on each side
+    bool accepted = true;
+    std::string reason;          // why rejected ("" if accepted)
+    int64_t target_start = -1, target_end = -1;  // replaced region in the target contig (fwd coords; -1 = n/a)
+};
+extern std::vector<PatchRecord> g_patch_records;
+
+// total sequence length (bp) of a path
+int64_t path_bp(const PathHandleGraph* g, path_handle_t p);
+
+// record scaffold joins (patch spanning >1 target contig) as report rows; flank-guard foreign-bridged
+// joins.  returns true (+ bridge_detail) if any foreign bridge is a wrong-locus misjoin -> revert.
+bool record_scaffolds(const PathHandleGraph* graph,
+                      const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                      const std::string& target_sample, double min_flank, int64_t flank_window,
+                      std::string& bridge_detail);
+
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
-                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
+                     const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                     std::ostream& out = std::cout);
 
 // get the dna sequence of a list of intervals (ie the patched assembly for a contig)
 string intervals_to_sequence(const PathHandleGraph* graph,
@@ -131,6 +150,18 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                int64_t max_telomere_patch = 500000,
                                                                bool verbose = false);
 
+// partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
+// flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
+// (content) or low flank anchoring (locus).  run before revert_bad_patch.
+void excise_bad_interior_grafts(const PathHandleGraph* graph,
+                                vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                const string& target_sample,
+                                double min_recovery,
+                                int64_t min_replaced,
+                                double min_flank,
+                                int64_t flank_window,
+                                std::unordered_map<path_handle_t, int64_t>& excised_nonN);
+
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,
                       const path_handle_t& ref_path,
@@ -139,7 +170,12 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,                      
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
                       string default_sample,
-                      double threshold);
+                      double threshold,
+                      double graft_recovery,
+                      int64_t graft_min_bp,
+                      double telo_threshold,
+                      const std::unordered_map<path_handle_t, int64_t>& excised_nonN,
+                      std::string& revert_reason);
 
 // make sure all intervals have the correct orientation (and assert fail if not)
 void check_intervals(const PathHandleGraph* graph,
