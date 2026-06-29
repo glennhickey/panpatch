@@ -2,10 +2,11 @@
 
 Use a pangenome graph to patch (slightly) fragmented assemblies into T2T chromosomes.
 
-Panpatch supports two types of patches:
+Panpatch supports three types of patches:
 
 1) [Gaps inside scaffolds (`N`s)](#patching-gaps)
 2) [Scaffolding disconnected contigs](#scaffolding)
+3) [Completing missing terminal telomeres](#telomeres) (with `-T`)
 
 In all cases, `panpatch` requires a "reference" assembly with chromosome-scale scaffolds that it uses for orientation (`-r`), an assembly to patch (first `-s`), and one or more assemblies to use for patching (subsequent `-s`).  If the assembly being patched is chromosome-scale, it can be used as the reference. 
 
@@ -83,7 +84,7 @@ Unlike the previous example the output here is diploid, since both verkko haplot
 Clone it with submodules then `make`.  The `panpatch` binary should be built in the same directory if all went well.
 
 ```
-git clone --recursive https://github.com/glennhickey/panpatch.git --branch development
+git clone --recursive https://github.com/glennhickey/panpatch.git
 cd panpatch
 make
 ```
@@ -232,7 +233,7 @@ The above examples take about 2 hours on the cluster to run `cactus-pangenome`. 
 
 ### Algorithm
 
-All contigs are first binned by haplotype.  Since the input not necessarily trio-phased, this determines whether, for example, haplotype 1 from verkko corresponds to haplotype 1 or haplotype 2 from hifasm, etc.
+All contigs are first binned by haplotype.  Since the input is not necessarily trio-phased, this determines whether, for example, haplotype 1 from verkko corresponds to haplotype 1 or haplotype 2 from hifiasm, etc.
 
 This is accomplished by looking at the average alignment identity in the graph between pairs of haplotypes, over windows of `1000bp`.
 
@@ -246,10 +247,7 @@ Finally a path through the anchors is searched in the graph that connects the fi
 
 ### Limitations and future work
 
-* Needs better checking for obviously bad patches:
-     * Are the supporting alignments sketchy?
-     * Are sequences being patched in unreasonably long?
-     * Etc.
+* Patch quality control is heuristic — k-mer recovery, flank anchoring, telomere preservation, and length checks (see [Why a patch is rejected](#why-a-patch-is-rejected-quality-control)) catch the common misjoins, but there is no full alignment-based scoring of a patch.
 * Entirely reference-based.  If graph doesn't align contigs to reference, then no anchors will be found.  This could happen in acrocentric short arms, for example.
 * Left-to-right reference-based graph search is very simplistic, and some cases could probably be improved with more general search.
 

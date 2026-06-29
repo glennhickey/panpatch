@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**panpatch** is a C++ tool that uses pangenome graphs to patch fragmented assemblies into telomere-to-telomere (T2T) chromosomes. It supports two types of patches:
+**panpatch** is a C++ tool that uses pangenome graphs to patch fragmented assemblies into telomere-to-telomere (T2T) chromosomes. It supports three types of patches:
 1. Filling gaps inside scaffolds (Ns)
 2. Scaffolding disconnected contigs
+3. Completing missing terminal telomeres (with `-T`)
 
 The tool operates on chromosome graphs in `.vg` format created by minigraph-cactus, which include a reference contig (e.g., CHM13) and multiple assemblies.
 
