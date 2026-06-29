@@ -30,19 +30,6 @@ unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGr
 unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHandleGraph* graph,
                                                                   const unordered_map<path_handle_t, double>& coverage_map);
 
-// sort contigs against a given reference genome
-// it's expected that the other_paths are all part of the same sample and haplotype
-// (see above function to parse them out)
-multimap<pair<int64_t, int64_t>, path_handle_t> sort_overlapping_paths(const PathHandleGraph* graph,
-                                                                       const path_handle_t& ref_path,
-                                                                       const vector<path_handle_t>& other_paths);
-
-// quick and dirty telomere checker!!
-// returns position of left and right telomere (wrt to respective ends)
-pair<int64_t, int64_t> find_telomeres(const PathHandleGraph* graph,
-                                      const path_handle_t path,
-                                      double threshold=0.95);
-
 // parse a BED file into regions keyed by contig name
 // skips comment/header lines (starting with #, track, browser)
 BedRegions parse_bed_file(const string& bed_filename);

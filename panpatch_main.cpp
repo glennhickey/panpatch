@@ -17,7 +17,6 @@
 #include "handlegraph/path_handle_graph.hpp"
 #include "bdsg/packed_graph.hpp"
 #include "bdsg/hash_graph.hpp"
-#include "bdsg/snarl_distance_index.hpp"
 #include "bdsg/overlays/overlay_helper.hpp"
 #include "panpatch.hpp"
 
@@ -76,7 +75,8 @@ void help(char** argv) {
        << "    -M, --max-telomere-patch N   Max bp of target sequence a -T telomere patch may replace at a contig end [500000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << "        --min-cover FLOAT        Revert a patch covering less than this fraction of the input length [0.95]" << endl
-       << "        --telomere-threshold F   Min telomere hexamer density to call a telomere (with -T) [0.8]" << endl
+       << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by the" << endl
+       << "                                 -T validation/patch and the always-on discarded-telomere guard) [0.8]" << endl
        << "        --graft-recovery FLOAT   Revert a foreign interior graft sharing less than this % of the replaced k-mers [50]" << endl
        << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
        << "        --min-flank FLOAT        Revert a foreign interior graft anchored to less than this % of the target flank [50]" << endl
@@ -153,6 +153,10 @@ int main(int argc, char** argv) {
             break;
         case 'w':
             window_size = atoi(optarg);
+            if (window_size <= 0) {
+                cerr << "[panpatch] error: --window (-w) must be a positive integer" << endl;
+                return 1;
+            }
             break;
         case 'e':
             default_sample = optarg;
@@ -205,11 +209,12 @@ int main(int argc, char** argv) {
             out_bed_filename = optarg;
             break;
         case 'h':
+            help(argv);
+            return 0;
         case '?':
             /* getopt_long already printed an error message. */
             help(argv);
-            exit(1);
-            break;
+            return 1;
         default:
             abort ();
         }
