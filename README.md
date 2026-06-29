@@ -111,7 +111,7 @@ will patch the `PAN028-verkko` assembly, using `PAN028-hifiasm` where possible, 
 
 **Three outputs.**
 
-- **the report** — a TSV table, one row per candidate patch, streamed to **stdout** as each contig is processed.  Columns: `chrom hap type target:bp donor:bp replaced_bp kmer% flankL% flankR% decision reason`.  `type` is `telomere`, `gap-fill`, or `scaffold`; a 2-sided graft shows both its k-mer recovery (content) and flank anchoring (locus), a telomere shows its k-mer only (`.` = n/a); `decision` is `accepted` or `rejected`, with the `reason` column giving the rejection cause.  Per-contig telomere cap status (`#Contig ...`) is printed after the rows.  These numbers let you scrutinise borderline calls and retune the guards (`--graft-recovery`, `--min-flank`, ...) for your own assemblies.
+- **the report** — a TSV table, one row per candidate patch, streamed to **stdout** as each contig is processed.  Columns: `chrom hap type target target_bp donor donor_bp replaced_bp kmer% flankL% flankR% decision reason target_start target_end`.  `type` is `telomere`, `gap-fill`, or `scaffold`; a 2-sided graft shows both its k-mer recovery (content) and flank anchoring (locus), a telomere shows its k-mer only (`.` = n/a); `decision` is `accepted` or `rejected`, with the `reason` column giving the rejection cause; `target_start`/`target_end` give the target-contig region (forward coords) a graft replaced (`.` for telomere, scaffold, and passthrough rows).  Per-contig telomere cap status (`#Contig ...`) is printed after the rows.  These numbers let you scrutinise borderline calls and retune the guards (`--graft-recovery`, `--min-flank`, ...) for your own assemblies.
 - **`--bed FILE`** writes the patched-assembly contig intervals (BED format, spanning each reference chromosome telomere-to-telomere).
 - **`-f/--fasta FILE`** writes the patched sequence as **one FASTA per haplotype** (`FILE.hap1.fa`, `FILE.hap2.fa`, ...), giving the diploid split automatically.
 
@@ -142,9 +142,9 @@ The BED and FASTA are written only **after every input graph has been processed 
 The report table on **stdout** has one row per candidate patch, e.g.:
 
 ```
-chrom  hap  type      target              target_bp  donor       donor_bp   replaced_bp  kmer%  flankL%  flankR%  decision  reason
-chr12  2    gap-fill  haplotype2-0000064  132285855  CM088792.1  133100000  1175239      98.4   100.0    100.0    accepted  .
-chr14  1    gap-fill  haplotype1-0000004  101799395  CM090131.1  101948476  197297       0.4    98.1     100.0    rejected  k-mer recovery 0.4% < 50.0% (repeat-region misjoin)
+chrom  hap  type      target              target_bp  donor       donor_bp   replaced_bp  kmer%  flankL%  flankR%  decision  reason                                               target_start  target_end
+chr12  2    gap-fill  haplotype2-0000064  132285855  CM088792.1  133100000  1175239      98.4   100.0    100.0    accepted  .                                                    63000000      64175239
+chr14  1    gap-fill  haplotype1-0000004  101799395  CM090131.1  101948476  197297       0.4    98.1     100.0    rejected  k-mer recovery 0.4% < 50.0% (repeat-region misjoin)  101051458     101248755
 ```
 
 The optional **`--bed`** file lists the contig intervals of the patched assembly (the path taken through the graph for each haplotype):
