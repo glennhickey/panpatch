@@ -1713,7 +1713,15 @@ bool revert_bad_patch(const PathHandleGraph* graph,
         to_revert = true;
     }
 
-    if (!default_sample.length() && !to_revert) {
+    // no-patch detection: the threaded output is just the target's own single contig (no foreign
+    // sequence spliced in, no second target contig scaffolded) -> nothing was actually patched.
+    // this runs even when -e/--default-sample is set: "nothing to patch" means the target contig is
+    // emitted untouched (native orientation) below, NOT replaced -- -e substitutes only on a real
+    // patch *failure* (the to_revert checks above), never here.  (gating this on !default_sample used
+    // to skip detection entirely with -e, leaving the reference-threaded path in place, which
+    // reverse-complements any target contig stored antisense to the reference.)
+    bool no_patch = false;
+    if (!to_revert) {
         bool patch_happened = false;
         unordered_set<path_handle_t> tgt_contigs_in_patch;
         for (const auto& interval : in_intervals) {
@@ -1732,9 +1740,10 @@ bool revert_bad_patch(const PathHandleGraph* graph,
         if (tgt_contigs_in_patch.size() > 1) {
             patch_happened = true;
         }
-        // we replace the patch with the reference because there was no patch
-        to_revert = !patch_happened;
-        if (to_revert) {
+        // we replace the patch with the target's own contig because there was no patch
+        if (!patch_happened) {
+            to_revert = true;
+            no_patch = true;
             // check if target paths have any gaps (N bases)
             bool has_gaps = false;
             for (const path_handle_t& tgt_path : first_tgt_paths) {
@@ -1757,7 +1766,9 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     }
 
     if (to_revert) {
-        if (!default_sample.empty()) {
+        // -e/--default-sample substitutes its own contig only for a genuine patch *failure*; a
+        // no-patch revert always restores the target's own contig in native orientation.
+        if (!default_sample.empty() && !no_patch) {
             vector<path_handle_t> default_paths;
             graph->for_each_path_of_sample(default_sample, [&](path_handle_t path_handle) {
                 size_t hap = graph->get_haplotype(path_handle);
