@@ -4,6 +4,9 @@ Use a pangenome graph to patch (slightly) fragmented assemblies into telomere-to
 
 It needs a **reference** with chromosome-scale scaffolds for orientation (`-r`), a **target** to patch (first `-s`), and one or more **donors** in priority order (subsequent `-s`). A chromosome-scale target can be its own reference.
 
+> [!IMPORTANT]
+> **The recommended way to run panpatch is [`cactus-panpatch`](https://github.com/ComparativeGenomicsToolkit/cactus/blob/master/doc/pangenome.md#patching-assemblies-cactus-panpatch)**, now included in [Cactus](https://github.com/ComparativeGenomicsToolkit/cactus). It is a higher-level interface that builds the pangenome graph and runs panpatch for you in a single command — much simpler than the manual workflow below.
+
 ## Quick start
 
 **1. Build a pangenome graph** of your assemblies with [Minigraph-Cactus](https://github.com/ComparativeGenomicsToolkit/cactus/blob/master/doc/pangenome.md). The `--reference` and `--chrom-vg full` options are required. List the assemblies in a seqfile (the `.1`/`.2` suffix sets the [haplotype](https://github.com/ComparativeGenomicsToolkit/cactus/blob/master/doc/pangenome.md#sample-names)):
@@ -147,3 +150,9 @@ The reference path is then scanned left-to-right for *anchors* — nodes where a
 Running time: `cactus-pangenome` takes a couple of hours on a cluster; the single `panpatch` command over all chromosome graphs takes ~2 minutes on a desktop.
 
 **Limitations:** entirely reference-based (no anchors are found where the graph doesn't align contigs to the reference, e.g. some acrocentric short arms); the left-to-right search is simple and some cases would benefit from a more general graph search.
+
+## Citation
+
+If you use panpatch, please cite:
+
+> Cechova M, Potapova TA, Rechtsteiner A, Hickey G, *et al.* Complete genomes of a multi-generational pedigree to expand studies of genetic and epigenetic inheritance. *bioRxiv* (2025). [doi:10.64898/2025.12.14.693655](https://doi.org/10.64898/2025.12.14.693655)
