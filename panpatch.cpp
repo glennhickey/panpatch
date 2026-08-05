@@ -452,8 +452,14 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                                                                    const vector<path_handle_t>& other_paths,
                                                                    const ExcludedRefRegions& excluded_regions) {
 
-    assert(ref_anchors.size() > 1);
-    assert(tgt_paths.size() > 0);
+    // fewer than two reference anchors: the target shares <=1 node with the reference path (common
+    // for acrocentric short arms aligned against an external reference), so there is nothing to
+    // thread between -- return empty and let greedy_patch revert this contig to its input sequence
+    if (ref_anchors.size() <= 1 || tgt_paths.empty()) {
+        cerr << "[panpatch] warning: only " << ref_anchors.size() << " reference anchor(s) on "
+             << graph->get_path_name(ref_path) << "; emitting input unchanged" << endl;
+        return {};
+    }
 
     // build target path set for O(1) lookup when checking excluded regions
     unordered_set<path_handle_t> tgt_path_set(tgt_paths.begin(), tgt_paths.end());
