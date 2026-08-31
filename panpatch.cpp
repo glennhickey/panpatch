@@ -812,7 +812,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         const vector<string>& sample_names,
         double telo_threshold,
         int64_t max_handoff,
-        bool verbose) {
+        bool verbose,
+        bool report_failures) {
 
     static const int64_t OUTER = 20000;            // inspect this many bp at a contig tip for a telomere
     static const int64_t REPORT_MARGIN = 3000000;  // keep searching this far past the cap to report a skipped handoff
@@ -1005,10 +1006,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
             s_i = inward(s_i);
         }
 
-        // capless end with no usable donor handoff in range: record why, so the user can see which ends
-        // were left as-is and whether it's a simple gap (no telomere anywhere, no donor) or an assembly
-        // issue beyond panpatch's scope (a telomere present but buried/degraded at the tip).
-        {
+        // capless end with no usable donor handoff in range.  report_failures (set under -T, where a
+        // missing telomere is why a contig reverts) records why -- which ends were left as-is, and
+        // whether it's a simple gap (no telomere anywhere, no donor) or a telomere present but
+        // buried/degraded at the tip.  when telomere patching is just the default (not required), this
+        // is a non-event, so stay quiet.
+        if (report_failures) {
             PatchRecord pr;
             pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
             pr.accepted = false;
@@ -1156,7 +1159,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool patch_ends,
                                                                double telo_threshold,
                                                                int64_t max_telomere_patch,
-                                                               bool verbose) {
+                                                               bool verbose,
+                                                               bool report_telomere_failures) {
 
 
 #ifdef debug
@@ -1249,7 +1253,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
 
     if (patch_ends) {
         extended_intervals = extend_to_telomeres(graph, extended_intervals, sample_covers,
-                                                 sample_names, telo_threshold, max_telomere_patch, verbose);
+                                                 sample_names, telo_threshold, max_telomere_patch, verbose,
+                                                 report_telomere_failures);
         check_intervals(graph, extended_intervals);
     }
 
@@ -1555,6 +1560,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 const string& target_sample,
                                 double min_recovery, int64_t min_replaced,
                                 double min_flank, int64_t flank_window,
+                                bool patch_gap,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
@@ -1623,6 +1629,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 fr = flank_fraction(graph, get<0>(intervals[j]), !get<2>(intervals[j]), dR, flank_window);
             }
             bool bad = (nonN >= min_replaced) ? (rec < min_recovery) : (fl < min_flank || fr < min_flank);
+            if (!patch_gap) bad = true;   // gap patching disabled (--patch-types): excise every gap-fill graft, restoring the target's own (gapped) sequence
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
             // from the top after every excision, so only the final settled pass's kept grafts should be
@@ -1638,8 +1645,9 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             if (!bad) { kept_this_call.push_back(pr); continue; }   // faithful (content) or anchored (locus) -- keep
             {
                 ostringstream rs; rs << fixed << setprecision(1);
-                if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
-                else          rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
+                if (!patch_gap)    rs << "gap-fill excluded by --patch-types";
+                else if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
+                else               rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
                 pr.reason = rs.str();
             }
             g_patch_records.push_back(pr);

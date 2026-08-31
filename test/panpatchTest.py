@@ -75,6 +75,16 @@ run('panpatch telomere.vg -r x -s verkko -s noTelo -T --bed telomere.noTelo.T.be
 run('diff telomere.noTelo.T.bed telomere.noTelo.T.bed.truth')
 temp_files += ['telomere.noTelo.T.bed']
 
+# --- --patch-types: gap/telomere toggles (both on by default) ---
+# default: telomere patching is on, but stays silent when there is nothing to complete (no telomere rows)
+run('! (panpatch tiny.vg -r x -s verkko -s hifi 2>/dev/null | grep -q telomere)')
+# -T additionally reports the per-end telomere failures (and requires a telomere at both ends)
+run('panpatch tiny.vg -r x -s verkko -s hifi -T 2>/dev/null | grep -q telomere')
+# --patch-types telomere turns gap-fill off: the tiny gap-fill is excised (marked excluded in the report)
+run('panpatch tiny.vg -r x -s verkko -s hifi --patch-types telomere 2>/dev/null | grep -q "excluded by --patch-types"')
+# -T with telomere excluded from --patch-types is contradictory and must error
+run('! panpatch tiny.vg -r x -s verkko -s hifi -T --patch-types gap 2>/dev/null')
+
 # No-gaps message test: hifi has no N bases, so should get friendly message
 run('panpatch tiny.vg -r x -s hifi -s verkko --bed tiny.nogaps.bed.int > tiny.nogaps.bed.rep && cat tiny.nogaps.bed.rep tiny.nogaps.bed.int > tiny.nogaps.bed')
 run('diff tiny.nogaps.bed tiny.nogaps.bed.truth')

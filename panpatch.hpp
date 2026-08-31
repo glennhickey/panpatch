@@ -95,7 +95,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
                                                                       const vector<string>& sample_names,
                                                                       double telo_threshold=0.8,
                                                                       int64_t max_handoff=500000,
-                                                                      bool verbose=false);
+                                                                      bool verbose=false,
+                                                                      bool report_failures=false);
 
 // one row of the patch report: a candidate patch (telomere completion, gap-fill, or scaffold join),
 // with its similarity metrics and the accept/reject decision.  Accumulated in g_patch_records during a
@@ -148,7 +149,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool patch_ends = false,
                                                                double telo_threshold = 0.8,
                                                                int64_t max_telomere_patch = 500000,
-                                                               bool verbose = false);
+                                                               bool verbose = false,
+                                                               bool report_telomere_failures = false);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
@@ -160,6 +162,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 int64_t min_replaced,
                                 double min_flank,
                                 int64_t flank_window,
+                                bool patch_gap,
                                 std::unordered_map<path_handle_t, int64_t>& excised_nonN);
 
 // return the input intervals unmodified if it failed to find a reasonable patch

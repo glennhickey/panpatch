@@ -71,9 +71,9 @@ void help(char** argv) {
        << "    -w, --window SIZE            Size of window used for computing identity for haplotype matching [1000]" << endl
        << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
-       << "    -T, --require-telomeres      Require telomeres at both ends (no internal): patch a missing terminal telomere from another assembly when possible, else revert" << endl
-       << "        --patch-telomeres        Like -T's patching but do NOT require both ends: complete a terminal telomere from another assembly when possible, keeping the contig otherwise (still reverts an internal-telomere scaffold misjoin)" << endl
-       << "    -M, --max-telomere-patch N   Max bp of target sequence a -T/--patch-telomeres telomere patch may replace at a contig end [500000]" << endl
+       << "        --patch-types LIST       Which of {gap,telomere} to attempt, comma-separated [default: both]; scaffolding is always attempted" << endl
+       << "    -T, --require-telomeres      Require a telomere at both ends (revert a contig that isn't); implies telomere patching" << endl
+       << "    -M, --max-telomere-patch N   Max bp of target sequence a telomere patch may replace at a contig end [500000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << "        --min-cover FLOAT        Revert a patch covering less than this fraction of the input length [0.95]" << endl
        << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by the" << endl
@@ -97,7 +97,8 @@ int main(int argc, char** argv) {
     int c;
     int64_t window_size = 1000;
     bool require_telomeres = false;
-    bool patch_telomeres = false;
+    bool patch_gap = true;
+    bool patch_telomere = true;
     int64_t max_telomere_patch = 500000;
     double fail_threshold = 0.95;
     double telo_threshold = 0.8;
@@ -118,7 +119,7 @@ int main(int argc, char** argv) {
             {"default-sample", required_argument, 0, 'e'},
             {"threads", required_argument, 0, 't'},
             {"require-telomeres", no_argument, 0, 'T'},
-            {"patch-telomeres", no_argument, 0, 1008},
+            {"patch-types", required_argument, 0, 1008},
             {"max-telomere-patch", required_argument, 0, 'M'},
             {"exclude-bed", required_argument, 0, 'b'},
             {"min-cover", required_argument, 0, 1001},
@@ -178,8 +179,21 @@ int main(int argc, char** argv) {
             require_telomeres = true;
             break;
         case 1008:
-            patch_telomeres = true;
+        {
+            patch_gap = patch_telomere = false;
+            stringstream pss(optarg); string ptok;
+            while (getline(pss, ptok, ',')) {
+                if (ptok.empty()) continue;
+                else if (ptok == "gap") patch_gap = true;
+                else if (ptok == "telomere") patch_telomere = true;
+                else { cerr << "[panpatch] error: unknown --patch-types value '" << ptok
+                            << "' (expected a comma-separated subset of gap,telomere)" << endl; return 1; }
+            }
+            if (!patch_gap && !patch_telomere) {
+                cerr << "[panpatch] error: --patch-types selected no patch types" << endl; return 1;
+            }
             break;
+        }
         case 'M':
         {
             char* m_end = nullptr;
@@ -236,6 +250,11 @@ int main(int argc, char** argv) {
     }
     if (ref_sample.empty()) {
         cerr << "[panpatch] error: -r must be used to specify a reference sample" << endl;
+        return 1;
+    }
+    // -T requires the T2T end result, which is meaningless if telomere patching is turned off
+    if (require_telomeres && !patch_telomere) {
+        cerr << "[panpatch] error: -T/--require-telomeres cannot be used with --patch-types that excludes telomere" << endl;
         return 1;
     }
     // validate numeric thresholds (a nonsensical value silently disables or inverts a guard)
@@ -442,7 +461,7 @@ int main(int argc, char** argv) {
         }
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
-            require_telomeres || patch_telomeres, telo_threshold, max_telomere_patch, progress);
+            patch_telomere, telo_threshold, max_telomere_patch, progress, require_telomeres);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -450,7 +469,7 @@ int main(int argc, char** argv) {
         // still accounts for them.
         unordered_map<path_handle_t, int64_t> excised_nonN;
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
-                                   min_flank, flank_window, excised_nonN);
+                                   min_flank, flank_window, patch_gap, excised_nonN);
 
         // record scaffold joins (patch spans >1 target contig) for the report, and guard foreign-bridged
         // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.
@@ -461,7 +480,7 @@ int main(int argc, char** argv) {
         // --patch-telomeres only rejects an internal-telomere scaffold misjoin (missing ends are kept).
         bool telomere_validation_failed = false;
         string telo_fail_reason;
-        if ((require_telomeres || patch_telomeres) && !patched_intervals.empty()) {
+        if (patch_telomere && !patched_intervals.empty()) {
             if (progress) {
                 cerr << "[panpatch]: Validating telomeres" << endl;
             }

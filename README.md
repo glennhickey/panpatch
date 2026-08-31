@@ -1,6 +1,6 @@
 # panpatch
 
-Use a pangenome graph to patch (slightly) fragmented assemblies into telomere-to-telomere (T2T) chromosomes. panpatch fills gaps (`N`s) inside scaffolds, scaffolds disconnected contigs, and — with `-T` — completes missing terminal telomeres, taking the patch sequence from one or more donor assemblies.
+Use a pangenome graph to patch (slightly) fragmented assemblies into telomere-to-telomere (T2T) chromosomes. panpatch fills gaps (`N`s) inside scaffolds, scaffolds disconnected contigs, and completes missing terminal telomeres, taking the patch sequence from one or more donor assemblies. All of that is on by default; `--patch-types` selects a subset and `-T` additionally requires a telomere at both ends.
 
 It needs a **reference** with chromosome-scale scaffolds for orientation (`-r`), a **target** to patch (first `-s`), and one or more **donors** in priority order (subsequent `-s`). A chromosome-scale target can be its own reference.
 
@@ -74,8 +74,8 @@ Missing system libraries are a subset of [vg's](https://github.com/vgteam/vg?tab
 | `--bed FILE` | write the patched-assembly intervals (BED) | |
 | `-e, --default-sample STR` | use this sample's contig when a patch is rejected | |
 | `-b, --exclude-bed FILE` | target regions to leave untouched (see [Excluding regions](#excluding-regions)) | |
-| `-T, --require-telomeres` | require a telomere at both ends and none internal (see [Telomeres](#telomeres)) | off |
-| `--patch-telomeres` | complete telomeres like `-T`, but keep the contig if an end stays uncapped (only an internal-telomere misjoin reverts) | off |
+| `--patch-types LIST` | which of `{gap,telomere}` to attempt, comma-separated (scaffolding is always attempted) | `gap,telomere` |
+| `-T, --require-telomeres` | require a telomere at both ends and none internal, else revert (see [Telomeres](#telomeres)) | off |
 | `-M, --max-telomere-patch N` | max bp a telomere graft may replace | 500000 |
 | `--telomere-threshold F` | min hexamer density to call a telomere | 0.8 |
 | `--min-cover F` | revert a patch covering less than this fraction of the input length | 0.95 |
@@ -111,9 +111,9 @@ PAN028-verkko#1#haplotype1-0000008#0	0	64821530	+
 
 ## Telomeres
 
-With `-T`, each patched haplotype must begin and end with a telomere and have none internally. If the target stops short of a telomere at an end, panpatch splices on a higher-priority donor that does reach one: the handoff is made at the nearest graph node both assemblies share, so the (divergent) subtelomere past it is replaced by the donor's run to the telomere. `-M/--max-telomere-patch` caps how much target sequence one such graft may replace. Each telomere patch is a `telomere` row in the report; if an end still lacks a clean telomere afterward (no donor reaches one, or it is degraded/buried), the contig reverts to its input.
+Telomere completion is **on by default** (as are gap-filling and scaffolding; use `--patch-types` to attempt only a subset — e.g. `--patch-types gap` turns telomere completion off, `--patch-types telomere` turns gap-filling off). If the target stops short of a telomere at an end, panpatch splices on a higher-priority donor that does reach one: the handoff is made at the nearest graph node both assemblies share, so the (divergent) subtelomere past it is replaced by the donor's run to the telomere. `-M/--max-telomere-patch` caps how much target sequence one such graft may replace. Each completed telomere is a `telomere` row in the report.
 
-`--patch-telomeres` completes telomeres the same way but drops the both-ends requirement: a contig whose end stays uncapped is **kept** (along with its other patches) instead of reverted — only an *internal* telomere, which signals a scaffold misjoin, still reverts. This is useful when telomeres are unreliable at the tips (e.g. masked or error-flagged) and you want the interior patches without losing whole contigs. The always-on guard against *discarding* an already-capped end still applies. Without either flag, telomeres are neither patched nor checked.
+By default a contig whose end can't be completed is simply **kept** as-is (with its other patches) — only an *internal* telomere, which signals a scaffold misjoin, reverts it. `-T/--require-telomeres` makes it strict: each patched haplotype must then begin and end with a telomere, and a contig that doesn't (no donor reaches one, or the tip is degraded/buried) reverts to its input — with `-T` those uncapped ends are also reported. The always-on guard against *discarding* an already-capped end applies in every mode.
 
 ## Excluding regions
 
