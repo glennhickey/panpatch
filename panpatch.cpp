@@ -1827,12 +1827,15 @@ void check_intervals(const PathHandleGraph* graph,
 bool validate_telomeres(const PathHandleGraph* graph,
                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                         double threshold,
-                        bool verbose) {
+                        bool require_ends,
+                        bool verbose,
+                        string& fail_reason) {
 
     if (intervals.empty()) {
         if (verbose) {
             cerr << "[panpatch] Telomere validation: no intervals to validate" << endl;
         }
+        fail_reason = "telomere validation failed";
         return false;
     }
 
@@ -1840,41 +1843,40 @@ bool validate_telomeres(const PathHandleGraph* graph,
     string sequence = intervals_to_sequence(graph, intervals);
     int64_t seq_len = sequence.length();
 
-    if (seq_len < 2000) {
-        if (verbose) {
-            cerr << "[panpatch] Telomere validation: sequence too short (" << seq_len << "bp)" << endl;
+    // Telomere detection uses the shared seq_has_telomere() helper (also used by the patcher, so the
+    // two cannot disagree). Tips use boundary detection; the internal check does not.  A sequence too
+    // short to analyze leaves all three flags false -- harmless unless require_ends demands both ends.
+    bool has_start_telomere = false, has_end_telomere = false, has_internal_telomere = false;
+    if (seq_len >= 2000) {
+        // Search window - check up to 50kb from each end
+        int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
+        has_start_telomere = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold);
+        has_end_telomere = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold);
+        // internal telomeres should NOT exist; don't find boundary here -- detect any telomeric sequence
+        if (seq_len > 2 * tip_check_len) {
+            has_internal_telomere = seq_has_telomere(sequence, tip_check_len, seq_len - tip_check_len, false, false, threshold);
         }
-        return false;
-    }
-
-    // Search window - check up to 50kb from each end
-    int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
-
-    // Telomere detection uses the shared seq_has_telomere() helper (also used by the patcher, so
-    // the two cannot disagree). Tips use boundary detection; the internal check does not.
-
-    // Check for telomeres at the start (find boundary scanning forward)
-    bool has_start_telomere = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold);
-
-    // Check for telomeres at the end (find boundary scanning backward)
-    bool has_end_telomere = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold);
-
-    // Check for telomeres in the middle (internal telomeres - should NOT exist)
-    // Don't find boundary here - we want to detect any telomeric sequence
-    bool has_internal_telomere = false;
-    if (seq_len > 2 * tip_check_len) {
-        has_internal_telomere = seq_has_telomere(sequence, tip_check_len, seq_len - tip_check_len, false, false, threshold);
     }
 
     if (verbose) {
-        cerr << "[panpatch] Telomere validation (threshold=" << threshold << "):" << endl;
+        cerr << "[panpatch] Telomere validation (threshold=" << threshold << ", require_ends=" << require_ends << "):" << endl;
         cerr << "[panpatch]   Sequence length: " << seq_len << "bp" << endl;
         cerr << "[panpatch]   Start telomere: " << (has_start_telomere ? "FOUND" : "NOT FOUND") << endl;
         cerr << "[panpatch]   End telomere: " << (has_end_telomere ? "FOUND" : "NOT FOUND") << endl;
         cerr << "[panpatch]   Internal telomeres: " << (has_internal_telomere ? "FOUND (BAD)" : "NOT FOUND (GOOD)") << endl;
     }
 
-    return has_start_telomere && has_end_telomere && !has_internal_telomere;
+    // an internal telomere is a scaffold misjoin -- always disqualifying (both -T and --patch-telomeres)
+    if (has_internal_telomere) {
+        fail_reason = "internal telomere in patched contig (scaffold misjoin)";
+        return false;
+    }
+    // require_ends (-T) additionally demands a real telomere at BOTH ends; --patch-telomeres does not
+    if (require_ends && !(has_start_telomere && has_end_telomere)) {
+        fail_reason = "telomere validation failed";
+        return false;
+    }
+    return true;
 }
 
 void log_contig_telomeres(const PathHandleGraph* graph,

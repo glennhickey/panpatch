@@ -182,12 +182,16 @@ void check_intervals(const PathHandleGraph* graph,
                      const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
 
 // validate that intervals have telomeres at both ends and no internal telomeres
-// returns true if valid, false otherwise
+// returns true if valid, false otherwise (sets fail_reason on failure).
+// an internal telomere (scaffold misjoin) always fails; require_ends additionally demands a telomere
+// at both ends (-T) -- with require_ends=false (--patch-telomeres) missing ends are allowed.
 // if verbose is true, prints diagnostic messages
 bool validate_telomeres(const PathHandleGraph* graph,
                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
-                        double threshold=0.8,
-                        bool verbose=false);
+                        double threshold,
+                        bool require_ends,
+                        bool verbose,
+                        string& fail_reason);
 
 // log telomere information for each contig in the intervals
 // outputs to cout with # prefix showing which contigs have telomeres and where

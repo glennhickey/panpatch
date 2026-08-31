@@ -72,7 +72,8 @@ void help(char** argv) {
        << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
        << "    -T, --require-telomeres      Require telomeres at both ends (no internal): patch a missing terminal telomere from another assembly when possible, else revert" << endl
-       << "    -M, --max-telomere-patch N   Max bp of target sequence a -T telomere patch may replace at a contig end [500000]" << endl
+       << "        --patch-telomeres        Like -T's patching but do NOT require both ends: complete a terminal telomere from another assembly when possible, keeping the contig otherwise (still reverts an internal-telomere scaffold misjoin)" << endl
+       << "    -M, --max-telomere-patch N   Max bp of target sequence a -T/--patch-telomeres telomere patch may replace at a contig end [500000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << "        --min-cover FLOAT        Revert a patch covering less than this fraction of the input length [0.95]" << endl
        << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by the" << endl
@@ -96,6 +97,7 @@ int main(int argc, char** argv) {
     int c;
     int64_t window_size = 1000;
     bool require_telomeres = false;
+    bool patch_telomeres = false;
     int64_t max_telomere_patch = 500000;
     double fail_threshold = 0.95;
     double telo_threshold = 0.8;
@@ -116,6 +118,7 @@ int main(int argc, char** argv) {
             {"default-sample", required_argument, 0, 'e'},
             {"threads", required_argument, 0, 't'},
             {"require-telomeres", no_argument, 0, 'T'},
+            {"patch-telomeres", no_argument, 0, 1008},
             {"max-telomere-patch", required_argument, 0, 'M'},
             {"exclude-bed", required_argument, 0, 'b'},
             {"min-cover", required_argument, 0, 1001},
@@ -173,6 +176,9 @@ int main(int argc, char** argv) {
         }
         case 'T':
             require_telomeres = true;
+            break;
+        case 1008:
+            patch_telomeres = true;
             break;
         case 'M':
         {
@@ -436,7 +442,7 @@ int main(int argc, char** argv) {
         }
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
-            require_telomeres, telo_threshold, max_telomere_patch, progress);
+            require_telomeres || patch_telomeres, telo_threshold, max_telomere_patch, progress);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -451,13 +457,16 @@ int main(int argc, char** argv) {
         string bridge_detail;
         bool bad_bridge = record_scaffolds(graph, patched_intervals, sample_names[0], min_flank, flank_window, bridge_detail);
 
-        // Check telomere validation if required
+        // Check telomere validation.  -T requires a telomere at both ends (and no internal one);
+        // --patch-telomeres only rejects an internal-telomere scaffold misjoin (missing ends are kept).
         bool telomere_validation_failed = false;
-        if (require_telomeres && !patched_intervals.empty()) {
+        string telo_fail_reason;
+        if ((require_telomeres || patch_telomeres) && !patched_intervals.empty()) {
             if (progress) {
                 cerr << "[panpatch]: Validating telomeres" << endl;
             }
-            bool telomeres_valid = validate_telomeres(graph, patched_intervals, telo_threshold, progress);
+            bool telomeres_valid = validate_telomeres(graph, patched_intervals, telo_threshold,
+                                                      require_telomeres, progress, telo_fail_reason);
             if (!telomeres_valid) {
                 telomere_validation_failed = true;
             }
@@ -472,7 +481,7 @@ int main(int argc, char** argv) {
         // Also revert if telomere validation failed or a foreign-bridged scaffold is a wrong-locus misjoin
         if (!reverted && (telomere_validation_failed || bad_bridge)) {
             reverted = true;
-            revert_reason = bad_bridge ? bridge_detail : "telomere validation failed";
+            revert_reason = bad_bridge ? bridge_detail : telo_fail_reason;
             // Generate input intervals if not already done
             if (input_intervals.empty()) {
                 if (!default_sample.empty()) {
