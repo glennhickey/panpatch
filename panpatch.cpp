@@ -974,6 +974,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                         pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
                         pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
                         pr.replaced_bp = walked; pr.accepted = false;
+                        if (is_front != rev) { pr.target_start = 0; pr.target_end = walked; }
+                        else { pr.target_start = pr.target_bp - walked; pr.target_end = pr.target_bp; }
                         pr.reason = "handoff would replace " + std::to_string(walked) + "bp, over --max-telomere-patch " + std::to_string(max_handoff);
                         g_patch_records.push_back(pr);
                     }
@@ -991,6 +993,11 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                     pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
                     pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
                     pr.replaced_bp = walked; pr.kmer = recovery;
+                    // localize the replaced tail in target-contig fwd coords: the tip sits at the contig
+                    // front when (is_front != rev) -- a reverse interval swaps the front/back convention --
+                    // so it replaced [0, walked); otherwise it is the back end, [L - walked, L)
+                    if (is_front != rev) { pr.target_start = 0; pr.target_end = walked; }
+                    else { pr.target_start = pr.target_bp - walked; pr.target_end = pr.target_bp; }
                     g_patch_records.push_back(pr);
                 }
 
