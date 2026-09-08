@@ -165,6 +165,24 @@ for base in ['telopatch', 'telopatch_rev', 'telopatch_front', 'telopatch_multi',
     temp_files += ['{0}.vg'.format(base), '{0}.patch.bed'.format(base), '{0}.hap1.fa'.format(base)]
 
 
+
+# --telomere-report: the standalone FASTA scan must agree exactly with the in-graph measurement, since
+# both go through print_contig_telomere_line.  Patch a graph with only the target sample, so the output
+# FASTA is that one path verbatim and the two measurements describe identical sequence -- then the
+# "#Contig" line panpatch printed from the graph and the one it prints from the FASTA must be the same.
+# (A caller like cactus-panpatch relies on this: it measures its post-processed output with the FASTA
+# mode and compares against runs that were measured in-graph.)
+run('vg convert telopatch.gfa > telorep.vg')
+run('panpatch telorep.vg -r x -s frag -f telorep.fa 2>/dev/null | grep "^#Contig" > telorep.graph.txt')
+run('panpatch --telomere-report telorep.hap1.fa > telorep.fasta.txt')
+run('diff telorep.graph.txt telorep.fasta.txt')
+# and the scan must not depend on repeat-masking: soft-masked input gives the same answer
+run("sed '/^>/!s/.*/\\L&/' telorep.hap1.fa > telorep.lower.fa")
+run('panpatch --telomere-report telorep.lower.fa > telorep.lower.txt')
+run('diff telorep.fasta.txt telorep.lower.txt')
+temp_files += ['telorep.vg', 'telorep.hap1.fa', 'telorep.lower.fa',
+               'telorep.graph.txt', 'telorep.fasta.txt', 'telorep.lower.txt']
+
 temp_files += [f for f in os.listdir('.') if f.endswith('.int') or f.endswith('.rep')]
 for f in temp_files:
     if os.path.isfile(f):

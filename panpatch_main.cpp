@@ -82,6 +82,9 @@ void help(char** argv) {
        << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
        << "        --min-flank FLOAT        Revert a foreign interior graft anchored to less than this % of the target flank [50]" << endl
        << "        --flank-window N         Window (bp) each side of a graft over which flank anchoring is measured [500000]" << endl
+       << "        --telomere-report FILE   Standalone: print per-contig telomere cap status (#Contig lines) for" << endl
+       << "                                 a finished FASTA and exit. No graph or -r/-s needed. Use this to" << endl
+       << "                                 measure an assembly that was post-processed after panpatch ran" << endl
        << endl;
 }    
 
@@ -94,6 +97,7 @@ int main(int argc, char** argv) {
     string out_bed_filename;
     string default_sample;
     string exclude_bed_filename;
+    string telomere_report_filename;
     int c;
     int64_t window_size = 1000;
     bool require_telomeres = false;
@@ -129,6 +133,7 @@ int main(int argc, char** argv) {
             {"min-flank", required_argument, 0, 1005},
             {"flank-window", required_argument, 0, 1006},
             {"bed", required_argument, 0, 1007},
+            {"telomere-report", required_argument, 0, 1009},
             {0, 0, 0, 0}
         };
 
@@ -228,6 +233,9 @@ int main(int argc, char** argv) {
         case 1007:
             out_bed_filename = optarg;
             break;
+        case 1009:
+            telomere_report_filename = optarg;
+            break;
         case 'h':
             help(argv);
             return 0;
@@ -243,6 +251,18 @@ int main(int argc, char** argv) {
     if (argc <= 1) {
         help(argv);
         return 1;
+    }
+    // --telomere-report: standalone mode.  Scan a finished FASTA, print its per-contig telomere cap
+    // status ("#Contig" lines, the same ones a normal run prints), and exit.  This is how a caller
+    // measures the assembly it actually delivered when that differs from what panpatch emitted --
+    // cactus-panpatch reverts masked regions to their original sequence after panpatch runs, so the
+    // in-graph measurement describes a sequence that never reaches the user.  No graph or samples needed.
+    if (!telomere_report_filename.empty()) {
+        if (telo_threshold < 0 || telo_threshold > 1) {
+            cerr << "[panpatch] error: --telomere-threshold must be in [0,1]" << endl;
+            return 1;
+        }
+        return telomere_report_fasta(telomere_report_filename, telo_threshold);
     }
     if (sample_names.empty()) {
         cerr << "[panpatch] error: -s must be used to specify at least one sample name to prioritize" << endl;

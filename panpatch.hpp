@@ -201,3 +201,14 @@ bool validate_telomeres(const PathHandleGraph* graph,
 void log_contig_telomeres(const PathHandleGraph* graph,
                           const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                           double threshold=0.8);
+
+// Print the "#Contig" cap-status line for one named sequence.  Shared by log_contig_telomeres (which
+// measures the patched graph intervals) and telomere_report_fasta (which measures a finished FASTA), so
+// telomere status is only ever decided in one place.
+void print_contig_telomere_line(const std::string& name, const std::string& sequence, double threshold);
+
+// Scan a plaintext FASTA and print a "#Contig" cap-status line per record, then return 0 (non-zero on
+// a read error).  This is how a caller measures telomere completeness of a *finished* assembly -- in
+// particular one that was post-processed after panpatch ran (e.g. cactus-panpatch reverting masked
+// regions to their original sequence), which the in-graph measurement cannot see.
+int telomere_report_fasta(const std::string& fasta_path, double threshold);

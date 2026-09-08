@@ -1,5 +1,6 @@
 #include <unordered_set>
 #include <cassert>
+#include <zlib.h>
 #include <map>
 #include <iomanip>
 #include <algorithm>
@@ -1915,30 +1916,99 @@ void log_contig_telomeres(const PathHandleGraph* graph,
         path_handle_t path = path_int.first;
         const auto& path_ints = path_int.second;
 
-        string sequence = intervals_to_sequence(graph, path_ints);
-        int64_t seq_len = sequence.length();
-
-        if (seq_len < 50) {
-            continue;  // Too short to analyze
-        }
-
-        // Check tip regions - use up to 50kb search window
-        int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
-
-        // use the shared seq_has_telomere (the patcher/validator's detector) so this printed status
-        // cannot disagree with the patch decisions; report the density it measured
-        double left_max_density = 0.0, right_max_density = 0.0;
-        bool has_left  = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold, &left_max_density);
-        bool has_right = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold, &right_max_density);
-
-        // Log all contigs with telomere information
-        cout << "#Contig " << graph->get_path_name(path)
-             << " len=" << seq_len << "bp"
-             << " left=" << (has_left ? "YES" : "NO")
-             << "(" << fixed << setprecision(3) << left_max_density << ")"
-             << " right=" << (has_right ? "YES" : "NO")
-             << "(" << fixed << setprecision(3) << right_max_density << ")"
-             << endl;
+        print_contig_telomere_line(graph->get_path_name(path),
+                                   intervals_to_sequence(graph, path_ints), threshold);
     }
+}
+
+void print_contig_telomere_line(const string& name, const string& sequence, double threshold) {
+    int64_t seq_len = sequence.length();
+
+    if (seq_len < 50) {
+        return;  // Too short to analyze
+    }
+
+    // Check tip regions - use up to 50kb search window
+    int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
+
+    // use the shared seq_has_telomere (the patcher/validator's detector) so this printed status
+    // cannot disagree with the patch decisions; report the density it measured
+    double left_max_density = 0.0, right_max_density = 0.0;
+    bool has_left  = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold, &left_max_density);
+    bool has_right = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold, &right_max_density);
+
+    // Log all contigs with telomere information
+    cout << "#Contig " << name
+         << " len=" << seq_len << "bp"
+         << " left=" << (has_left ? "YES" : "NO")
+         << "(" << fixed << setprecision(3) << left_max_density << ")"
+         << " right=" << (has_right ? "YES" : "NO")
+         << "(" << fixed << setprecision(3) << right_max_density << ")"
+         << endl;
+}
+
+int telomere_report_fasta(const string& fasta_path, double threshold) {
+    // gzopen reads plaintext transparently as well as gzip/bgzip, so this accepts a finished .fa.gz
+    // (what a user has on hand) and the uncompressed file (what cactus-panpatch measures pre-bgzip)
+    gzFile in = gzopen(fasta_path.c_str(), "rb");
+    if (in == Z_NULL) {
+        cerr << "[panpatch] error: Unable to open FASTA " << fasta_path << endl;
+        return 1;
+    }
+    string name, sequence;
+    auto flush_record = [&]() {
+        if (!name.empty()) {
+            print_contig_telomere_line(name, sequence, threshold);
+        }
+        name.clear();
+        sequence.clear();
+    };
+    // a FASTA line is normally <=80bp, but nothing forbids one long line per record, so read in fixed
+    // chunks and only treat a '\n' as a line end (a chunk that fills the buffer is a partial line)
+    const size_t BUF = 1 << 16;
+    vector<char> buf(BUF);
+    string line;
+    bool ok = true;
+    while (gzgets(in, buf.data(), (int)BUF) != Z_NULL) {
+        line += buf.data();
+        if (line.empty() || line.back() != '\n') {
+            continue;                                               // partial line: keep accumulating
+        }
+        line.pop_back();
+        if (!line.empty() && line.back() == '\r') line.pop_back();   // tolerate CRLF
+        if (!line.empty()) {
+            if (line[0] == '>') {
+                flush_record();
+                // the record name is the header's first token, matching how contigs are named elsewhere
+                size_t ws = line.find_first_of(" \t");
+                name = line.substr(1, ws == string::npos ? string::npos : ws - 1);
+            } else {
+                // normalise case on read: a soft-masked assembly would otherwise never match the
+                // (uppercase) telomere hexamers, and telomere presence must not depend on
+                // repeat-masking.  Graph sequence is already uppercase, so this only matters here.
+                for (char& ch : line) ch = toupper((unsigned char)ch);
+                sequence += line;
+            }
+        }
+        line.clear();
+    }
+    int errnum = 0;
+    const char* gzerr = gzerror(in, &errnum);
+    if (errnum != Z_OK && errnum != Z_STREAM_END) {
+        cerr << "[panpatch] error: Failed reading " << fasta_path << ": " << gzerr << endl;
+        ok = false;
+    }
+    gzclose(in);
+    if (!ok) {
+        return 1;
+    }
+    if (!line.empty()) {          // final line with no trailing newline
+        if (line[0] != '>') {
+            for (char& ch : line) ch = toupper((unsigned char)ch);
+            sequence += line;
+        }
+    }
+    flush_record();
+    return 0;
 }
 
