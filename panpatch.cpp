@@ -1288,8 +1288,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     cerr << endl;
 #endif
 
-    // find the anchors along the reference path using the relevant paths
+    // find the anchors along the reference path using the relevant paths.  the target's own paths are
+    // always included: the cover chosen for the target sample can be a different haplotype (on a tie
+    // in coverage, or when the target's contigs overlap each other), and without them there would be
+    // no anchors at all
     unordered_set<path_handle_t> relevant_paths = {ref_path};
+    relevant_paths.insert(tgt_paths.begin(), tgt_paths.end());
     for (const auto& sample_cover : sample_covers) {
         for (const path_handle_t& path : sample_cover.second) {
             relevant_paths.insert(path);
