@@ -355,17 +355,17 @@ int main(int argc, char** argv) {
         if (progress) {
             cerr << "[panpatch]: Loaded graph" << endl;
         }
+    // Index every path: the reference, targets and donors are all haplotype paths, and the overlay
+    // leaves haplotypes out by default (they then do not exist in it at all)
     bdsg::ReferencePathOverlayHelper overlay_helper;
-    PathPositionHandleGraph* graph = overlay_helper.apply(base_graph.get());
+    PathPositionHandleGraph* graph = overlay_helper.apply(base_graph.get(), true);
     if (progress && dynamic_cast<PathPositionHandleGraph*>(base_graph.get()) == nullptr) {
         cerr << "[panpatch]: Applied position overlay" << endl;
     }
 
-    // pull out the (one and only) reference path
-    vector<path_handle_t> ref_paths;
-    graph->for_each_path_of_sample(ref_sample, [&](path_handle_t ref_path) {
-        ref_paths.push_back(ref_path);
-    });
+    // pull out the (one and only) reference path.  paths are always taken by name (sample_paths), never
+    // in the graph's own order, which varies between graph implementations and libbdsg versions
+    vector<path_handle_t> ref_paths = sample_paths(graph, ref_sample);
     if (ref_paths.size() != 1) {
         // No single reference path -- e.g. a chrOther / unplaced-contigs graph, which holds many of the
         // target's own contigs rather than one chromosome.  Rather than drop it, pass the target sample's
@@ -377,9 +377,7 @@ int main(int argc, char** argv) {
         { size_t s = stem.find_last_of('/'); if (s != string::npos) stem = stem.substr(s + 1);
           size_t d = stem.find(".full.vg"); if (d == string::npos) d = stem.rfind(".vg");
           if (d != string::npos) stem = stem.substr(0, d); }
-        vector<path_handle_t> pass_paths;
-        graph->for_each_path_of_sample(sample_names.front(), [&](path_handle_t p) { pass_paths.push_back(p); });
-        for (path_handle_t p : pass_paths) {
+        for (path_handle_t p : sample_paths(graph, sample_names.front())) {
             int64_t hap = graph->get_haplotype(p);
             vector<tuple<step_handle_t, step_handle_t, bool>> whole = { make_tuple(graph->path_begin(p), graph->path_back(p), false) };
             if (!out_fasta_filename.empty()) {
@@ -417,19 +415,21 @@ int main(int argc, char** argv) {
     // pull out all other paths selected by -s
     vector<path_handle_t> other_paths;
     for (const string& sample : sample_names) {
-        graph->for_each_path_of_sample(sample, [&](path_handle_t path_handle) {
+        for (const path_handle_t& path_handle : sample_paths(graph, sample)) {
             other_paths.push_back(path_handle);
-        });
+        }
     }
     if (progress) {
         cerr << "[panpatch]: Selected " << other_paths.size() << " (non-reference) paths" << endl;
     }
 
-    // pull out the target paths (the ones we want to patch) and sort them by haplotype
+    // pull out the target paths (the ones we want to patch) and sort them by haplotype (and then by
+    // name: this is the order the target's contigs are ranked in at a fork, and written out in when a
+    // patch is reverted)
     map<int64_t, vector<path_handle_t>> target_paths;
-    graph->for_each_path_of_sample(sample_names.front(), [&](path_handle_t path_handle) {
+    for (const path_handle_t& path_handle : sample_paths(graph, sample_names.front())) {
         target_paths[graph->get_haplotype(path_handle)].push_back(path_handle);
-    });
+    }
     if (progress) {
         cerr << "[panpatch]: Target sample " << sample_names.front() << " has " << target_paths.size() << " paths" << endl;
     }
@@ -454,9 +454,10 @@ int main(int argc, char** argv) {
             }
             cerr << ":" << endl;
 
-            for (const auto& cov : coverage_map) {
-                if (graph->get_sample_name(cov.first) != graph->get_sample_name(target_paths.begin()->second.front())) {
-                    cerr << "[panpatch]:    " << graph->get_path_name(cov.first) << " " << cov.second << endl;
+            for (const path_handle_t& p : other_paths) {
+                auto cov = coverage_map.find(p);
+                if (cov != coverage_map.end() && graph->get_sample_name(p) != sample_names.front()) {
+                    cerr << "[panpatch]:    " << graph->get_path_name(p) << " " << cov->second << endl;
                 }
             }
         }
@@ -465,9 +466,14 @@ int main(int argc, char** argv) {
 
         if (progress) {
             cerr << "[panpatch]: Sample cover selection:" << endl;
-            for (const auto& sc : sample_covers) {
-                cerr << "[panpatch]:    " << sc.first;
-                for (const auto& p : sc.second) {
+            set<string> printed;
+            for (const string& sample : sample_names) {
+                auto sc = sample_covers.find(sample);
+                if (sc == sample_covers.end() || !printed.insert(sample).second) {
+                    continue;
+                }
+                cerr << "[panpatch]:    " << sc->first;
+                for (const auto& p : sc->second) {
                     cerr << " " << graph->get_path_name(p);
                 }
                 cerr << endl;
@@ -524,14 +530,8 @@ int main(int argc, char** argv) {
             // Generate input intervals if not already done
             if (input_intervals.empty()) {
                 if (!default_sample.empty()) {
-                    vector<path_handle_t> default_paths;
-                    graph->for_each_path_of_sample(default_sample, [&](path_handle_t path_handle) {
-                        size_t hap = graph->get_haplotype(path_handle);
-                        if (hap == 0 || hap == PathMetadata::NO_HAPLOTYPE ||
-                            hap == graph->get_haplotype(hap_tgts.second.front())) {
-                            default_paths.push_back(path_handle);
-                        }
-                    });
+                    vector<path_handle_t> default_paths = default_sample_paths(graph, default_sample,
+                                                                               graph->get_haplotype(hap_tgts.second.front()));
                     if (!default_paths.empty()) {
                         const path_handle_t& def_path = default_paths[0];
                         input_intervals.push_back(make_tuple(graph->path_begin(def_path),

@@ -109,6 +109,10 @@ Sample names come from minigraph-cactus seqfile (first column, without `.1/.2` h
 - Use `//#define ultra_debug` for extremely verbose output
 - Debug output goes to stderr
 
+### Determinism
+- Never rely on the order the graph lists paths (`for_each_path_of_sample`, `for_each_path_handle`) or the steps on a node (`for_each_step_on_handle`), nor on `unordered_map`/`unordered_set` iteration: they vary between graph implementations and libbdsg versions, and the position overlay builds its step index in parallel
+- Get a sample's paths with `sample_paths()` (sorted by name), sort other path lists with `sort_paths_by_name()`, and walk per-contig maps in output order (`paths_in_order()`). Tie-breaks between equally-ranked choices must use a stable key (path name, then offset along the path)
+
 ### Algorithm Limitations
 - Reference-dependent: If graph doesn't align contigs to reference, no anchors will be found
 - Left-to-right search is simplistic; some cases could benefit from more general graph search

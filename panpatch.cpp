@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <sstream>
 #include "panpatch.hpp"
+#include "handlegraph/path_position_handle_graph.hpp"
 #include <limits>
 #include <cstdint>
 
@@ -21,6 +22,63 @@ int64_t path_bp(const PathHandleGraph* g, path_handle_t p) {
     int64_t n = 0;
     g->for_each_step_in_path(p, [&](step_handle_t s) { n += g->get_length(g->get_handle_of_step(s)); });
     return n;
+}
+
+void sort_paths_by_name(const PathHandleGraph* graph, vector<path_handle_t>& paths) {
+    // path names are unique, so this is a total order
+    vector<pair<string, path_handle_t>> named;
+    named.reserve(paths.size());
+    for (const path_handle_t& p : paths) named.emplace_back(graph->get_path_name(p), p);
+    sort(named.begin(), named.end(), [](const pair<string, path_handle_t>& a, const pair<string, path_handle_t>& b) {
+        return a.first < b.first;
+    });
+    for (size_t i = 0; i < named.size(); ++i) paths[i] = named[i].second;
+}
+
+vector<path_handle_t> sample_paths(const PathHandleGraph* graph, const string& sample) {
+    vector<path_handle_t> paths;
+    graph->for_each_path_of_sample(sample, [&](path_handle_t p) { paths.push_back(p); });
+    sort_paths_by_name(graph, paths);
+    return paths;
+}
+
+vector<path_handle_t> default_sample_paths(const PathHandleGraph* graph, const string& default_sample,
+                                           int64_t target_haplotype) {
+    vector<path_handle_t> paths;
+    for (const path_handle_t& p : sample_paths(graph, default_sample)) {
+        size_t hap = graph->get_haplotype(p);
+        if (hap == 0 || hap == PathMetadata::NO_HAPLOTYPE || hap == (size_t)target_haplotype) {
+            paths.push_back(p);
+        }
+    }
+    return paths;
+}
+
+// offset of a step along its path.  only used to put the steps of one path that visits a node more
+// than once in a stable order, so the slow walk (for a graph without positions) is rarely taken
+static int64_t step_offset(const PathHandleGraph* graph, const step_handle_t& step) {
+    if (const PathPositionHandleGraph* pos_graph = dynamic_cast<const PathPositionHandleGraph*>(graph)) {
+        return pos_graph->get_position_of_step(step);
+    }
+    int64_t offset = 0;
+    path_handle_t path = graph->get_path_handle_of_step(step);
+    for (step_handle_t s = graph->path_begin(path); s != step; s = graph->get_next_step(s)) {
+        offset += graph->get_length(graph->get_handle_of_step(s));
+    }
+    return offset;
+}
+
+// the distinct paths of a list of intervals, in the order they first appear (ie output order).  used
+// to walk the per-contig maps below, which are unordered, in a stable order
+static vector<path_handle_t> paths_in_order(const PathHandleGraph* graph,
+                                            const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals) {
+    vector<path_handle_t> order;
+    unordered_set<path_handle_t> seen;
+    for (const auto& iv : intervals) {
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+        if (seen.insert(p).second) order.push_back(p);
+    }
+    return order;
 }
 
 unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGraph* graph,
@@ -141,16 +199,25 @@ unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGr
 unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHandleGraph* graph,
                                                                   const unordered_map<path_handle_t, double>& coverage_map) {
 
-    unordered_map<string, unordered_map<int64_t, double>> sample_hap_coverage;
-    unordered_map<string, unordered_map<int64_t, int64_t>> sample_hap_count;
+    // visit the paths by name, not in hash order: the floating-point sums below then always add up
+    // the same way, and each sample's selected paths come out sorted
+    vector<path_handle_t> paths;
     for (const auto& path_cov : coverage_map) {
-        string sample = graph->get_sample_name(path_cov.first);
-        int64_t haplotype = graph->get_haplotype(path_cov.first);
+        paths.push_back(path_cov.first);
+    }
+    sort_paths_by_name(graph, paths);
+
+    // haplotypes are ordered, so a tie in mean coverage goes to the lowest haplotype
+    unordered_map<string, map<int64_t, double>> sample_hap_coverage;
+    unordered_map<string, map<int64_t, int64_t>> sample_hap_count;
+    for (const path_handle_t& path : paths) {
+        string sample = graph->get_sample_name(path);
+        int64_t haplotype = graph->get_haplotype(path);
         int64_t path_length = 0;
-        graph->for_each_step_in_path(path_cov.first, [&](const step_handle_t& step) {
+        graph->for_each_step_in_path(path, [&](const step_handle_t& step) {
             path_length += graph->get_length(graph->get_handle_of_step(step));
-        });        
-        sample_hap_coverage[sample][haplotype] += (double)path_length * path_cov.second;
+        });
+        sample_hap_coverage[sample][haplotype] += (double)path_length * coverage_map.at(path);
         sample_hap_count[sample][haplotype] += path_length;
     }
 
@@ -171,12 +238,12 @@ unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHand
     }
 
     unordered_map<string, vector<path_handle_t>> result;
-    for (const auto& path_cov : coverage_map) {
-        string sample = graph->get_sample_name(path_cov.first);
-        int64_t haplotype = graph->get_haplotype(path_cov.first);
+    for (const path_handle_t& path : paths) {
+        string sample = graph->get_sample_name(path);
+        int64_t haplotype = graph->get_haplotype(path);
         if (haplotype == sample_to_hap[sample]) {
-            result[sample].push_back(path_cov.first);
-        } 
+            result[sample].push_back(path);
+        }
     }
 
     return result;
@@ -494,19 +561,43 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
     bool cur_backward = false;
     assert(cur_backward == graph->get_is_reverse(cur_handle));
     unordered_map<path_handle_t, int64_t> tgt_ranks;
+    // the step we reached the current anchor on (none for the first anchor)
+    bool have_cur_step = false;
+    step_handle_t cur_step;
         
     while (true) {
         // find the steps on the handle and sort them using the path priority
         // [paths that don't have a priority are ignored which is important]
         // todo: could be in weird regions we need to assess contiguiuty with
         // previous anchor, but not trying for now. 
-        multimap<int64_t, step_handle_t> sorted_steps;
+        vector<pair<int64_t, step_handle_t>> sorted_steps;
         graph->for_each_step_on_handle(cur_handle, [&](step_handle_t step) {
             path_handle_t path = graph->get_path_handle_of_step(step);
             if (path_rank.count(path)) {
                 int64_t rank = tgt_ranks.count(path) ? tgt_ranks.at(path) : path_rank.at(path);
-                sorted_steps.insert(make_pair(rank, step));
+                sorted_steps.push_back(make_pair(rank, step));
             }
+        });
+        // the graph lists the steps on a node in no particular order, so break ties in rank here:
+        // by path name, then (for a path that visits the node more than once) the step we arrived
+        // on first, so we carry on along the path from where we are, then the rest by path offset
+        sort(sorted_steps.begin(), sorted_steps.end(),
+             [&](const pair<int64_t, step_handle_t>& a, const pair<int64_t, step_handle_t>& b) {
+            if (a.first != b.first) {
+                return a.first < b.first;
+            }
+            path_handle_t a_path = graph->get_path_handle_of_step(a.second);
+            path_handle_t b_path = graph->get_path_handle_of_step(b.second);
+            if (a_path != b_path) {
+                return graph->get_path_name(a_path) < graph->get_path_name(b_path);
+            }
+            if (a.second == b.second) {
+                return false;
+            }
+            if (have_cur_step && (a.second == cur_step || b.second == cur_step)) {
+                return a.second == cur_step;
+            }
+            return step_offset(graph, a.second) < step_offset(graph, b.second);
         });
 
         bool found_next = false;
@@ -557,6 +648,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
 #endif
                     found_next = true;
                     // slide position to the next anchor
+                    have_cur_step = true;
+                    cur_step = next_anchor.first;
                     cur_handle = graph->get_handle_of_step(next_anchor.first);
                     cur_pos = ref_anchors.at(graph->get_id(cur_handle));
                     cur_backward = graph->get_is_reverse(cur_handle);
@@ -923,17 +1016,34 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
             handle_t under = graph->get_handle_of_step(s_i);
             handle_t out_handle = is_front ? graph->flip(a_i) : a_i;
 
-            // collect the foreign covers present on this node in one pass (first step of each)
-            unordered_map<path_handle_t, step_handle_t> steps_here;
+            // collect the foreign covers present on this node in one pass.  a cover can visit the node
+            // more than once, and the graph lists the steps in no particular order, so try each visit
+            // in path order (the first usable one wins)
+            unordered_map<path_handle_t, vector<step_handle_t>> steps_here;
             graph->for_each_step_on_handle(under, [&](step_handle_t fs) {
                 path_handle_t fp = graph->get_path_handle_of_step(fs);
-                if (foreign_set.count(fp) && !steps_here.count(fp)) steps_here[fp] = fs;
+                if (foreign_set.count(fp)) steps_here[fp].push_back(fs);
             });
 
+            // the handoffs to try here: the covers in priority order, each one's visits in path order
+            vector<pair<path_handle_t, step_handle_t>> handoffs;
             for (const path_handle_t& F : foreign) {
                 auto sit = steps_here.find(F);
                 if (sit == steps_here.end()) continue;  // cover F does not visit this node
-                step_handle_t s_F = sit->second;
+                vector<step_handle_t>& F_steps = sit->second;
+                if (F_steps.size() > 1) {
+                    sort(F_steps.begin(), F_steps.end(), [&](const step_handle_t& a, const step_handle_t& b) {
+                        return step_offset(graph, a) < step_offset(graph, b);
+                    });
+                }
+                for (const step_handle_t& s_F : F_steps) {
+                    handoffs.push_back(make_pair(F, s_F));
+                }
+            }
+
+            for (const pair<path_handle_t, step_handle_t>& handoff : handoffs) {
+                const path_handle_t& F = handoff.first;
+                const step_handle_t& s_F = handoff.second;
 
                 // pick the direction along F that continues outward in the assembly frame
                 handle_t gF = graph->get_handle_of_step(s_F);
@@ -1190,10 +1300,14 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     cerr << endl;
 #endif
 
-    // find the anchors along the reference path using the relevant paths
+    // find the anchors along the reference path using the relevant paths.  the target's own paths are
+    // always included: the cover chosen for the target sample can be a different haplotype (on a tie
+    // in coverage, or when the target's contigs overlap each other), and without them there would be
+    // no anchors at all
     unordered_set<path_handle_t> relevant_paths = {ref_path};
-    for (const auto& sample_paths : sample_covers) {
-        for (const path_handle_t& path : sample_paths.second) {
+    relevant_paths.insert(tgt_paths.begin(), tgt_paths.end());
+    for (const auto& sample_cover : sample_covers) {
+        for (const path_handle_t& path : sample_cover.second) {
             relevant_paths.insert(path);
         }
     }
@@ -1301,15 +1415,16 @@ static bool splices_same_sample_interior(const PathHandleGraph* graph,
         if (it == span.end()) span[p] = make_pair(i, i);
         else it->second.second = i;
     }
-    for (const auto& kv : span) {
-        int lo = kv.second.first, hi = kv.second.second;
+    // contigs in output order, so the one reported is the first, not whichever the hash table gives
+    for (const path_handle_t& C : paths_in_order(graph, intervals)) {
+        int lo = span.at(C).first, hi = span.at(C).second;
         if (hi <= lo) continue;  // contig used as a single contiguous block: no interior to splice
-        string c_sample = graph->get_sample_name(kv.first);
+        string c_sample = graph->get_sample_name(C);
         if (c_sample != target_sample) continue;  // only judge the target's own contigs
         for (int j = lo + 1; j < hi; ++j) {
-            if (idx_path[j] == kv.first) continue;            // another piece of the same contig
+            if (idx_path[j] == C) continue;            // another piece of the same contig
             if (graph->get_sample_name(idx_path[j]) == c_sample) {
-                detail = "contig " + graph->get_path_name(kv.first)
+                detail = "contig " + graph->get_path_name(C)
                        + " was used non-contiguously with same-sample fragment "
                        + graph->get_path_name(idx_path[j]) + " spliced into its interior";
                 return true;
@@ -1354,10 +1469,10 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
         used[p].push_back(make_pair(a, b));
         auto it = span.find(p); if (it == span.end()) span[p] = make_pair(i, i); else it->second.second = i;
     }
-    for (auto& kv : used) {
-        path_handle_t C = kv.first;
+    // contigs in output order, so the one reported is the first, not whichever the hash table gives
+    for (const path_handle_t& C : paths_in_order(graph, intervals)) {
         if (graph->get_sample_name(C) != target_sample) continue;     // only the target's own contigs
-        auto& r = kv.second;
+        auto& r = used.at(C);
         if (r.size() < 2) continue;
         sort(r.begin(), r.end());
         vector<pair<int64_t, int64_t>> gaps;
@@ -1438,9 +1553,10 @@ static bool discards_target_telomere(const PathHandleGraph* graph,
         graph->for_each_step_in_path(kv.first, [&](step_handle_t s) { len += graph->get_length(graph->get_handle_of_step(s)); });
         length[kv.first] = len;
     }
-    for (auto& kv : used) {
-        path_handle_t C = kv.first;
-        int64_t lo = kv.second.first, hi = kv.second.second, len = length[C];
+    // contigs in output order, so the one reported is the first, not whichever the hash table gives
+    for (const path_handle_t& C : paths_in_order(graph, intervals)) {
+        if (!used.count(C)) continue;   // not one of the target's own contigs
+        int64_t lo = used.at(C).first, hi = used.at(C).second, len = length[C];
         if (lo >= OUTER) {                       // 5' end trimmed -> does the natural 5' carry a telomere?
             string tip;
             for (step_handle_t s = graph->path_begin(C); ; s = graph->get_next_step(s)) {
@@ -1791,14 +1907,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
         // -e/--default-sample substitutes its own contig only for a genuine patch *failure*; a
         // no-patch revert always restores the target's own contig in native orientation.
         if (!default_sample.empty() && !no_patch) {
-            vector<path_handle_t> default_paths;
-            graph->for_each_path_of_sample(default_sample, [&](path_handle_t path_handle) {
-                size_t hap = graph->get_haplotype(path_handle);
-                if (hap == 0 || hap == PathMetadata::NO_HAPLOTYPE ||
-                    hap == graph->get_haplotype(first_tgt_paths.front())) {
-                    default_paths.push_back(path_handle);
-                }
-            });
+            vector<path_handle_t> default_paths = default_sample_paths(graph, default_sample,
+                                                                       graph->get_haplotype(first_tgt_paths.front()));
             assert(default_paths.size() == 1); // todo: can relax but want to be 1 in all current use cases
             const path_handle_t& ref_path = default_paths[0];
             out_intervals.push_back(make_tuple(graph->path_begin(ref_path), graph->path_back(ref_path), false));
@@ -1911,10 +2021,9 @@ void log_contig_telomeres(const PathHandleGraph* graph,
         path_intervals[path].push_back(interval);
     }
 
-    // Analyze each contig
-    for (const auto& path_int : path_intervals) {
-        path_handle_t path = path_int.first;
-        const auto& path_ints = path_int.second;
+    // Analyze each contig, in the order they first appear in the output
+    for (const path_handle_t& path : paths_in_order(graph, intervals)) {
+        const auto& path_ints = path_intervals.at(path);
 
         print_contig_telomere_line(graph->get_path_name(path),
                                    intervals_to_sequence(graph, path_ints), threshold);

@@ -8,12 +8,12 @@ libbdsgLibs = ${libbdsgPath}/lib/libbdsg.a ${libbdsgPath}/lib/libhandlegraph.a $
 
 # Multithreading with OpenMP.
 PARALLEL_FLAGS=-fopenmp -pthread
-LIBS=-L$(CWD)
+LIBS=
 
 ifeq ($(shell uname -s),Darwin)
     # Our compiler might be clang that lacks -fopenmp support.
     # Sniff that
-    ifeq ($(strip $(shell $(MY_CXX) -fopenmp /dev/null -o/dev/null 2>&1 | grep fopenmp | wc -l)), 1)
+    ifeq ($(strip $(shell $(CXX) -fopenmp /dev/null -o/dev/null 2>&1 | grep fopenmp | wc -l)), 1)
         # The compiler complained about fopenmp instead of its nonsense input file.
         # We need to use the hard way of getting OpenMP not bundled with the compiler.
 
@@ -29,6 +29,15 @@ ifeq ($(shell uname -s),Darwin)
             PARALLEL_FLAGS += -I/opt/local/include/libomp
         endif
 
+        # Homebrew's libomp is keg-only, so it is not on the default paths either
+        HOMEBREW_LIBOMP := $(shell brew --prefix libomp 2>/dev/null)
+        ifneq ($(HOMEBREW_LIBOMP),)
+            ifeq ($(shell if [ -d $(HOMEBREW_LIBOMP)/lib ];then echo 1;else echo 0;fi), 1)
+                LIBS += -L$(HOMEBREW_LIBOMP)/lib
+                PARALLEL_FLAGS += -I$(HOMEBREW_LIBOMP)/include
+            endif
+        endif
+
         # We also need to link it
         LIBS += -lomp
 
@@ -41,7 +50,7 @@ CXXFLAGS =
 endif
 #CXXFLAGS += -O0 -fno-inline -fno-omit-frame-pointer -fsanitize=address
 CXXFLAGS += -O3
-CXXFLAGS += -Werror=return-type -std=c++14 -ggdb -g -MMD -MP $(PARALLEL_FLAGS)
+CXXFLAGS += -Werror=return-type -std=c++20 -ggdb -g -MMD -MP $(PARALLEL_FLAGS)
 
 CXXFLAGS += -I deps/libbdsg-easy/include 
 
@@ -75,7 +84,7 @@ ${libbdsgPath}/lib/libbdsg.a:
 	cd deps/libbdsg-easy && ${MAKE}
 
 panpatch : panpatch_main.o panpatch.o ${libbdsgPath}/lib/libbdsg.a 
-	${CXX} ${CXXFLAGS} panpatch_main.o panpatch.o ${libbdsgLibs}  -lcurl -lm -lz -llzma -lbz2 -ldeflate -fopenmp -pthread -o panpatch
+	${CXX} ${CXXFLAGS} panpatch_main.o panpatch.o ${libbdsgLibs}  -lcurl -lm -lz -llzma -lbz2 -ldeflate $(PARALLEL_FLAGS) $(LIBS) $(LDFLAGS) -o panpatch
 
 all : panpatch
 

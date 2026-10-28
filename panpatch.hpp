@@ -15,6 +15,22 @@ using BedRegions = unordered_map<string, vector<pair<int64_t, int64_t>>>;
 // Sorted, merged intervals in reference coordinates representing excluded regions
 using ExcludedRefRegions = vector<pair<int64_t, int64_t>>;
 
+// Path order.  panpatch never relies on the order in which the graph lists paths, or the steps on a
+// node: that order belongs to the graph implementation, it changes between libbdsg versions, and the
+// position overlay builds it in parallel (so it can even change with the thread count).  Paths are
+// sorted by name instead, so every tie-break and every output order is the same whatever the graph.
+
+// sort paths by name, in place
+void sort_paths_by_name(const PathHandleGraph* graph, vector<path_handle_t>& paths);
+
+// the paths of a sample, sorted by name
+vector<path_handle_t> sample_paths(const PathHandleGraph* graph, const string& sample);
+
+// the paths of the -e/--default-sample usable for a target haplotype (its own haplotype, or none),
+// sorted by name
+vector<path_handle_t> default_sample_paths(const PathHandleGraph* graph, const string& default_sample,
+                                           int64_t target_haplotype);
+
 // compute overlap identity between set of ref_paths (treated colletively) with each path in the
 // other_paths 
 // the identity is computed in windows of size w. for a given window the identity is
@@ -26,7 +42,8 @@ unordered_map<path_handle_t, double> compute_overlap_identity(const PathHandleGr
                                                               int64_t w=1000);
 
 // process the above coverage map to select which paths for each sample best cover the input
-// path.  in other words, it tries to find the best haplotype for each other sample
+// path.  in other words, it tries to find the best haplotype for each other sample (the lowest
+// haplotype number on a tie).  each sample's paths are sorted by name
 unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHandleGraph* graph,
                                                                   const unordered_map<path_handle_t, double>& coverage_map);
 
