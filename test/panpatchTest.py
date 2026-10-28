@@ -112,12 +112,15 @@ run('panpatch scaffold.vg -r frag -s frag -f scaffold.pass.fa --bed scaffold.pas
 run('diff scaffold.pass.bed scaffold.pass.bed.truth')
 temp_files += ['scaffold.pass.bed', 'scaffold.pass.hap1.fa']
 
-# Interior-splice guard: the main contig (frag#1#main) spans the whole chromosome but diverges
-# in the middle (node 8); a same-sample fragment (frag#1#alt) matches the reference there. Greedy
-# threading splices alt into main's interior (main used non-contiguously with alt between), which
-# is the repeat-region misjoin signature. The guard must reject this and revert to the input
-# contigs. The big flanks keep the length check satisfied so the guard is the sole reason to revert
-# (contrast with the legit cases above: end-to-end scaffolds and foreign-donor gap-fills are kept).
+# Interior-splice guard: the main contig (frag#1#main) spans the whole chromosome but leaves the
+# reference in the middle (node 8, an assembly gap of Ns); a same-sample fragment (frag#1#alt)
+# matches the reference there. Threading can't follow main across the gap on its first pass, so it
+# splices alt into main's interior (main used non-contiguously with alt between), which is the
+# repeat-region misjoin signature. The gap is what makes this happen whichever of the two contigs
+# ranks first (if main could be followed through node 8, the splice would depend on that order).
+# The guard must reject this and revert to the input contigs. The big flanks keep the length check
+# satisfied so the guard is the sole reason to revert (contrast with the legit cases above:
+# end-to-end scaffolds and foreign-donor gap-fills are kept).
 run('vg convert interior_splice.gfa > interior_splice.vg')
 run('panpatch interior_splice.vg -r x -s frag --bed interior_splice.bed.int > interior_splice.bed.rep && cat interior_splice.bed.rep interior_splice.bed.int > interior_splice.bed')
 run('diff interior_splice.bed interior_splice.bed.truth')
