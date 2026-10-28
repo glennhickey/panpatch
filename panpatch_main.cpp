@@ -310,8 +310,10 @@ int main(int argc, char** argv) {
         if (progress) {
             cerr << "[panpatch]: Loaded graph" << endl;
         }
+    // Index every path: the reference, targets and donors are all haplotype paths, and the overlay
+    // leaves haplotypes out by default (they then do not exist in it at all)
     bdsg::ReferencePathOverlayHelper overlay_helper;
-    PathPositionHandleGraph* graph = overlay_helper.apply(base_graph.get());
+    PathPositionHandleGraph* graph = overlay_helper.apply(base_graph.get(), true);
     if (progress && dynamic_cast<PathPositionHandleGraph*>(base_graph.get()) == nullptr) {
         cerr << "[panpatch]: Applied position overlay" << endl;
     }
