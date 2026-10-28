@@ -63,6 +63,21 @@ run('diff tiny.longo.duplex.bed tiny.longo.duplex.bed.truth')
 run('diff tiny.longo.duplex.hap1.fa tiny.longo.truth.fa')
 temp_files += ['tiny.longo.duplex.bed', 'tiny.longo.duplex.hap1.fa']
 
+# Path sense: vg makes every PanSN path of a plain GFA (as in the tests above) a haplotype, but
+# cactus-pangenome graphs carry the reference as a REFERENCE-sense path. Tag x as the reference
+# sample (RS:Z:x) and check that nothing changes.
+with open('tiny.gfa') as gfa_in, open('tiny.ref.gfa', 'w') as gfa_out:
+    gfa_lines = gfa_in.readlines()
+    assert gfa_lines[0].startswith('H\t')
+    gfa_out.write('H\tVN:Z:1.1\tRS:Z:x\n')
+    gfa_out.writelines(gfa_lines[1:])
+run('vg convert tiny.ref.gfa > tiny.ref.vg')
+run('vg paths -M -x tiny.ref.vg | grep -q "^x#0#chrX\tREFERENCE\t"')
+run('panpatch tiny.ref.vg -r x -s verkko -s hifi -f tiny.ref.hifi.fa --bed tiny.ref.hifi.bed.int > tiny.ref.hifi.bed.rep && cat tiny.ref.hifi.bed.rep tiny.ref.hifi.bed.int > tiny.ref.hifi.bed')
+run('diff tiny.ref.hifi.bed tiny.hifi.bed.truth')
+run('diff tiny.ref.hifi.hap1.fa tiny.truth.fa')
+temp_files += ['tiny.ref.gfa', 'tiny.ref.vg', 'tiny.ref.hifi.bed', 'tiny.ref.hifi.hap1.fa']
+
 # Telomere tests
 run('vg convert telomere.gfa > telomere.vg')
 temp_files += ['telomere.vg']
