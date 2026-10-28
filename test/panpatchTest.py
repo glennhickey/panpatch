@@ -194,7 +194,7 @@ run('panpatch telorep.vg -r x -s frag -f telorep.fa 2>/dev/null | grep "^#Contig
 run('panpatch --telomere-report telorep.hap1.fa > telorep.fasta.txt')
 run('diff telorep.graph.txt telorep.fasta.txt')
 # and the scan must not depend on repeat-masking: soft-masked input gives the same answer
-run("sed '/^>/!s/.*/\\L&/' telorep.hap1.fa > telorep.lower.fa")
+run("awk '/^>/ {print; next} {print tolower($0)}' telorep.hap1.fa > telorep.lower.fa")
 run('panpatch --telomere-report telorep.lower.fa > telorep.lower.txt')
 run('diff telorep.fasta.txt telorep.lower.txt')
 temp_files += ['telorep.vg', 'telorep.hap1.fa', 'telorep.lower.fa',
