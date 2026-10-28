@@ -135,9 +135,8 @@ temp_files += ['telo_preserve.vg', 'telo_preserve.bed']
 
 # Telomere patching (folded into -T): when the target is missing a telomere, graft one in
 # from a foreign cover (donor) by handing off at the nearest shared node. Small graphs
-# exercise the splice paths. The non-deterministic-order #Contig lines are dropped, and the
-# #Telomere patch line is kept (pinning the replaced=/grafted= byte counts) with only the
-# kmer_recovery percentage masked.
+# exercise the splice paths. The #Contig lines are dropped; the telomere rows of the report
+# are kept (pinning the replaced_bp/donor_bp byte counts and the k-mer recovery).
 #   telopatch       - forward target, telomere appended at the back
 #   telopatch_rev   - reverse-oriented target (as in real assemblies), back patch
 #   telopatch_front - forward target, telomere prepended at the front
