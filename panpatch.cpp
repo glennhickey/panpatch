@@ -1,5 +1,6 @@
 #include <unordered_set>
 #include <cassert>
+#include <zlib.h>
 #include <map>
 #include <iomanip>
 #include <algorithm>
@@ -905,7 +906,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         const vector<string>& sample_names,
         double telo_threshold,
         int64_t max_handoff,
-        bool verbose) {
+        bool verbose,
+        bool report_failures) {
 
     static const int64_t OUTER = 20000;            // inspect this many bp at a contig tip for a telomere
     static const int64_t REPORT_MARGIN = 3000000;  // keep searching this far past the cap to report a skipped handoff
@@ -1083,6 +1085,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                         pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
                         pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
                         pr.replaced_bp = walked; pr.accepted = false;
+                        if (is_front != rev) { pr.target_start = 0; pr.target_end = walked; }
+                        else { pr.target_start = pr.target_bp - walked; pr.target_end = pr.target_bp; }
                         pr.reason = "handoff would replace " + std::to_string(walked) + "bp, over --max-telomere-patch " + std::to_string(max_handoff);
                         g_patch_records.push_back(pr);
                     }
@@ -1100,6 +1104,11 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                     pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
                     pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
                     pr.replaced_bp = walked; pr.kmer = recovery;
+                    // localize the replaced tail in target-contig fwd coords: the tip sits at the contig
+                    // front when (is_front != rev) -- a reverse interval swaps the front/back convention --
+                    // so it replaced [0, walked); otherwise it is the back end, [L - walked, L)
+                    if (is_front != rev) { pr.target_start = 0; pr.target_end = walked; }
+                    else { pr.target_start = pr.target_bp - walked; pr.target_end = pr.target_bp; }
                     g_patch_records.push_back(pr);
                 }
 
@@ -1115,10 +1124,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
             s_i = inward(s_i);
         }
 
-        // capless end with no usable donor handoff in range: record why, so the user can see which ends
-        // were left as-is and whether it's a simple gap (no telomere anywhere, no donor) or an assembly
-        // issue beyond panpatch's scope (a telomere present but buried/degraded at the tip).
-        {
+        // capless end with no usable donor handoff in range.  report_failures (set under -T, where a
+        // missing telomere is why a contig reverts) records why -- which ends were left as-is, and
+        // whether it's a simple gap (no telomere anywhere, no donor) or a telomere present but
+        // buried/degraded at the tip.  when telomere patching is just the default (not required), this
+        // is a non-event, so stay quiet.
+        if (report_failures) {
             PatchRecord pr;
             pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
             pr.accepted = false;
@@ -1266,7 +1277,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool patch_ends,
                                                                double telo_threshold,
                                                                int64_t max_telomere_patch,
-                                                               bool verbose) {
+                                                               bool verbose,
+                                                               bool report_telomere_failures) {
 
 
 #ifdef debug
@@ -1363,7 +1375,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
 
     if (patch_ends) {
         extended_intervals = extend_to_telomeres(graph, extended_intervals, sample_covers,
-                                                 sample_names, telo_threshold, max_telomere_patch, verbose);
+                                                 sample_names, telo_threshold, max_telomere_patch, verbose,
+                                                 report_telomere_failures);
         check_intervals(graph, extended_intervals);
     }
 
@@ -1671,6 +1684,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 const string& target_sample,
                                 double min_recovery, int64_t min_replaced,
                                 double min_flank, int64_t flank_window,
+                                bool patch_gap,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
@@ -1739,6 +1753,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 fr = flank_fraction(graph, get<0>(intervals[j]), !get<2>(intervals[j]), dR, flank_window);
             }
             bool bad = (nonN >= min_replaced) ? (rec < min_recovery) : (fl < min_flank || fr < min_flank);
+            if (!patch_gap) bad = true;   // gap patching disabled (--patch-types): excise every gap-fill graft, restoring the target's own (gapped) sequence
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
             // from the top after every excision, so only the final settled pass's kept grafts should be
@@ -1754,8 +1769,9 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             if (!bad) { kept_this_call.push_back(pr); continue; }   // faithful (content) or anchored (locus) -- keep
             {
                 ostringstream rs; rs << fixed << setprecision(1);
-                if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
-                else          rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
+                if (!patch_gap)    rs << "gap-fill excluded by --patch-types";
+                else if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
+                else               rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
                 pr.reason = rs.str();
             }
             g_patch_records.push_back(pr);
@@ -1937,12 +1953,15 @@ void check_intervals(const PathHandleGraph* graph,
 bool validate_telomeres(const PathHandleGraph* graph,
                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                         double threshold,
-                        bool verbose) {
+                        bool require_ends,
+                        bool verbose,
+                        string& fail_reason) {
 
     if (intervals.empty()) {
         if (verbose) {
             cerr << "[panpatch] Telomere validation: no intervals to validate" << endl;
         }
+        fail_reason = "telomere validation failed";
         return false;
     }
 
@@ -1950,41 +1969,40 @@ bool validate_telomeres(const PathHandleGraph* graph,
     string sequence = intervals_to_sequence(graph, intervals);
     int64_t seq_len = sequence.length();
 
-    if (seq_len < 2000) {
-        if (verbose) {
-            cerr << "[panpatch] Telomere validation: sequence too short (" << seq_len << "bp)" << endl;
+    // Telomere detection uses the shared seq_has_telomere() helper (also used by the patcher, so the
+    // two cannot disagree). Tips use boundary detection; the internal check does not.  A sequence too
+    // short to analyze leaves all three flags false -- harmless unless require_ends demands both ends.
+    bool has_start_telomere = false, has_end_telomere = false, has_internal_telomere = false;
+    if (seq_len >= 2000) {
+        // Search window - check up to 50kb from each end
+        int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
+        has_start_telomere = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold);
+        has_end_telomere = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold);
+        // internal telomeres should NOT exist; don't find boundary here -- detect any telomeric sequence
+        if (seq_len > 2 * tip_check_len) {
+            has_internal_telomere = seq_has_telomere(sequence, tip_check_len, seq_len - tip_check_len, false, false, threshold);
         }
-        return false;
-    }
-
-    // Search window - check up to 50kb from each end
-    int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
-
-    // Telomere detection uses the shared seq_has_telomere() helper (also used by the patcher, so
-    // the two cannot disagree). Tips use boundary detection; the internal check does not.
-
-    // Check for telomeres at the start (find boundary scanning forward)
-    bool has_start_telomere = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold);
-
-    // Check for telomeres at the end (find boundary scanning backward)
-    bool has_end_telomere = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold);
-
-    // Check for telomeres in the middle (internal telomeres - should NOT exist)
-    // Don't find boundary here - we want to detect any telomeric sequence
-    bool has_internal_telomere = false;
-    if (seq_len > 2 * tip_check_len) {
-        has_internal_telomere = seq_has_telomere(sequence, tip_check_len, seq_len - tip_check_len, false, false, threshold);
     }
 
     if (verbose) {
-        cerr << "[panpatch] Telomere validation (threshold=" << threshold << "):" << endl;
+        cerr << "[panpatch] Telomere validation (threshold=" << threshold << ", require_ends=" << require_ends << "):" << endl;
         cerr << "[panpatch]   Sequence length: " << seq_len << "bp" << endl;
         cerr << "[panpatch]   Start telomere: " << (has_start_telomere ? "FOUND" : "NOT FOUND") << endl;
         cerr << "[panpatch]   End telomere: " << (has_end_telomere ? "FOUND" : "NOT FOUND") << endl;
         cerr << "[panpatch]   Internal telomeres: " << (has_internal_telomere ? "FOUND (BAD)" : "NOT FOUND (GOOD)") << endl;
     }
 
-    return has_start_telomere && has_end_telomere && !has_internal_telomere;
+    // an internal telomere is a scaffold misjoin -- always disqualifying (both -T and --patch-telomeres)
+    if (has_internal_telomere) {
+        fail_reason = "internal telomere in patched contig (scaffold misjoin)";
+        return false;
+    }
+    // require_ends (-T) additionally demands a real telomere at BOTH ends; --patch-telomeres does not
+    if (require_ends && !(has_start_telomere && has_end_telomere)) {
+        fail_reason = "telomere validation failed";
+        return false;
+    }
+    return true;
 }
 
 void log_contig_telomeres(const PathHandleGraph* graph,
@@ -2007,30 +2025,99 @@ void log_contig_telomeres(const PathHandleGraph* graph,
     for (const path_handle_t& path : paths_in_order(graph, intervals)) {
         const auto& path_ints = path_intervals.at(path);
 
-        string sequence = intervals_to_sequence(graph, path_ints);
-        int64_t seq_len = sequence.length();
-
-        if (seq_len < 50) {
-            continue;  // Too short to analyze
-        }
-
-        // Check tip regions - use up to 50kb search window
-        int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
-
-        // use the shared seq_has_telomere (the patcher/validator's detector) so this printed status
-        // cannot disagree with the patch decisions; report the density it measured
-        double left_max_density = 0.0, right_max_density = 0.0;
-        bool has_left  = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold, &left_max_density);
-        bool has_right = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold, &right_max_density);
-
-        // Log all contigs with telomere information
-        cout << "#Contig " << graph->get_path_name(path)
-             << " len=" << seq_len << "bp"
-             << " left=" << (has_left ? "YES" : "NO")
-             << "(" << fixed << setprecision(3) << left_max_density << ")"
-             << " right=" << (has_right ? "YES" : "NO")
-             << "(" << fixed << setprecision(3) << right_max_density << ")"
-             << endl;
+        print_contig_telomere_line(graph->get_path_name(path),
+                                   intervals_to_sequence(graph, path_ints), threshold);
     }
+}
+
+void print_contig_telomere_line(const string& name, const string& sequence, double threshold) {
+    int64_t seq_len = sequence.length();
+
+    if (seq_len < 50) {
+        return;  // Too short to analyze
+    }
+
+    // Check tip regions - use up to 50kb search window
+    int64_t tip_check_len = min((int64_t)50000, seq_len / 2);
+
+    // use the shared seq_has_telomere (the patcher/validator's detector) so this printed status
+    // cannot disagree with the patch decisions; report the density it measured
+    double left_max_density = 0.0, right_max_density = 0.0;
+    bool has_left  = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold, &left_max_density);
+    bool has_right = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold, &right_max_density);
+
+    // Log all contigs with telomere information
+    cout << "#Contig " << name
+         << " len=" << seq_len << "bp"
+         << " left=" << (has_left ? "YES" : "NO")
+         << "(" << fixed << setprecision(3) << left_max_density << ")"
+         << " right=" << (has_right ? "YES" : "NO")
+         << "(" << fixed << setprecision(3) << right_max_density << ")"
+         << endl;
+}
+
+int telomere_report_fasta(const string& fasta_path, double threshold) {
+    // gzopen reads plaintext transparently as well as gzip/bgzip, so this accepts a finished .fa.gz
+    // (what a user has on hand) and the uncompressed file (what cactus-panpatch measures pre-bgzip)
+    gzFile in = gzopen(fasta_path.c_str(), "rb");
+    if (in == Z_NULL) {
+        cerr << "[panpatch] error: Unable to open FASTA " << fasta_path << endl;
+        return 1;
+    }
+    string name, sequence;
+    auto flush_record = [&]() {
+        if (!name.empty()) {
+            print_contig_telomere_line(name, sequence, threshold);
+        }
+        name.clear();
+        sequence.clear();
+    };
+    // a FASTA line is normally <=80bp, but nothing forbids one long line per record, so read in fixed
+    // chunks and only treat a '\n' as a line end (a chunk that fills the buffer is a partial line)
+    const size_t BUF = 1 << 16;
+    vector<char> buf(BUF);
+    string line;
+    bool ok = true;
+    while (gzgets(in, buf.data(), (int)BUF) != Z_NULL) {
+        line += buf.data();
+        if (line.empty() || line.back() != '\n') {
+            continue;                                               // partial line: keep accumulating
+        }
+        line.pop_back();
+        if (!line.empty() && line.back() == '\r') line.pop_back();   // tolerate CRLF
+        if (!line.empty()) {
+            if (line[0] == '>') {
+                flush_record();
+                // the record name is the header's first token, matching how contigs are named elsewhere
+                size_t ws = line.find_first_of(" \t");
+                name = line.substr(1, ws == string::npos ? string::npos : ws - 1);
+            } else {
+                // normalise case on read: a soft-masked assembly would otherwise never match the
+                // (uppercase) telomere hexamers, and telomere presence must not depend on
+                // repeat-masking.  Graph sequence is already uppercase, so this only matters here.
+                for (char& ch : line) ch = toupper((unsigned char)ch);
+                sequence += line;
+            }
+        }
+        line.clear();
+    }
+    int errnum = 0;
+    const char* gzerr = gzerror(in, &errnum);
+    if (errnum != Z_OK && errnum != Z_STREAM_END) {
+        cerr << "[panpatch] error: Failed reading " << fasta_path << ": " << gzerr << endl;
+        ok = false;
+    }
+    gzclose(in);
+    if (!ok) {
+        return 1;
+    }
+    if (!line.empty()) {          // final line with no trailing newline
+        if (line[0] != '>') {
+            for (char& ch : line) ch = toupper((unsigned char)ch);
+            sequence += line;
+        }
+    }
+    flush_record();
+    return 0;
 }
 

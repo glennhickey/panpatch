@@ -90,6 +90,16 @@ run('panpatch telomere.vg -r x -s verkko -s noTelo -T --bed telomere.noTelo.T.be
 run('diff telomere.noTelo.T.bed telomere.noTelo.T.bed.truth')
 temp_files += ['telomere.noTelo.T.bed']
 
+# --- --patch-types: gap/telomere toggles (both on by default) ---
+# default: telomere patching is on, but stays silent when there is nothing to complete (no telomere rows)
+run('! (panpatch tiny.vg -r x -s verkko -s hifi 2>/dev/null | grep -q telomere)')
+# -T additionally reports the per-end telomere failures (and requires a telomere at both ends)
+run('panpatch tiny.vg -r x -s verkko -s hifi -T 2>/dev/null | grep -q telomere')
+# --patch-types telomere turns gap-fill off: the tiny gap-fill is excised (marked excluded in the report)
+run('panpatch tiny.vg -r x -s verkko -s hifi --patch-types telomere 2>/dev/null | grep -q "excluded by --patch-types"')
+# -T with telomere excluded from --patch-types is contradictory and must error
+run('! panpatch tiny.vg -r x -s verkko -s hifi -T --patch-types gap 2>/dev/null')
+
 # No-gaps message test: hifi has no N bases, so should get friendly message
 run('panpatch tiny.vg -r x -s hifi -s verkko --bed tiny.nogaps.bed.int > tiny.nogaps.bed.rep && cat tiny.nogaps.bed.rep tiny.nogaps.bed.int > tiny.nogaps.bed')
 run('diff tiny.nogaps.bed tiny.nogaps.bed.truth')
@@ -171,6 +181,24 @@ for base in ['telopatch', 'telopatch_rev', 'telopatch_front', 'telopatch_multi',
     run('diff {0}.hap1.fa {0}.truth.fa'.format(base))
     temp_files += ['{0}.vg'.format(base), '{0}.patch.bed'.format(base), '{0}.hap1.fa'.format(base)]
 
+
+
+# --telomere-report: the standalone FASTA scan must agree exactly with the in-graph measurement, since
+# both go through print_contig_telomere_line.  Patch a graph with only the target sample, so the output
+# FASTA is that one path verbatim and the two measurements describe identical sequence -- then the
+# "#Contig" line panpatch printed from the graph and the one it prints from the FASTA must be the same.
+# (A caller like cactus-panpatch relies on this: it measures its post-processed output with the FASTA
+# mode and compares against runs that were measured in-graph.)
+run('vg convert telopatch.gfa > telorep.vg')
+run('panpatch telorep.vg -r x -s frag -f telorep.fa 2>/dev/null | grep "^#Contig" > telorep.graph.txt')
+run('panpatch --telomere-report telorep.hap1.fa > telorep.fasta.txt')
+run('diff telorep.graph.txt telorep.fasta.txt')
+# and the scan must not depend on repeat-masking: soft-masked input gives the same answer
+run("sed '/^>/!s/.*/\\L&/' telorep.hap1.fa > telorep.lower.fa")
+run('panpatch --telomere-report telorep.lower.fa > telorep.lower.txt')
+run('diff telorep.fasta.txt telorep.lower.txt')
+temp_files += ['telorep.vg', 'telorep.hap1.fa', 'telorep.lower.fa',
+               'telorep.graph.txt', 'telorep.fasta.txt', 'telorep.lower.txt']
 
 temp_files += [f for f in os.listdir('.') if f.endswith('.int') or f.endswith('.rep')]
 for f in temp_files:
