@@ -894,8 +894,9 @@ static double kmer_recovery(const string& removed, const string& added) {
 //   For each terminal end of the assembly that lacks a telomere, walk inward from the tip
 //   along the terminal target interval looking for the nearest node also visited by a
 //   foreign cover; if that cover continues outward (in the assembly's frame) and ends in a
-//   real telomere, hand off to it there.  The target's (divergent, capless) sequence beyond
-//   the handoff node is replaced by the foreign cover's run to its telomere.
+//   real telomere, and the end it would make passes the -T telomere check, hand off to it
+//   there.  The target's (divergent, capless) sequence beyond the handoff node is replaced
+//   by the foreign cover's run to its telomere.
 //
 // This is graph-coherent: the handoff is a node genuinely shared by both paths, so the join
 // is supported by the graph rather than a blind concatenation.
@@ -910,6 +911,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         bool report_failures) {
 
     static const int64_t OUTER = 20000;            // inspect this many bp at a contig tip for a telomere
+    static const int64_t TIP_CHECK = 50000;        // validate_telomeres' (-T) window at a patched contig's tip
     static const int64_t REPORT_MARGIN = 3000000;  // keep searching this far past the cap to report a skipped handoff
     static const int64_t MAX_FOREIGN_EXT = 8000000;// follow a foreign cover at most this far to reach its telomere
 
@@ -983,6 +985,42 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         auto inward = [&](const step_handle_t& s) -> step_handle_t {
             if (!is_front) return rev ? graph->get_next_step(s) : graph->get_previous_step(s);
             else           return rev ? graph->get_previous_step(s) : graph->get_next_step(s);
+        };
+
+        // would handing off at target step s, to a graft read outward from the handoff (as added_seq
+        // is built below), leave a telomere at this end?  Measured as validate_telomeres (-T) measures
+        // the patched contig: the outermost TIP_CHECK bp in assembly 5'->3' order.  Read outward, a
+        // front graft is the reverse strand of the assembly, so it is reverse-complemented there.
+        auto patched_end_capped = [&](const step_handle_t& s, const string& graft) -> bool {
+            // the graft's outermost TIP_CHECK bp, then the target from the (shared) handoff node inward
+            int64_t have = min((int64_t)graft.size(), TIP_CHECK);
+            string tip_part = graft.substr(graft.size() - have);
+            if (is_front) {
+                reverse(tip_part.begin(), tip_part.end());
+                for (char& c : tip_part) {
+                    switch (c) {
+                        case 'A': c = 'T'; break; case 'C': c = 'G'; break; case 'G': c = 'C'; break; case 'T': c = 'A'; break;
+                        case 'a': c = 't'; break; case 'c': c = 'g'; break; case 'g': c = 'c'; break; case 't': c = 'a'; break;
+                    }
+                }
+            }
+            vector<string> inner_part;  // target nodes, handoff node first
+            for (step_handle_t t = s; have < TIP_CHECK; t = inward(t)) {
+                inner_part.push_back(graph->get_sequence(asm_handle(t)));
+                have += inner_part.back().size();
+                if (t == inner_bound) break;
+            }
+            string end_seq;
+            if (is_front) {
+                end_seq = tip_part;
+                for (const string& node_seq : inner_part) end_seq += node_seq;
+            } else {
+                for (auto it = inner_part.rbegin(); it != inner_part.rend(); ++it) end_seq += *it;
+                end_seq += tip_part;
+            }
+            int64_t from = is_front ? 0 : max((int64_t)0, (int64_t)end_seq.size() - TIP_CHECK);
+            int64_t to = is_front ? min((int64_t)end_seq.size(), TIP_CHECK) : (int64_t)end_seq.size();
+            return seq_has_telomere(end_seq, from, to, true, !is_front, telo_threshold);
         };
 
         // 1) if the tip already carries a telomere, nothing to do.
@@ -1077,6 +1115,17 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                     fs = f_forward ? graph->get_next_step(fs) : graph->get_previous_step(fs);
                 }
                 if (!reached || !any) continue;  // not a usable handoff; keep looking
+
+                // the patched end must carry a telomere.  where the target's own (short or degraded) array
+                // is aligned to the donor's, the nearest shared node is inside the arrays and the graft is
+                // a few bp that leave the end as capless as it was (-T would then revert the contig), so
+                // keep looking: the next cover here, then further in, where the graft takes the donor's array
+                if (within_cap && !patched_end_capped(s_i, added_seq)) {
+                    if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
+                                      << " handoff to " << graph->get_path_name(F) << " at " << walked
+                                      << "bp in leaves the end capless; looking further in" << endl;
+                    continue;
+                }
 
                 if (!within_cap) {
                     // nearest usable handoff is too far in: replacing this much target is risky, so skip
