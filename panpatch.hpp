@@ -104,8 +104,9 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHan
 
 // patch a missing telomere onto a terminal end by handing off to a foreign cover that has one.
 // for each terminal end lacking a telomere, walk inward from the tip to the nearest node also
-// visited by a foreign cover, and if that cover runs outward to a real telomere, splice it on
-// (replacing the target's capless tail beyond the shared handoff node).
+// visited by a foreign cover, and if that cover runs outward to a real telomere and the patched
+// end would pass the -T telomere check, splice it on (replacing the target's capless tail beyond
+// the shared handoff node).
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const PathHandleGraph* graph,
                                                                       const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                                                       const unordered_map<string, vector<path_handle_t>>& sample_covers,

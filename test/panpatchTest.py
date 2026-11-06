@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import os, sys
+import random
 import subprocess
 
 temp_files = []
@@ -180,6 +181,63 @@ for base in ['telopatch', 'telopatch_rev', 'telopatch_front', 'telopatch_multi',
     run('diff {0}.patch.bed {0}.bed.truth'.format(base))
     run('diff {0}.hap1.fa {0}.truth.fa'.format(base))
     temp_files += ['{0}.vg'.format(base), '{0}.patch.bed'.format(base), '{0}.hap1.fa'.format(base)]
+
+# Telomere handoff must leave a capped end.  When the target's own short telomere array is aligned to
+# the donor's (as cactus telomere anchors align them), the nearest shared node is inside the arrays:
+# handing off there grafts a few bp, the end stays capless and -T reverts the contig.  The handoff is
+# taken further in instead, where the graft carries the donor's array.  The graphs are written here:
+#   node 1 (6bp) + node 2 (234bp) - frag's short p array, shared with the outer end of donor's
+#   node 3 - frag-only junk between its array and the subtelomere
+#   node 4 - the rest of donor's array (donor only)     node 8 - donor2's own array
+#   nodes 5, 6, 7 - subtelomere, body and q telomere, the reference x
+#   handoff_short   - frag 1 2 3 5 6 7, donor 1 2 4 5 6 7: the 6bp graft at node 2 is skipped, and the
+#                     handoff is at node 5, grafting donor's whole array (1 2 4) over frag's 1 2 3
+#   handoff_noarray - frag 5 6 7: no frag array, donor's array is grafted whole at the tip, as before
+#   handoff_donor2  - handoff_short plus a lower-priority donor2 8 2 4 5 6 7: the nearest node still
+#                     comes first, so once donor's graft at node 2 is rejected, donor2's (node 8) is taken
+def handoff_gfa(path, walks):
+    rng = random.Random(7)
+    rnd = lambda n: ''.join(rng.choice('ACGT') for _ in range(n))
+    nodes = {1: 'CCCTAA', 2: 'CCCTAA' * 39, 3: rnd(1000), 4: 'CCCTAA' * 210, 5: rnd(3000), 6: rnd(3000),
+             7: 'TTAGGG' * 150, 8: 'CCCTAA' * 250}
+    edges = sorted(set(e for w in walks.values() for e in zip(w, w[1:])))
+    with open(path, 'w') as f:
+        f.write('H\tVN:Z:1.1\n')
+        for n in sorted(set(n for w in walks.values() for n in w)):
+            f.write('S\t{}\t{}\n'.format(n, nodes[n]))
+        for a, b in edges:
+            f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+        for sample, w in walks.items():
+            f.write('W\t{}\t{}\t{}\t0\t{}\t{}\n'.format(sample, 0 if sample == 'x' else 1, 'chrX' if sample == 'x' else 'ctg',
+                                                       sum(len(nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
+
+handoff_cases = {
+    'handoff_short'   : ({'x' : [5, 6, 7], 'frag' : [1, 2, 3, 5, 6, 7], 'donor' : [1, 2, 4, 5, 6, 7]},
+                         'chrX\t1\ttelomere\tfrag#1#ctg#0\t8140\tdonor#1#ctg#0\t8400\t1240\t3.1\t.\t.\taccepted\t.\t0\t1240\n'
+                         '#Patched assembly on chrX for frag#1:\n'
+                         'donor#1#ctg#0\t0\t1500\t+\n'
+                         'frag#1#ctg#0\t1240\t8140\t+\n\n'),
+    'handoff_noarray' : ({'x' : [5, 6, 7], 'frag' : [5, 6, 7], 'donor' : [1, 2, 4, 5, 6, 7]},
+                         'chrX\t1\ttelomere\tfrag#1#ctg#0\t6900\tdonor#1#ctg#0\t8400\t0\t0.0\t.\t.\taccepted\t.\t0\t0\n'
+                         '#Patched assembly on chrX for frag#1:\n'
+                         'donor#1#ctg#0\t0\t1500\t+\n'
+                         'frag#1#ctg#0\t0\t6900\t+\n\n'),
+    'handoff_donor2'  : ({'x' : [5, 6, 7], 'frag' : [1, 2, 3, 5, 6, 7], 'donor' : [1, 2, 4, 5, 6, 7],
+                          'donor2' : [8, 2, 4, 5, 6, 7]},
+                         'chrX\t1\ttelomere\tfrag#1#ctg#0\t8140\tdonor2#1#ctg#0\t9894\t6\t0.0\t.\t.\taccepted\t.\t0\t6\n'
+                         '#Patched assembly on chrX for frag#1:\n'
+                         'donor2#1#ctg#0\t0\t1500\t+\n'
+                         'frag#1#ctg#0\t6\t8140\t+\n\n'),
+}
+for base, (walks, truth) in handoff_cases.items():
+    handoff_gfa(base + '.gfa', walks)
+    with open(base + '.truth', 'w') as f:
+        f.write(truth)
+    donors = ' '.join('-s ' + s for s in ['donor', 'donor2'] if s in walks)
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    run('panpatch {0}.vg -r x -s frag {1} -T --bed {0}.int 2>/dev/null | grep -v "^chrom" | {2} > {0}.rep && cat {0}.rep {0}.int > {0}.out'.format(base, donors, telo_filter))
+    run('diff {0}.out {0}.truth'.format(base))
+    temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
 
 
 
