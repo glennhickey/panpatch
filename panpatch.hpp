@@ -138,6 +138,9 @@ struct PatchRecord {
 };
 extern std::vector<PatchRecord> g_patch_records;
 
+// revert_bad_patch's reason when a contig with gaps has no patch from any donor (main reports it as a row)
+static const char* const NO_DONOR_PATCH_REASON = "no patches from other assemblies were found";
+
 // total sequence length (bp) of a path
 int64_t path_bp(const PathHandleGraph* g, path_handle_t p);
 
@@ -169,7 +172,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                double telo_threshold = 0.8,
                                                                int64_t max_telomere_patch = 500000,
                                                                bool verbose = false,
-                                                               bool report_telomere_failures = false);
+                                                               bool report_telomere_failures = false,
+                                                               unordered_set<path_handle_t>* threaded_tgt_paths = nullptr);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery

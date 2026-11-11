@@ -485,9 +485,10 @@ int main(int argc, char** argv) {
         if (progress) {
             cerr << "[panpatch]: Running greedy patch selection" << endl;
         }
+        unordered_set<path_handle_t> threaded_tgt_paths;
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
-            patch_telomere, telo_threshold, max_telomere_patch, progress, require_telomeres);
+            patch_telomere, telo_threshold, max_telomere_patch, progress, require_telomeres, &threaded_tgt_paths);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -550,6 +551,39 @@ int main(int argc, char** argv) {
             patched_intervals = input_intervals;
         }
 
+        // a contig with gaps that no donor could patch reverts with no candidate patch to report it by;
+        // say so, rather than writing the contig back with nothing in the report to show it was looked at
+        if (reverted && g_patch_records.empty() && revert_reason == NO_DONOR_PATCH_REASON) {
+            PatchRecord pr;
+            pr.type = "gap-fill";
+            pr.target = graph->get_path_name(hap_tgts.second.front());
+            pr.target_bp = path_bp(graph, hap_tgts.second.front());
+            pr.accepted = false;
+            pr.reason = string(NO_DONOR_PATCH_REASON) + "; contig kept as it is";
+            g_patch_records.push_back(pr);
+        }
+
+        // target contigs on this chromosome that an accepted patch never threaded through at all (an
+        // unplaced fragment binned here, say).  they are written through as they are, each its own record,
+        // so no input sequence is dropped: patched output is one record built from the patch's intervals,
+        // so a contig never in them would otherwise never be written.  (one the threading used and a
+        // telomere graft then replaced was patched over, and is not written again)
+        vector<path_handle_t> unused_tgts;
+        if (!reverted) {
+            unordered_set<path_handle_t> used = threaded_tgt_paths;
+            for (const auto& iv : patched_intervals) used.insert(graph->get_path_handle_of_step(get<0>(iv)));
+            for (const path_handle_t& p : hap_tgts.second) {
+                if (!used.count(p)) unused_tgts.push_back(p);
+            }
+            for (const path_handle_t& p : unused_tgts) {
+                PatchRecord pr;
+                pr.type = "passthrough";
+                pr.target = graph->get_path_name(p); pr.target_bp = path_bp(graph, p);
+                pr.accepted = true; pr.reason = "not part of the patched contig; written as it is";
+                g_patch_records.push_back(pr);
+            }
+        }
+
         // emit this haplotype's report rows.  Finalize each decision first: a whole-contig revert
         // rejects every patch that had been provisionally accepted on it.
         for (auto& pr : g_patch_records) {
@@ -564,6 +598,9 @@ int main(int argc, char** argv) {
 
         // log telomere information for contigs
         log_contig_telomeres(graph, patched_intervals, telo_threshold);
+        for (const path_handle_t& p : unused_tgts) {
+            log_contig_telomeres(graph, {make_tuple(graph->path_begin(p), graph->path_back(p), false)}, telo_threshold);
+        }
 
         // emit the patched-assembly intervals to the BED buffer (the report comments stay on stdout)
         bed_ss << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "
@@ -581,6 +618,12 @@ int main(int argc, char** argv) {
             print_intervals(graph, patched_intervals, bed_ss);
         }
         bed_ss << endl;
+        for (const path_handle_t& p : unused_tgts) {
+            bed_ss << "#Passthrough (unused by the patch) on " << graph->get_locus_name(ref_path) << " for "
+                   << graph->get_sample_name(p) << "#" << graph->get_haplotype(p) << ":" << endl;
+            print_intervals(graph, {make_tuple(graph->path_begin(p), graph->path_back(p), false)}, bed_ss);
+            bed_ss << endl;
+        }
 
         // stream the FASTA to this haplotype's temp file (renamed to the final name only after every
         // graph succeeds, so a failure leaves no partial FASTA -- without holding the genome in RAM)
@@ -605,6 +648,10 @@ int main(int argc, char** argv) {
             } else {
                 emit(graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first),
                      intervals_to_sequence(graph, patched_intervals));
+                for (const path_handle_t& p : unused_tgts) {
+                    emit(graph->get_path_name(p),
+                         intervals_to_sequence(graph, {make_tuple(graph->path_begin(p), graph->path_back(p), false)}));
+                }
             }
         }
     }    // end haplotype loop

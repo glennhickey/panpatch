@@ -1397,7 +1397,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                double telo_threshold,
                                                                int64_t max_telomere_patch,
                                                                bool verbose,
-                                                               bool report_telomere_failures) {
+                                                               bool report_telomere_failures,
+                                                               unordered_set<path_handle_t>* threaded_tgt_paths) {
 
 
 #ifdef debug
@@ -1467,6 +1468,16 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                                            tgt_paths,
                                                                                            other_paths,
                                                                                            excluded_regions);
+
+    // the target contigs the threading went through: a telomere graft or trim below can take one out of
+    // the final intervals again, but it was still patched over, unlike a contig never threaded at all
+    if (threaded_tgt_paths) {
+        unordered_set<path_handle_t> tgt_set(tgt_paths.begin(), tgt_paths.end());
+        for (const auto& iv : patched_intervals) {
+            path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+            if (tgt_set.count(p)) threaded_tgt_paths->insert(p);
+        }
+    }
 
     if (patched_intervals.empty()) {
         cerr << "[panpatch] warning: unable to patch assembly on " << graph->get_locus_name(ref_path)
@@ -2026,7 +2037,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                 });
                 if (has_gaps) break;
             }
-            revert_reason = has_gaps ? "no patches from other assemblies were found"
+            revert_reason = has_gaps ? NO_DONOR_PATCH_REASON
                                      : "no patching required (no gaps)";
         }
     }

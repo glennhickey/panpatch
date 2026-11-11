@@ -284,6 +284,7 @@ n_cases = {
                        'donor#1#ctg#0\t10000\t32004\t+\n'
                        '\n')),
     'ngap_shared'   : ({'frag' : [11, 12, 13, 14, 16], 'donor' : [11, 12, 13, 15, 16]}, '-r frag -s frag -s donor', (
+                       'ctg\t1\tgap-fill\tfrag#1#ctg#0\t31200\t.\t0\t.\t.\t.\t.\trejected\tno patches from other assemblies were found; contig kept as it is\t.\t.\n'
                        '#Patched assembly on ctg for frag#1:\n'
                        'frag#1#ctg#0\t0\t31200\t+\n'
                        '\n')),
@@ -304,6 +305,39 @@ for base, (walks, args, truth) in n_cases.items():
                    '{0}.hap1.fa'.format(base)]
 
 
+
+# A target contig that an accepted patch never threads through (an unplaced fragment binned to this
+# chromosome) is written through as its own record, with a passthrough row and BED block.  Before, the
+# patched chromosome was written and the fragment was silently dropped.  telopatch's layout (frag's q
+# telomere is grafted from donor), plus frag's second contig ctg2 on a node of its own (17)
+n_nodes[17] = n_rnd(5000)
+with open('unthreaded_frag.gfa', 'w') as f:
+    uf_walks = [('x', 0, 'chrX', [1, 2, 3, 4, 5]), ('frag', 1, 'ctg', [1, 2, 3, 6]), ('frag', 1, 'ctg2', [17]),
+                ('donor', 1, 'ctg', [2, 3, 4, 5])]
+    f.write('H\tVN:Z:1.1\n')
+    for n in sorted(set(n for w in uf_walks for n in w[3])):
+        f.write('S\t{}\t{}\n'.format(n, n_nodes[n]))
+    for a, b in sorted(set(e for w in uf_walks for e in zip(w[3], w[3][1:]))):
+        f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+    for sample, hap, contig, w in uf_walks:
+        f.write('W\t{}\t{}\t{}\t0\t{}\t{}\n'.format(sample, hap, contig, sum(len(n_nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
+with open('unthreaded_frag.truth', 'w') as f:
+    f.write(
+        'chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tdonor#1#ctg#0\t32004\t3000\t0.0\t.\t.\taccepted\t.\t22004\t25004\n'
+        'chrX\t1\tpassthrough\tfrag#1#ctg2#0\t5000\t.\t0\t.\t.\t.\t.\taccepted\tnot part of the patched contig; written as it is\t.\t.\n'
+        '#Patched assembly on chrX for frag#1:\n'
+        'frag#1#ctg#0\t0\t12004\t+\n'
+        'donor#1#ctg#0\t10000\t32004\t+\n'
+        '\n'
+        '#Passthrough (unused by the patch) on chrX for frag#1:\n'
+        'frag#1#ctg2#0\t0\t5000\t+\n'
+        '\n')
+run('vg convert unthreaded_frag.gfa > unthreaded_frag.vg')
+run('panpatch unthreaded_frag.vg -r x -s frag -s donor --bed unthreaded_frag.int -f unthreaded_frag.fa 2>/dev/null | grep -v "^chrom" | {0} > unthreaded_frag.rep ; cat unthreaded_frag.rep unthreaded_frag.int > unthreaded_frag.out'.format(telo_filter))
+run('diff unthreaded_frag.out unthreaded_frag.truth')
+# and the fragment is in the FASTA, as it was input
+run('grep -q "^>frag#1#ctg2" unthreaded_frag.hap1.fa')
+temp_files += ['unthreaded_frag.gfa', 'unthreaded_frag.vg', 'unthreaded_frag.truth', 'unthreaded_frag.out', 'unthreaded_frag.hap1.fa']
 
 # The interior-graft backstop judges what is left of a contig's foreign grafts by k-mer content once the
 # partial-patch pass has excised the bad ones.  When what is left replaced only N's, there is nothing to
