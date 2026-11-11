@@ -83,6 +83,8 @@ Missing system libraries are a subset of [vg's](https://github.com/vgteam/vg?tab
 | `--graft-min-bp N` | apply `--graft-recovery` only when at least this many non-N bp are replaced | 10000 |
 | `--min-flank F` | revert an N-gap fill anchored to less than this % of the target flank | 50 |
 | `--flank-window N` | window (bp) each side of an N-gap fill over which flank anchoring is measured | 500000 |
+| `--max-graft-size-change N` | excise an interior graft that makes its contig more than N bp longer or shorter (0 disables) | 100000 |
+| `--min-graft-complexity F` | excise an interior graft that replaces or inserts ≥ `--graft-min-bp` of sequence whose distinct k-mer fraction is below F (0 disables) | 0.5 |
 | `-w, --window N` | window size for haplotype-identity binning | 1000 |
 | `-t, --threads N` | threads | all |
 | `-p, --progress` | print progress to stderr | |
@@ -133,6 +135,7 @@ panpatch emits a patched sequence only when it passes the checks below; otherwis
 - **Too short** — the patch covers less than `--min-cover` of the input length.
 - **Same-sample interior splice** — one of the target's own spare fragments is stitched into the middle of a contig that already spans the region (a repeat-region misjoin); reverted.
 - **Foreign interior graft** — a donor spliced into a contig's interior is *excised* (the rest of the patch kept) unless it recapitulates ≥ `--graft-recovery` of the replaced k-mers (a real-sequence replacement of ≥ `--graft-min-bp`), or — for an N-gap fill — stays homologous over ≥ `--min-flank` of *both* flanks within `--flank-window`.
+- **Unverifiable interior graft** — even when it passes the tests above, a graft is excised if it changes its contig's length by more than `--max-graft-size-change` (a satellite array or rDNA gap swapped for the donor's), or replaces or inserts ≥ `--graft-min-bp` of low-complexity sequence (distinct k-mer fraction < `--min-graft-complexity`): any tandem array of the same satellite family shares its k-mers, so k-mer recovery cannot tell a faithful copy from a different one. These err on the side of leaving the target as it is.
 - **Foreign scaffold bridge** — a donor bridging two target contigs must anchor (≥ `--min-flank`) to both; else the scaffold reverts.
 - **Discarded telomere** — a patch must not trim off a target contig's already-capped end.
 - **Donor N's** — a patch never takes sequence from a donor's `N`s (an assembly gap, or a region masked as an error, as `cactus-panpatch --assemblyErrorBeds` does). A telomere graft whose donor run contains one moves to the next donor, and is reported as rejected if no donor completes the end; only the target may be threaded across `N`s, keeping its own gap.

@@ -375,6 +375,52 @@ run('panpatch backstop_nfill.vg -r frag -s frag -s donor --bed backstop_nfill.in
 run('diff backstop_nfill.out backstop_nfill.truth')
 temp_files += ['backstop_nfill.gfa', 'backstop_nfill.vg', 'backstop_nfill.truth', 'backstop_nfill.out']
 
+# Interior grafts that the content and locus tests cannot vouch for are excised (the rest of the patch kept):
+#   graft_growth - frag's 1kb N gap (2) is filled with 5kb of donor (7): accepted by default, but over
+#                  --max-graft-size-change 1000 the +4kb change is too large to verify
+#   graft_satellite - frag's 12kb tandem array (4, a 171bp unit, then a short N run 5 that sends the threading
+#                  to donor) is replaced by donor's copy of the same array (8): k-mer recovery passes, as it
+#                  would for any array of the family, but the run is low-complexity and cannot be verified
+gv_rng = random.Random(17)
+gv_rnd = lambda n: ''.join(gv_rng.choice('ACGT') for _ in range(n))
+gv_unit = gv_rnd(171)
+gv_nodes = {0: gv_rnd(10000), 1: gv_rnd(10000), 2: 'N' * 1000, 3: gv_rnd(10000), 9: gv_rnd(10000), 10: gv_rnd(10000),
+            7: gv_rnd(5000), 4: (gv_unit * 71)[:12000], 5: 'N' * 100, 8: (gv_unit * 72)[:12200]}
+gv_cases = {
+    'graft_growth'    : ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '', (
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t51000\tdonor#1#ctg#0\t55000\t1000\t.\t100.0\t100.0\taccepted\t.\t20000\t21000\n'
+                          '#Patched assembly on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t10000\t+\n'
+                          'donor#1#ctg#0\t10000\t25000\t+\n'
+                          'frag#1#ctg#0\t21000\t51000\t+\n'
+                          '\n')),
+    'graft_growth_cap': ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '--max-graft-size-change 1000', (
+                          "ctg\t1\tgap-fill\tfrag#1#ctg#0\t51000\tdonor#1#ctg#0\t55000\t1000\t.\t100.0\t100.0\trejected\tchanges the contig's length by +4000bp, over --max-graft-size-change 1000 (unverifiable)\t20000\t21000\n"
+                          '#Patched assembly on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t51000\t+\n'
+                          '\n')),
+    'graft_satellite' : ({'frag' : [0, 1, 3, 4, 5, 9, 10], 'donor' : [0, 1, 3, 8, 9, 10]}, '', (
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t62100\tdonor#1#ctg#0\t62200\t12100\t100.0\t100.0\t100.0\trejected\tlow-complexity sequence (distinct k-mer fraction 0.01 replaced/inserted < --min-graft-complexity 0.50) (unverifiable)\t30000\t42100\n'
+                          '#Patched assembly on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t62100\t+\n'
+                          '\n')),
+}
+for base, (walks, args, truth) in gv_cases.items():
+    with open(base + '.gfa', 'w') as f:
+        f.write('H\tVN:Z:1.1\n')
+        for n in sorted(set(n for w in walks.values() for n in w)):
+            f.write('S\t{}\t{}\n'.format(n, gv_nodes[n]))
+        for a, b in sorted(set(e for w in walks.values() for e in zip(w, w[1:]))):
+            f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+        for sample, w in walks.items():
+            f.write('W\t{}\t1\tctg\t0\t{}\t{}\n'.format(sample, sum(len(gv_nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
+    with open(base + '.truth', 'w') as f:
+        f.write(truth)
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    run('panpatch {0}.vg -r frag -s frag -s donor {1} --bed {0}.int 2>/dev/null | grep -v "^chrom" | {2} > {0}.rep ; cat {0}.rep {0}.int > {0}.out'.format(base, args, telo_filter))
+    run('diff {0}.out {0}.truth'.format(base))
+    temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
+
 # --telomere-report: the standalone FASTA scan must agree exactly with the in-graph measurement, since
 # both go through print_contig_telomere_line.  Patch a graph with only the target sample, so the output
 # FASTA is that one path verbatim and the two measurements describe identical sequence -- then the

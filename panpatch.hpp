@@ -186,7 +186,9 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 double min_flank,
                                 int64_t flank_window,
                                 bool patch_gap,
-                                std::unordered_map<path_handle_t, int64_t>& excised_nonN);
+                                std::unordered_map<path_handle_t, int64_t>& excised_nonN,
+                                int64_t max_size_change = 0,
+                                double min_complexity = 0.0);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,

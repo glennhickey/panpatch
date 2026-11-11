@@ -82,6 +82,11 @@ void help(char** argv) {
        << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
        << "        --min-flank FLOAT        Revert a foreign interior graft anchored to less than this % of the target flank [50]" << endl
        << "        --flank-window N         Window (bp) each side of a graft over which flank anchoring is measured [500000]" << endl
+       << "        --max-graft-size-change N  Excise a foreign interior graft that makes its contig more than N bp longer" << endl
+       << "                                 or shorter: too large a change to verify (satellite arrays, rDNA gaps).  0 disables [100000]" << endl
+       << "        --min-graft-complexity F  Excise a foreign interior graft that replaces or inserts >= --graft-min-bp of" << endl
+       << "                                 low-complexity sequence (distinct k-mer fraction < F), which k-mer recovery" << endl
+       << "                                 cannot check (tandem satellites).  0 disables [0.5]" << endl
        << "        --telomere-report FILE   Standalone: print per-contig telomere cap status (#Contig lines) for" << endl
        << "                                 a finished FASTA and exit. No graph or -r/-s needed. Use this to" << endl
        << "                                 measure an assembly that was post-processed after panpatch ran" << endl
@@ -110,6 +115,8 @@ int main(int argc, char** argv) {
     int64_t graft_min_bp = 10000;
     double min_flank = 50.0;
     int64_t flank_window = 500000;
+    int64_t max_graft_size_change = 100000;
+    double min_graft_complexity = 0.5;
     optind = 1;
     while (true) {
 
@@ -134,6 +141,8 @@ int main(int argc, char** argv) {
             {"flank-window", required_argument, 0, 1006},
             {"bed", required_argument, 0, 1007},
             {"telomere-report", required_argument, 0, 1009},
+            {"max-graft-size-change", required_argument, 0, 1010},
+            {"min-graft-complexity", required_argument, 0, 1011},
             {0, 0, 0, 0}
         };
 
@@ -230,6 +239,12 @@ int main(int argc, char** argv) {
         case 1006:
             flank_window = strtoll(optarg, nullptr, 10);
             break;
+        case 1010:
+            max_graft_size_change = strtoll(optarg, nullptr, 10);
+            break;
+        case 1011:
+            min_graft_complexity = atof(optarg);
+            break;
         case 1007:
             out_bed_filename = optarg;
             break;
@@ -284,6 +299,8 @@ int main(int argc, char** argv) {
     if (min_flank < 0 || min_flank > 100) { cerr << "[panpatch] error: --min-flank must be in [0,100]" << endl; return 1; }
     if (graft_min_bp < 0) { cerr << "[panpatch] error: --graft-min-bp must be >= 0" << endl; return 1; }
     if (flank_window <= 0) { cerr << "[panpatch] error: --flank-window must be > 0" << endl; return 1; }
+    if (max_graft_size_change < 0) { cerr << "[panpatch] error: --max-graft-size-change must be >= 0" << endl; return 1; }
+    if (min_graft_complexity < 0 || min_graft_complexity > 1) { cerr << "[panpatch] error: --min-graft-complexity must be in [0,1]" << endl; return 1; }
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
     // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
     vector<string> graph_filenames;
@@ -496,7 +513,8 @@ int main(int argc, char** argv) {
         // still accounts for them.
         unordered_map<path_handle_t, int64_t> excised_nonN;
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
-                                   min_flank, flank_window, patch_gap, excised_nonN);
+                                   min_flank, flank_window, patch_gap, excised_nonN,
+                                   max_graft_size_change, min_graft_complexity);
 
         // record scaffold joins (patch spans >1 target contig) for the report, and guard foreign-bridged
         // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.

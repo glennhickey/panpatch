@@ -900,6 +900,37 @@ static void sample_kmers(const string& s, unordered_set<uint64_t>& out) {
     }
 }
 
+// fraction of the (sampled) canonical 31-mer positions in s that are distinct: near 1 for unique sequence,
+// near 0 for a tandem array (an alpha or HSat satellite repeats a few k-mers over and over), so a low value
+// means k-mer recovery cannot tell a faithful copy from any other array of the same family.  -1 if s has no
+// k-mers to sample
+static double kmer_distinct_fraction(const string& s) {
+    const int K = 31;
+    const uint64_t SAMPLE_MASK = 0xF;   // the same ~1/16 subsample as sample_kmers
+    unordered_set<uint64_t> seen;
+    int64_t total = 0;
+    uint64_t fwd = 0, rev = 0, mask = (1ULL << (2 * K)) - 1;
+    int valid = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        int c;
+        switch (s[i]) {
+            case 'A': case 'a': c = 0; break;
+            case 'C': case 'c': c = 1; break;
+            case 'G': case 'g': c = 2; break;
+            case 'T': case 't': c = 3; break;
+            default: c = -1;
+        }
+        if (c < 0) { valid = 0; fwd = rev = 0; continue; }
+        fwd = ((fwd << 2) | (uint64_t)c) & mask;
+        rev = (rev >> 2) | ((uint64_t)(3 - c) << (2 * (K - 1)));
+        if (++valid >= K) {
+            uint64_t h = hash64(min(fwd, rev));
+            if ((h & SAMPLE_MASK) == 0) { ++total; seen.insert(h); }
+        }
+    }
+    return total ? (double)seen.size() / (double)total : -1.0;
+}
+
 // percent of the distinct (sampled) k-mers in `removed` that also occur in `added`. a cheap,
 // strand-independent proxy for how much of the replaced target sequence the graft recapitulates.
 static double kmer_recovery(const string& removed, const string& added) {
@@ -1824,7 +1855,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 double min_recovery, int64_t min_replaced,
                                 double min_flank, int64_t flank_window,
                                 bool patch_gap,
-                                unordered_map<path_handle_t, int64_t>& excised_nonN) {
+                                unordered_map<path_handle_t, int64_t>& excised_nonN,
+                                int64_t max_size_change, double min_complexity) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -1884,7 +1916,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // whichever is authoritative: k-mer for a non-N replacement, flank for a mostly-N gap fill.
             double rec = -1.0, fl = -1.0, fr = -1.0;
             vector<tuple<step_handle_t, step_handle_t, bool>> foreign(intervals.begin() + i + 1, intervals.begin() + j);
-            if (nonN >= min_replaced) rec = kmer_recovery(removed, intervals_to_sequence(graph, foreign));
+            string added = intervals_to_sequence(graph, foreign);
+            if (nonN >= min_replaced) rec = kmer_recovery(removed, added);
             {
                 unordered_set<nid_t> dL = path_node_set(graph, graph->get_path_handle_of_step(get<0>(intervals[i + 1])));
                 fl = flank_fraction(graph, get<1>(intervals[i]), get<2>(intervals[i]), dL, flank_window);
@@ -1893,6 +1926,33 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             }
             bool bad = (nonN >= min_replaced) ? (rec < min_recovery) : (fl < min_flank || fr < min_flank);
             if (!patch_gap) bad = true;   // gap patching disabled (--patch-types): excise every gap-fill graft, restoring the target's own (gapped) sequence
+
+            // grafts that neither test can vouch for, excised to stay conservative: one that makes the
+            // contig much longer or shorter (a satellite array or rDNA gap swapped for the donor's), and one
+            // that replaces or inserts a long low-complexity run, whose k-mers any array of the same
+            // satellite family shares (k-mer recovery passes whether or not the copy is faithful)
+            // the foreign run starts and ends on the anchor nodes it shares with C's pieces either side,
+            // which `removed` (C between its pieces) leaves out, so leave them out of what was inserted too
+            int64_t trim_front = 0, trim_back = 0;
+            if (graph->get_id(graph->get_handle_of_step(get<0>(foreign.front()))) == graph->get_id(graph->get_handle_of_step(get<1>(intervals[i]))))
+                trim_front = graph->get_length(graph->get_handle_of_step(get<0>(foreign.front())));
+            if (graph->get_id(graph->get_handle_of_step(get<1>(foreign.back()))) == graph->get_id(graph->get_handle_of_step(get<0>(intervals[j]))))
+                trim_back = graph->get_length(graph->get_handle_of_step(get<1>(foreign.back())));
+            string inserted = (trim_front + trim_back < (int64_t)added.size())
+                ? added.substr(trim_front, added.size() - trim_front - trim_back) : string();
+            int64_t size_change = (int64_t)inserted.size() - (int64_t)removed.size();
+            bool too_big = max_size_change > 0 && llabs(size_change) > max_size_change;
+            double cx_removed = -1.0, cx_added = -1.0;
+            int64_t added_nonN = 0; for (char c : inserted) if (c != 'N' && c != 'n') ++added_nonN;
+            if (min_complexity > 0) {
+                if (nonN >= min_replaced) cx_removed = kmer_distinct_fraction(removed);
+                if (added_nonN >= min_replaced) cx_added = kmer_distinct_fraction(inserted);
+            }
+            bool low_cx = (cx_removed >= 0 && cx_removed < min_complexity) || (cx_added >= 0 && cx_added < min_complexity);
+            // reported as unverifiable only when the content/locus tests above passed it, so a graft they
+            // reject keeps its own reason
+            bool unverifiable = !bad && (too_big || low_cx);
+            if (unverifiable) bad = true;
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
             // from the top after every excision, so only the final settled pass's kept grafts should be
@@ -1909,6 +1969,11 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             {
                 ostringstream rs; rs << fixed << setprecision(1);
                 if (!patch_gap)    rs << "gap-fill excluded by --patch-types";
+                else if (unverifiable && too_big)  rs << "changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change
+                                      << "bp, over --max-graft-size-change " << max_size_change << " (unverifiable)";
+                else if (unverifiable)  rs << setprecision(2) << "low-complexity sequence (distinct k-mer fraction "
+                                      << (cx_removed >= 0 && cx_removed < min_complexity ? cx_removed : cx_added)
+                                      << " replaced/inserted < --min-graft-complexity " << min_complexity << ") (unverifiable)";
                 else if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
                 else               rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
                 pr.reason = rs.str();
