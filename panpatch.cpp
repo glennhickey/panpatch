@@ -452,6 +452,13 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
         return false;
     };
 
+    // the interval starts on this step's node, so it must be N-free too: where the target's and a
+    // donor's N runs (gaps, or regions masked as errors) were aligned to each other, the shared N node
+    // can be an anchor, and a donor interval starting there would carry its N's into the patch
+    if (!cross_Ns && has_n(graph->get_handle_of_step(step))) {
+        return make_pair(graph->path_end(path), false);
+    }
+
     // search forward
     int64_t fcount = 0;
     int64_t bcount = 0;
@@ -610,7 +617,13 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                      << " cur_back " << cur_backward << " " << graph->get_id(graph->get_handle_of_step(step)) << ":"
                      << graph->get_is_reverse(graph->get_handle_of_step(step)) << endl;
 #endif
+                // the second pass, when no path reaches the next anchor without crossing an N, is for the
+                // target alone: it keeps its own gap rather than stopping here.  a donor crossing its N's
+                // (an assembly gap, or a region masked as an error) would put them in the patch
                 bool cross_gaps = iteration > 0;
+                if (cross_gaps && !tgt_path_set.count(graph->get_path_handle_of_step(step))) {
+                    continue;
+                }
                 bool step_backward = graph->get_is_reverse(graph->get_handle_of_step(step));
                 int64_t direction = 0;
                 if (!interval_cover.empty() && graph->get_path_handle_of_step(get<0>(interval_cover.back())) ==
@@ -713,29 +726,44 @@ vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHan
 }
 
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHandleGraph* graph,
-                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals) {
+                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                                                   const vector<path_handle_t>& tgt_paths) {
     vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = intervals;
+    unordered_set<path_handle_t> tgt_path_set(tgt_paths.begin(), tgt_paths.end());
 
-    // extend the front
+    // a terminal interval on the target is extended to the end of its path.  one on a donor (where
+    // threading ended on a donor) is extended only up to its first N: past that is an assembly gap or
+    // a region masked as an error, which would otherwise come into the patch with the donor's tail.
+    // a patch that comes up short of a target telomere this way is reverted by discards_target_telomere
+    auto node_has_n = [&](const step_handle_t& s) {
+        string seq = graph->get_sequence(graph->get_handle_of_step(s));
+        return seq.find_first_of("Nn") != string::npos;
+    };
+    // walk from s toward the start (forward=false) or end of its path, as far as the path (target) or
+    // its first N (donor) allows
+    auto extend_to = [&](step_handle_t s, bool forward) -> step_handle_t {
+        path_handle_t p = graph->get_path_handle_of_step(s);
+        if (tgt_path_set.count(p)) {
+            return forward ? graph->get_previous_step(graph->path_end(p)) : graph->path_begin(p);
+        }
+        while (true) {
+            step_handle_t nx = forward ? graph->get_next_step(s) : graph->get_previous_step(s);
+            if (nx == (forward ? graph->path_end(p) : graph->path_front_end(p)) || node_has_n(nx)) break;
+            s = nx;
+        }
+        return s;
+    };
+
+    // extend the front (toward the path's start, or its end for a reverse interval)
     step_handle_t first_step = get<0>(extended_intervals[0]);
     bool first_backward = get<2>(extended_intervals[0]);
-    if (!first_backward) {
-        first_step = graph->path_begin(graph->get_path_handle_of_step(first_step));
-    } else {
-        first_step = graph->path_end(graph->get_path_handle_of_step(first_step));
-        first_step = graph->get_previous_step(first_step);
-    }
+    first_step = extend_to(first_step, first_backward);
     extended_intervals[0] = make_tuple(first_step, get<1>(extended_intervals[0]), first_backward);
 
-    // extend the back
+    // extend the back (toward the path's end, or its start for a reverse interval)
     step_handle_t last_step = get<1>(extended_intervals.back());
     bool last_backward = get<2>(extended_intervals.back());
-    if (!last_backward) {
-        last_step = graph->path_end(graph->get_path_handle_of_step(last_step));
-        last_step = graph->get_previous_step(last_step);        
-    } else {
-        last_step = graph->path_begin(graph->get_path_handle_of_step(last_step));
-    }
+    last_step = extend_to(last_step, !last_backward);
     extended_intervals.back() = make_tuple(get<0>(extended_intervals.back()), last_step, last_backward);
 
 #ifdef debug
@@ -886,8 +914,8 @@ static double kmer_recovery(const string& removed, const string& added) {
 
 // Telomere / contig-end patching.
 //
-// extend_intervals() only extends the two terminal intervals along their *own* (target)
-// paths to the contigs' own ends.  If the target assembly is simply missing a telomere
+// extend_intervals() only extends the two terminal intervals along their *own* paths to the
+// contigs' own ends (and a donor's no further than its first N).  If the target assembly is simply missing a telomere
 // there, nothing can add it.  This routine grafts a missing telomere in from a foreign
 // cover (selected donor assembly) when one is available:
 //
@@ -1049,6 +1077,18 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         // 2) walk inward looking for a shared-node handoff to a foreign cover with a telomere
         int64_t walked = 0;
         step_handle_t s_i = tip_step;
+
+        // covers (by the direction they are read in) whose run out to their telomere holds an N: an
+        // assembly gap, or a region masked as an error before the graph was built.  a graft from them
+        // would put those N's in the patched assembly.  further in, the same cover's run out is only
+        // longer, so it is skipped at every later handoff too.  if no other cover completes the end,
+        // the first such cover is reported, so a missing telomere is never silently down to N's
+        unordered_set<path_handle_t> n_tainted_fwd, n_tainted_rev;
+        PatchRecord n_reject;
+        bool have_n_reject = false;
+        auto report_n_reject = [&]() {
+            if (have_n_reject) g_patch_records.push_back(n_reject);
+        };
         while (true) {
             handle_t a_i = asm_handle(s_i);
             handle_t under = graph->get_handle_of_step(s_i);
@@ -1093,6 +1133,10 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 // the outward end of F in this direction must be telomeric (precomputed)
                 if (!(f_forward ? telo_end[F] : telo_begin[F])) continue;
 
+                // its run out to that end must be free of N's (see n_tainted_* above)
+                unordered_set<path_handle_t>& n_tainted = f_forward ? n_tainted_fwd : n_tainted_rev;
+                if (n_tainted.count(F)) continue;
+
                 // `walked` is the length of the target's capless tail this handoff would replace.
                 bool within_cap = (walked <= max_handoff);
 
@@ -1103,16 +1147,39 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 string added_seq;
                 step_handle_t fs = f_forward ? graph->get_next_step(s_F) : graph->get_previous_step(s_F);
                 step_handle_t f_last = s_F;
+                // the handoff node comes out on the donor's side of the splice, so it counts too: where
+                // the target's and the donor's N runs were aligned, it is a shared N node
                 bool reached = false, any = false;
-                while (true) {
+                bool has_n = graph->get_sequence(graph->get_handle_of_step(s_F)).find_first_of("Nn") != string::npos;
+                while (!has_n) {
                     bool at_end = f_forward ? (fs == graph->path_end(F)) : (fs == graph->path_front_end(F));
                     if (at_end) { reached = true; break; }
                     handle_t fh = graph->get_handle_of_step(fs);
-                    if (within_cap) added_seq += graph->get_sequence(f_forward ? fh : graph->flip(fh));
-                    ext += graph->get_length(fh);
+                    string fseq = graph->get_sequence(f_forward ? fh : graph->flip(fh));
+                    if (fseq.find_first_of("Nn") != string::npos) { has_n = true; break; }
+                    if (within_cap) added_seq += fseq;
+                    ext += fseq.size();
                     f_last = fs; any = true;
                     if (ext > MAX_FOREIGN_EXT) break;
                     fs = f_forward ? graph->get_next_step(fs) : graph->get_previous_step(fs);
+                }
+                if (has_n) {
+                    n_tainted.insert(F);
+                    if (!have_n_reject) {
+                        n_reject = PatchRecord();
+                        n_reject.type = "telomere"; n_reject.target = graph->get_path_name(P);
+                        n_reject.target_bp = path_bp(graph, P);
+                        n_reject.donor = graph->get_path_name(F); n_reject.donor_bp = path_bp(graph, F);
+                        n_reject.replaced_bp = walked; n_reject.accepted = false;
+                        if (is_front != rev) { n_reject.target_start = 0; n_reject.target_end = walked; }
+                        else { n_reject.target_start = n_reject.target_bp - walked; n_reject.target_end = n_reject.target_bp; }
+                        n_reject.reason = "donor's run to its telomere contains N (an assembly gap or masked error region)";
+                        have_n_reject = true;
+                    }
+                    if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
+                                      << " handoff to " << graph->get_path_name(F) << " at " << walked
+                                      << "bp in would graft N's; skipping that cover" << endl;
+                    continue;
                 }
                 if (!reached || !any) continue;  // not a usable handoff; keep looking
 
@@ -1139,6 +1206,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                         pr.reason = "handoff would replace " + std::to_string(walked) + "bp, over --max-telomere-patch " + std::to_string(max_handoff);
                         g_patch_records.push_back(pr);
                     }
+                    report_n_reject();
                     return false;
                 }
 
@@ -1177,7 +1245,9 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         // missing telomere is why a contig reverts) records why -- which ends were left as-is, and
         // whether it's a simple gap (no telomere anywhere, no donor) or a telomere present but
         // buried/degraded at the tip.  when telomere patching is just the default (not required), this
-        // is a non-event, so stay quiet.
+        // is a non-event, so stay quiet.  (a cover skipped for N's is always reported: it is a donor
+        // that would have completed the end.)
+        report_n_reject();
         if (report_failures) {
             PatchRecord pr;
             pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
@@ -1418,7 +1488,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     cerr << "number of smoothed intervals found " << smoothed_intervals.size() << endl;
 #endif
 
-    vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = extend_intervals(graph, smoothed_intervals);
+    vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = extend_intervals(graph, smoothed_intervals, tgt_paths);
 
     check_intervals(graph, extended_intervals);
 

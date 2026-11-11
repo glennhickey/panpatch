@@ -239,6 +239,70 @@ for base, (walks, truth) in handoff_cases.items():
     run('diff {0}.out {0}.truth'.format(base))
     temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
 
+# A patch never takes a donor's N's (an assembly gap, or a region cactus-panpatch masked as an error).
+# Donor N's used to come through three ways, one case each here:
+#   ntelo_skip    - ndonor (higher priority) reaches the q telomere through an N node (7): its graft is
+#                   skipped and donor's clean one is taken
+#   ntelo_only    - only ndonor: the end is left as it is, with a rejected row saying why
+#   ntelo_handoff - frag's tip is the N node, shared with ndonor: the handoff node is on the donor's side of
+#                   the splice, so it counts too; the handoff moves in to node 3 and donor's run is grafted
+#   ngap_shared   - reference-free: frag's N gap is two nodes, the first (13) shared with donor's N run,
+#                   past which donor has sequence (15) where frag is still N (14).  no interval may start
+#                   on the shared N anchor, so frag keeps its gap rather than donor being threaded from it
+def n_gfa(path, nodes, walks):
+    edges = sorted(set(e for w in walks.values() for e in zip(w, w[1:])))
+    with open(path, 'w') as f:
+        f.write('H\tVN:Z:1.1\n')
+        for n in sorted(set(n for w in walks.values() for n in w)):
+            f.write('S\t{}\t{}\n'.format(n, nodes[n]))
+        for a, b in edges:
+            f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+        for sample, w in walks.items():
+            f.write('W\t{}\t{}\t{}\t0\t{}\t{}\n'.format(sample, 0 if sample == 'x' else 1, 'chrX' if sample == 'x' else 'ctg',
+                                                       sum(len(nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
+n_rng = random.Random(11)
+n_rnd = lambda n: ''.join(n_rng.choice('ACGT') for _ in range(n))
+n_nodes = {1: 'CCCTAA' * 334, 2: n_rnd(10000), 3: n_rnd(10000), 4: n_rnd(10000), 5: 'TTAGGG' * 334, 6: n_rnd(3000),
+           7: 'N' * 1000, 11: n_rnd(10000), 12: n_rnd(10000), 13: 'N' * 500, 14: 'N' * 700, 15: n_rnd(700), 16: n_rnd(10000)}
+n_telo = {'x' : [1, 2, 3, 4, 5], 'frag' : [1, 2, 3, 6], 'ndonor' : [2, 3, 7, 4, 5], 'donor' : [2, 3, 4, 5]}
+n_cases = {
+    'ntelo_skip'    : (n_telo, '-r x -s frag -s ndonor -s donor', (
+                       'chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tdonor#1#ctg#0\t32004\t3000\t0.0\t.\t.\taccepted\t.\t22004\t25004\n'
+                       '#Patched assembly on chrX for frag#1:\n'
+                       'frag#1#ctg#0\t0\t12004\t+\n'
+                       'donor#1#ctg#0\t10000\t32004\t+\n'
+                       '\n')),
+    'ntelo_only'    : (n_telo, '-r x -s frag -s ndonor', (
+                       "chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tndonor#1#ctg#0\t33004\t3000\t.\t.\t.\trejected\tdonor's run to its telomere contains N (an assembly gap or masked error region)\t22004\t25004\n"
+                       '#Patched assembly on chrX for frag#1:\n'
+                       'frag#1#ctg#0\t0\t25004\t+\n'
+                       '\n')),
+    'ntelo_handoff' : (dict(n_telo, frag=[1, 2, 3, 7]), '-r x -s frag -s ndonor -s donor', (
+                       'chrX\t1\ttelomere\tfrag#1#ctg#0\t23004\tdonor#1#ctg#0\t32004\t1000\t0.0\t.\t.\taccepted\t.\t22004\t23004\n'
+                       '#Patched assembly on chrX for frag#1:\n'
+                       'frag#1#ctg#0\t0\t12004\t+\n'
+                       'donor#1#ctg#0\t10000\t32004\t+\n'
+                       '\n')),
+    'ngap_shared'   : ({'frag' : [11, 12, 13, 14, 16], 'donor' : [11, 12, 13, 15, 16]}, '-r frag -s frag -s donor', (
+                       '#Patched assembly on ctg for frag#1:\n'
+                       'frag#1#ctg#0\t0\t31200\t+\n'
+                       '\n')),
+}
+for base, (walks, args, truth) in n_cases.items():
+    n_gfa(base + '.gfa', n_nodes, walks)
+    with open(base + '.truth', 'w') as f:
+        f.write(truth)
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    # (';', not '&&': ngap_shared patches nothing, so its report is empty and grep exits 1.  a panpatch
+    #  failure still fails the case, as it leaves no .int for cat)
+    run('panpatch {0}.vg {1} --bed {0}.int -f {0}.fa 2>/dev/null | grep -v "^chrom" | {2} > {0}.rep ; cat {0}.rep {0}.int > {0}.out'.format(base, args, telo_filter))
+    run('diff {0}.out {0}.truth'.format(base))
+    # and the patched assembly carries none of the donor's N's (ngap_shared keeps frag's own gap)
+    if base != 'ngap_shared':
+        run('! grep -v "^>" {0}.hap1.fa | grep -q N'.format(base))
+    temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base),
+                   '{0}.hap1.fa'.format(base)]
+
 
 
 # --telomere-report: the standalone FASTA scan must agree exactly with the in-graph measurement, since

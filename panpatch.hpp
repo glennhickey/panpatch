@@ -100,7 +100,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHan
 
 // extend the intervals to the telomeres where appropriate
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHandleGraph* graph,
-                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
+                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                                                   const vector<path_handle_t>& tgt_paths);
 
 // patch a missing telomere onto a terminal end by handing off to a foreign cover that has one.
 // for each terminal end lacking a telomere, walk inward from the tip to the nearest node also

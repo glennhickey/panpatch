@@ -135,6 +135,7 @@ panpatch emits a patched sequence only when it passes the checks below; otherwis
 - **Foreign interior graft** — a donor spliced into a contig's interior is *excised* (the rest of the patch kept) unless it recapitulates ≥ `--graft-recovery` of the replaced k-mers (a real-sequence replacement of ≥ `--graft-min-bp`), or — for an N-gap fill — stays homologous over ≥ `--min-flank` of *both* flanks within `--flank-window`.
 - **Foreign scaffold bridge** — a donor bridging two target contigs must anchor (≥ `--min-flank`) to both; else the scaffold reverts.
 - **Discarded telomere** — a patch must not trim off a target contig's already-capped end.
+- **Donor N's** — a patch never takes sequence from a donor's `N`s (an assembly gap, or a region masked as an error, as `cactus-panpatch --assemblyErrorBeds` does). A telomere graft whose donor run contains one moves to the next donor, and is reported as rejected if no donor completes the end; only the target may be threaded across `N`s, keeping its own gap.
 
 **With `-T`:** the result must begin and end with a telomere (density ≥ `--telomere-threshold`) and have none internal, and a terminal telomere is grafted only if it replaces ≤ `--max-telomere-patch` of target sequence.
 
