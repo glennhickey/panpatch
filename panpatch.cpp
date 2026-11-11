@@ -1616,6 +1616,15 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
                 if (oa < ob) removed += graph->get_sequence(h).substr(oa - na, ob - oa); }
         });
         int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
+        // nothing left to judge by content: the grafts still in place replaced only N's (assembly gaps,
+        // or regions masked as errors), which excise_bad_interior_grafts judged by flank anchoring.  the
+        // excised count below would otherwise lift this over min_replaced, and with no k-mers to sample
+        // kmer_recovery is 0.0, so one excised graft would revert the whole contig, good patches and all
+        {
+            unordered_set<uint64_t> removed_kmers;
+            sample_kmers(removed, removed_kmers);
+            if (removed_kmers.empty()) continue;
+        }
         // count non-N already excised from this contig by the partial-patch pass toward the gate, so
         // excising one graft doesn't drop the remainder below the threshold and disable this backstop
         // for a second still-bad graft (a regression vs. the pre-excise lumped full-revert)

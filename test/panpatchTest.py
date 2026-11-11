@@ -305,6 +305,42 @@ for base, (walks, args, truth) in n_cases.items():
 
 
 
+# The interior-graft backstop judges what is left of a contig's foreign grafts by k-mer content once the
+# partial-patch pass has excised the bad ones.  When what is left replaced only N's, there is nothing to
+# judge, and it must not revert the contig.  Reference-free (frag is the reference):
+#   frag  0 1 2 3 9 4 5 6 10 - an N gap (2), then 12kb of real sequence (4) and a short N run (5)
+#   donor 0 1 7 3 9 8 6 10   - fills the gap with real sequence (7), and replaces 4 5 with unrelated sequence (8)
+# frag is threaded on 0-1, 3-9 and 6-10, between two separate grafts.  The 8 graft shares none of 4's
+# k-mers, so it is excised (12kb of real sequence counted toward the backstop's threshold); the 7 fill of
+# the N gap passes flank anchoring and is kept.  Before, the backstop then found only N's left, scored them
+# 0.0% and reverted the whole contig, the good fill with it.
+bs_rng = random.Random(13)
+bs_rnd = lambda n: ''.join(bs_rng.choice('ACGT') for _ in range(n))
+bs_nodes = {0: bs_rnd(10000), 1: bs_rnd(10000), 2: 'N' * 1000, 3: bs_rnd(10000), 9: bs_rnd(10000), 4: bs_rnd(12000),
+            5: 'N' * 100, 6: bs_rnd(10000), 10: bs_rnd(10000), 7: bs_rnd(1000), 8: bs_rnd(12100)}
+bs_walks = {'frag' : [0, 1, 2, 3, 9, 4, 5, 6, 10], 'donor' : [0, 1, 7, 3, 9, 8, 6, 10]}
+with open('backstop_nfill.gfa', 'w') as f:
+    f.write('H\tVN:Z:1.1\n')
+    for n in sorted(bs_nodes):
+        f.write('S\t{}\t{}\n'.format(n, bs_nodes[n]))
+    for a, b in sorted(set(e for w in bs_walks.values() for e in zip(w, w[1:]))):
+        f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+    for sample, w in bs_walks.items():
+        f.write('W\t{}\t1\tctg\t0\t{}\t{}\n'.format(sample, sum(len(bs_nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
+with open('backstop_nfill.truth', 'w') as f:
+    f.write(
+        'ctg\t1\tgap-fill\tfrag#1#ctg#0\t73100\tdonor#1#ctg#0\t73100\t12100\t0.0\t96.8\t100.0\trejected\tk-mer recovery 0.0% < 50.0% (repeat-region misjoin)\t41000\t53100\n'
+        'ctg\t1\tgap-fill\tfrag#1#ctg#0\t73100\tdonor#1#ctg#0\t73100\t1000\t.\t100.0\t71.3\taccepted\t.\t20000\t21000\n'
+        '#Patched assembly on ctg for frag#1:\n'
+        'frag#1#ctg#0\t0\t10000\t+\n'
+        'donor#1#ctg#0\t10000\t21000\t+\n'
+        'frag#1#ctg#0\t21000\t73100\t+\n'
+        '\n')
+run('vg convert backstop_nfill.gfa > backstop_nfill.vg')
+run('panpatch backstop_nfill.vg -r frag -s frag -s donor --bed backstop_nfill.int 2>/dev/null | grep -v "^chrom" | {0} > backstop_nfill.rep ; cat backstop_nfill.rep backstop_nfill.int > backstop_nfill.out'.format(telo_filter))
+run('diff backstop_nfill.out backstop_nfill.truth')
+temp_files += ['backstop_nfill.gfa', 'backstop_nfill.vg', 'backstop_nfill.truth', 'backstop_nfill.out']
+
 # --telomere-report: the standalone FASTA scan must agree exactly with the in-graph measurement, since
 # both go through print_contig_telomere_line.  Patch a graph with only the target sample, so the output
 # FASTA is that one path verbatim and the two measurements describe identical sequence -- then the
