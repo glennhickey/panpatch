@@ -1534,6 +1534,43 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
 
     check_intervals(graph, extended_intervals);
 
+    // a donor at either end of the threading (the target could not get past an N gap, or a region masked
+    // as an error, at its tip) carries the patch out to the donor's own end: the target's tip beyond its
+    // outermost threaded piece is replaced.  that is a gap fill like any other, so it gets a report row
+    {
+        unordered_set<path_handle_t> tset(tgt_paths.begin(), tgt_paths.end());
+        int first_t = -1, last_t = -1;
+        for (int k = 0; k < (int)extended_intervals.size(); ++k) {
+            if (tset.count(graph->get_path_handle_of_step(get<0>(extended_intervals[k])))) {
+                if (first_t < 0) first_t = k;
+                last_t = k;
+            }
+        }
+        auto record_tip = [&](int tk, int dk, bool at_front) {
+            const auto& T = extended_intervals[tk];
+            path_handle_t P = graph->get_path_handle_of_step(get<0>(T));
+            path_handle_t D = graph->get_path_handle_of_step(get<0>(extended_intervals[dk]));
+            bool rev = get<2>(T);
+            // the target piece's forward range
+            step_handle_t lo_step = rev ? get<1>(T) : get<0>(T), hi_step = rev ? get<0>(T) : get<1>(T);
+            int64_t lo = step_offset(graph, lo_step);
+            int64_t hi = step_offset(graph, hi_step) + graph->get_length(graph->get_handle_of_step(hi_step));
+            int64_t L = path_bp(graph, P);
+            // the output's front is the target's start for a forward piece, its end for a reverse one
+            bool target_start_side = (at_front != rev);
+            PatchRecord pr;
+            pr.type = "gap-fill"; pr.target = graph->get_path_name(P); pr.target_bp = L;
+            pr.donor = graph->get_path_name(D); pr.donor_bp = path_bp(graph, D);
+            pr.target_start = target_start_side ? 0 : hi;
+            pr.target_end = target_start_side ? lo : L;
+            pr.replaced_bp = pr.target_end - pr.target_start;
+            pr.accepted = true;
+            g_patch_records.push_back(pr);
+        };
+        if (first_t > 0) record_tip(first_t, 0, true);
+        if (last_t >= 0 && last_t < (int)extended_intervals.size() - 1) record_tip(last_t, (int)extended_intervals.size() - 1, false);
+    }
+
     if (patch_ends) {
         extended_intervals = extend_to_telomeres(graph, extended_intervals, sample_covers,
                                                  sample_names, telo_threshold, max_telomere_patch, verbose,
@@ -2207,31 +2244,6 @@ bool validate_telomeres(const PathHandleGraph* graph,
         return false;
     }
     return true;
-}
-
-void log_contig_telomeres(const PathHandleGraph* graph,
-                          const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
-                          double threshold) {
-
-    if (intervals.empty()) {
-        return;
-    }
-
-
-    // Group intervals by path to analyze each contig separately
-    unordered_map<path_handle_t, vector<tuple<step_handle_t, step_handle_t, bool>>> path_intervals;
-    for (const auto& interval : intervals) {
-        path_handle_t path = graph->get_path_handle_of_step(get<0>(interval));
-        path_intervals[path].push_back(interval);
-    }
-
-    // Analyze each contig, in the order they first appear in the output
-    for (const path_handle_t& path : paths_in_order(graph, intervals)) {
-        const auto& path_ints = path_intervals.at(path);
-
-        print_contig_telomere_line(graph->get_path_name(path),
-                                   intervals_to_sequence(graph, path_ints), threshold);
-    }
 }
 
 void print_contig_telomere_line(const string& name, const string& sequence, double threshold) {

@@ -274,7 +274,7 @@ n_cases = {
                        '\n')),
     'ntelo_only'    : (n_telo, '-r x -s frag -s ndonor', (
                        "chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tndonor#1#ctg#0\t33004\t3000\t.\t.\t.\trejected\tdonor's run to its telomere contains N (an assembly gap or masked error region)\t22004\t25004\n"
-                       '#Patched assembly on chrX for frag#1:\n'
+                       '#Unpatched (input contig) on chrX for frag#1:\n'
                        'frag#1#ctg#0\t0\t25004\t+\n'
                        '\n')),
     'ntelo_handoff' : (dict(n_telo, frag=[1, 2, 3, 7]), '-r x -s frag -s ndonor -s donor', (
@@ -285,7 +285,7 @@ n_cases = {
                        '\n')),
     'ngap_shared'   : ({'frag' : [11, 12, 13, 14, 16], 'donor' : [11, 12, 13, 15, 16]}, '-r frag -s frag -s donor', (
                        'ctg\t1\tgap-fill\tfrag#1#ctg#0\t31200\t.\t0\t.\t.\t.\t.\trejected\tno patches from other assemblies were found; contig kept as it is\t.\t.\n'
-                       '#Patched assembly on ctg for frag#1:\n'
+                       '#Unpatched (input contig) on ctg for frag#1:\n'
                        'frag#1#ctg#0\t0\t31200\t+\n'
                        '\n')),
 }
@@ -375,6 +375,35 @@ run('panpatch backstop_nfill.vg -r frag -s frag -s donor --bed backstop_nfill.in
 run('diff backstop_nfill.out backstop_nfill.truth')
 temp_files += ['backstop_nfill.gfa', 'backstop_nfill.vg', 'backstop_nfill.truth', 'backstop_nfill.out']
 
+# A patch that ends on a donor carries the donor's tail out to its end, replacing the target's tip beyond
+# its outermost threaded piece.  It is reported as a gap-fill row like any other.  Reference-free:
+#   frag  1 2 3 5    - an N gap (3) near its end, so the threading cannot get from 2 to 5 on frag
+#   donor 1 2 4 5 6  - bridges it (4) and runs on past frag's end (6)
+# frag 1-2, then donor 2-6: frag's 3 and 5 are replaced, and before nothing in the report said so
+te_rng = random.Random(19)
+te_rnd = lambda n: ''.join(te_rng.choice('ACGT') for _ in range(n))
+te_nodes = {1: te_rnd(10000), 2: te_rnd(10000), 3: 'N' * 1000, 4: te_rnd(2000), 5: te_rnd(10000), 6: te_rnd(3000)}
+te_walks = {'frag' : [1, 2, 3, 5], 'donor' : [1, 2, 4, 5, 6]}
+with open('tip_extension.gfa', 'w') as f:
+    f.write('H\tVN:Z:1.1\n')
+    for n in sorted(te_nodes):
+        f.write('S\t{}\t{}\n'.format(n, te_nodes[n]))
+    for a, b in sorted(set(e for w in te_walks.values() for e in zip(w, w[1:]))):
+        f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+    for sample, w in te_walks.items():
+        f.write('W\t{}\t1\tctg\t0\t{}\t{}\n'.format(sample, sum(len(te_nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
+with open('tip_extension.truth', 'w') as f:
+    f.write(
+        'ctg\t1\tgap-fill\tfrag#1#ctg#0\t31000\tdonor#1#ctg#0\t35000\t11000\t.\t.\t.\taccepted\t.\t20000\t31000\n'
+        '#Patched assembly on ctg for frag#1:\n'
+        'frag#1#ctg#0\t0\t10000\t+\n'
+        'donor#1#ctg#0\t10000\t35000\t+\n'
+        '\n')
+run('vg convert tip_extension.gfa > tip_extension.vg')
+run('panpatch tip_extension.vg -r frag -s frag -s donor --bed tip_extension.int 2>/dev/null | grep -v "^chrom" | {0} > tip_extension.rep ; cat tip_extension.rep tip_extension.int > tip_extension.out'.format(telo_filter))
+run('diff tip_extension.out tip_extension.truth')
+temp_files += ['tip_extension.gfa', 'tip_extension.vg', 'tip_extension.truth', 'tip_extension.out']
+
 # Interior grafts that the content and locus tests cannot vouch for are excised (the rest of the patch kept):
 #   graft_growth - frag's 1kb N gap (2) is filled with 5kb of donor (7): accepted by default, but over
 #                  --max-graft-size-change 1000 the +4kb change is too large to verify
@@ -396,12 +425,12 @@ gv_cases = {
                           '\n')),
     'graft_growth_cap': ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '--max-graft-size-change 1000', (
                           "ctg\t1\tgap-fill\tfrag#1#ctg#0\t51000\tdonor#1#ctg#0\t55000\t1000\t.\t100.0\t100.0\trejected\tchanges the contig's length by +4000bp, over --max-graft-size-change 1000 (unverifiable)\t20000\t21000\n"
-                          '#Patched assembly on ctg for frag#1:\n'
+                          '#Unpatched (input contig) on ctg for frag#1:\n'
                           'frag#1#ctg#0\t0\t51000\t+\n'
                           '\n')),
     'graft_satellite' : ({'frag' : [0, 1, 3, 4, 5, 9, 10], 'donor' : [0, 1, 3, 8, 9, 10]}, '', (
                           'ctg\t1\tgap-fill\tfrag#1#ctg#0\t62100\tdonor#1#ctg#0\t62200\t12100\t100.0\t100.0\t100.0\trejected\tlow-complexity sequence (distinct k-mer fraction 0.01 replaced/inserted < --min-graft-complexity 0.50) (unverifiable)\t30000\t42100\n'
-                          '#Patched assembly on ctg for frag#1:\n'
+                          '#Unpatched (input contig) on ctg for frag#1:\n'
                           'frag#1#ctg#0\t0\t62100\t+\n'
                           '\n')),
 }

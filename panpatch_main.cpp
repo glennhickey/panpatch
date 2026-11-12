@@ -394,9 +394,11 @@ int main(int argc, char** argv) {
         { size_t s = stem.find_last_of('/'); if (s != string::npos) stem = stem.substr(s + 1);
           size_t d = stem.find(".full.vg"); if (d == string::npos) d = stem.rfind(".vg");
           if (d != string::npos) stem = stem.substr(0, d); }
+        vector<pair<string, string>> unplaced_records;
         for (path_handle_t p : sample_paths(graph, sample_names.front())) {
             int64_t hap = graph->get_haplotype(p);
             vector<tuple<step_handle_t, step_handle_t, bool>> whole = { make_tuple(graph->path_begin(p), graph->path_back(p), false) };
+            string seq = intervals_to_sequence(graph, whole);
             if (!out_fasta_filename.empty()) {
                 ofstream& fo = fasta_tmp[hap];
                 if (!fo.is_open()) {
@@ -404,7 +406,6 @@ int main(int argc, char** argv) {
                     fo.open(tmp);
                     if (!fo) { cerr << "[panpatch] error: Unable to open fasta file for writing: " << tmp << endl; return 1; }
                 }
-                string seq = intervals_to_sequence(graph, whole);
                 fo << ">" << graph->get_path_name(p) << "\n";
                 for (size_t w = 0; w < seq.length(); w += fasta_width)
                     fo << seq.substr(w, min(fasta_width, seq.length() - w)) << "\n";
@@ -417,6 +418,11 @@ int main(int argc, char** argv) {
             pr.target = graph->get_path_name(p); pr.target_bp = path_bp(graph, p);
             pr.accepted = true; pr.reason = "unplaced (no reference chromosome)";
             print_patch_row(cout, pr);
+            unplaced_records.push_back(make_pair(graph->get_path_name(p), std::move(seq)));
+        }
+        // their "#Contig" cap lines, after the rows as for every other graph
+        for (const auto& rec : unplaced_records) {
+            print_contig_telomere_line(rec.first, rec.second, telo_threshold);
         }
         continue;
     }
@@ -614,62 +620,64 @@ int main(int argc, char** argv) {
             print_patch_row(cout, pr);
         }
 
-        // log telomere information for contigs
-        log_contig_telomeres(graph, patched_intervals, telo_threshold);
-        for (const path_handle_t& p : unused_tgts) {
-            log_contig_telomeres(graph, {make_tuple(graph->path_begin(p), graph->path_back(p), false)}, telo_threshold);
-        }
-
-        // emit the patched-assembly intervals to the BED buffer (the report comments stay on stdout)
-        bed_ss << "#Patched assembly on " << graph->get_locus_name(ref_path) << " for "
-             << graph->get_sample_name(hap_tgts.second.front()) << "#"
-             << graph->get_haplotype(hap_tgts.second.front()) << ":" << endl;
+        // the records this haplotype writes, in output order: the patched record built from the patch's
+        // intervals (then any target contig it never threaded, written through), or, when reverted, each
+        // input contig as it is.  the #Contig lines, the BED blocks and the FASTA records are all made
+        // from this one list, so they describe exactly the same sequences
+        struct OutRecord {
+            string name;
+            string header;
+            vector<tuple<step_handle_t, step_handle_t, bool>> intervals;
+        };
+        vector<OutRecord> records;
+        const string locus = graph->get_locus_name(ref_path);
+        auto sample_hap = [&](path_handle_t p) {
+            return graph->get_sample_name(p) + "#" + std::to_string(graph->get_haplotype(p));
+        };
         if (reverted) {
-            // reverted output is a set of separate input contigs (each its own FASTA record below),
-            // so print each on its own: print_intervals closes the last interval of each call, which
-            // for a single-contig list means the full contig (BED then matches the FASTA / #Contig
-            // lengths instead of dropping each non-last contig's final node)
             for (const auto& interval : patched_intervals) {
-                print_intervals(graph, {interval}, bed_ss);
+                path_handle_t p = graph->get_path_handle_of_step(get<0>(interval));
+                string label = graph->get_sample_name(p) == sample_names.front()
+                    ? "Unpatched (input contig)" : "Default sample contig (" + graph->get_sample_name(p) + ")";
+                records.push_back({graph->get_path_name(p),
+                                   "#" + label + " on " + locus + " for " + sample_hap(hap_tgts.second.front()) + ":",
+                                   {interval}});
             }
         } else {
-            print_intervals(graph, patched_intervals, bed_ss);
-        }
-        bed_ss << endl;
-        for (const path_handle_t& p : unused_tgts) {
-            bed_ss << "#Passthrough (unused by the patch) on " << graph->get_locus_name(ref_path) << " for "
-                   << graph->get_sample_name(p) << "#" << graph->get_haplotype(p) << ":" << endl;
-            print_intervals(graph, {make_tuple(graph->path_begin(p), graph->path_back(p), false)}, bed_ss);
-            bed_ss << endl;
+            records.push_back({locus + "_hap_" + std::to_string(hap_tgts.first),
+                               "#Patched assembly on " + locus + " for " + sample_hap(hap_tgts.second.front()) + ":",
+                               patched_intervals});
+            for (const path_handle_t& p : unused_tgts) {
+                records.push_back({graph->get_path_name(p),
+                                   "#Passthrough (unused by the patch) on " + locus + " for " + sample_hap(p) + ":",
+                                   {make_tuple(graph->path_begin(p), graph->path_back(p), false)}});
+            }
         }
 
         // stream the FASTA to this haplotype's temp file (renamed to the final name only after every
-        // graph succeeds, so a failure leaves no partial FASTA -- without holding the genome in RAM)
+        // graph succeeds, so a failure leaves no partial FASTA -- one chromosome is held at a time)
+        ofstream* fo = nullptr;
         if (!out_fasta_filename.empty()) {
-            ofstream& fo = fasta_tmp[hap_tgts.first];
-            if (!fo.is_open()) {
+            fo = &fasta_tmp[hap_tgts.first];
+            if (!fo->is_open()) {
                 string tmp = fasta_name(out_fasta_filename, hap_tgts.first) + ".tmp";
-                fo.open(tmp);
-                if (!fo) { cerr << "[panpatch] error: Unable to open fasta file for writing: " << tmp << endl; return 1; }
+                fo->open(tmp);
+                if (!*fo) { cerr << "[panpatch] error: Unable to open fasta file for writing: " << tmp << endl; return 1; }
             }
-            auto emit = [&](const string& name, const string& seq) {
-                fo << ">" << name << "\n";
+        }
+        for (const OutRecord& rec : records) {
+            string seq = intervals_to_sequence(graph, rec.intervals);
+            // the record's telomere cap status (the report's "#Contig" lines)
+            print_contig_telomere_line(rec.name, seq, telo_threshold);
+            // its intervals (print_intervals closes the last interval of each call, so each record's
+            // block ends on its own final node)
+            bed_ss << rec.header << endl;
+            print_intervals(graph, rec.intervals, bed_ss);
+            bed_ss << endl;
+            if (fo) {
+                *fo << ">" << rec.name << "\n";
                 for (size_t w = 0; w < seq.length(); w += fasta_width)
-                    fo << seq.substr(w, min(fasta_width, seq.length() - w)) << "\n";
-            };
-            if (reverted) {
-                // either we reverted to the original contigs (write each out), or we made a single t2t patch
-                for (const auto& interval : patched_intervals) {
-                    path_handle_t interval_path = graph->get_path_handle_of_step(get<0>(interval));
-                    emit(graph->get_path_name(interval_path), intervals_to_sequence(graph, {interval}));
-                }
-            } else {
-                emit(graph->get_locus_name(ref_path) + "_hap_" + std::to_string(hap_tgts.first),
-                     intervals_to_sequence(graph, patched_intervals));
-                for (const path_handle_t& p : unused_tgts) {
-                    emit(graph->get_path_name(p),
-                         intervals_to_sequence(graph, {make_tuple(graph->path_begin(p), graph->path_back(p), false)}));
-                }
+                    *fo << seq.substr(w, min(fasta_width, seq.length() - w)) << "\n";
             }
         }
     }    // end haplotype loop

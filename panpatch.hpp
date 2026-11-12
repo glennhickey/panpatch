@@ -221,15 +221,9 @@ bool validate_telomeres(const PathHandleGraph* graph,
                         bool verbose,
                         string& fail_reason);
 
-// log telomere information for each contig in the intervals
-// outputs to cout with # prefix showing which contigs have telomeres and where
-void log_contig_telomeres(const PathHandleGraph* graph,
-                          const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
-                          double threshold=0.8);
-
-// Print the "#Contig" cap-status line for one named sequence.  Shared by log_contig_telomeres (which
-// measures the patched graph intervals) and telomere_report_fasta (which measures a finished FASTA), so
-// telomere status is only ever decided in one place.
+// Print the "#Contig" cap-status line for one named sequence.  Shared by main (one line per output
+// record, measured on the sequence written to the FASTA) and telomere_report_fasta (which measures a
+// finished FASTA), so telomere status is only ever decided in one place.
 void print_contig_telomere_line(const std::string& name, const std::string& sequence, double threshold);
 
 // Scan a plaintext FASTA and print a "#Contig" cap-status line per record, then return 0 (non-zero on
