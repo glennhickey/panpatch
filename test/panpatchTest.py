@@ -174,10 +174,12 @@ temp_files += ['telo_preserve.vg', 'telo_preserve.bed']
 #   telopatch_buried- target's back telomere is buried under terminal junk (verkko over-extension
 #                     pattern): must read as capless and get patched, where the old lenient
 #                     "any 500bp window" tip check would call it present and skip -> revert.
+# These grafts carry kb of donor subtelomere ahead of the telomere, so --max-subtelomere-graft is
+# disabled to exercise the splices (the guard has its own cases, subtelo_* below).
 telo_filter = 'grep -v "^#Contig"'
 for base in ['telopatch', 'telopatch_rev', 'telopatch_front', 'telopatch_multi', 'telopatch_buried']:
     run('vg convert {0}.gfa > {0}.vg'.format(base))
-    run('panpatch {0}.vg -r x -s frag -s donor -T --bed {0}.int -f {0}.fa 2>/dev/null | {1} > {0}.rep && cat {0}.rep {0}.int > {0}.patch.bed'.format(base, telo_filter))
+    run('panpatch {0}.vg -r x -s frag -s donor -T --max-subtelomere-graft 0 --bed {0}.int -f {0}.fa 2>/dev/null | {1} > {0}.rep && cat {0}.rep {0}.int > {0}.patch.bed'.format(base, telo_filter))
     run('diff {0}.patch.bed {0}.bed.truth'.format(base))
     run('diff {0}.hap1.fa {0}.truth.fa'.format(base))
     temp_files += ['{0}.vg'.format(base), '{0}.patch.bed'.format(base), '{0}.hap1.fa'.format(base)]
@@ -249,6 +251,11 @@ for base, (walks, truth) in handoff_cases.items():
 #   ngap_shared   - reference-free: frag's N gap is two nodes, the first (13) shared with donor's N run,
 #                   past which donor has sequence (15) where frag is still N (14).  no interval may start
 #                   on the shared N anchor, so frag keeps its gap rather than donor being threaded from it
+# (the ntelo grafts carry donor's 10kb node 4 ahead of its telomere, so --max-subtelomere-graft is off there)
+# A telomere patch grafts the donor's telomere array, not a subtelomere the target lacks.  In n_telo, donor's
+# graft is node 4 (10kb, no telomere) then its array (5); the telomeric run is found from 9904bp in:
+#   subtelo_graft    - the default --max-subtelomere-graft (2000) rejects it, and the end is left as it is
+#   subtelo_graft_ok - at --max-subtelomere-graft 9904 (the graft's exact subtelomere) it is taken
 def n_gfa(path, nodes, walks):
     edges = sorted(set(e for w in walks.values() for e in zip(w, w[1:])))
     with open(path, 'w') as f:
@@ -266,7 +273,7 @@ n_nodes = {1: 'CCCTAA' * 334, 2: n_rnd(10000), 3: n_rnd(10000), 4: n_rnd(10000),
            7: 'N' * 1000, 11: n_rnd(10000), 12: n_rnd(10000), 13: 'N' * 500, 14: 'N' * 700, 15: n_rnd(700), 16: n_rnd(10000)}
 n_telo = {'x' : [1, 2, 3, 4, 5], 'frag' : [1, 2, 3, 6], 'ndonor' : [2, 3, 7, 4, 5], 'donor' : [2, 3, 4, 5]}
 n_cases = {
-    'ntelo_skip'    : (n_telo, '-r x -s frag -s ndonor -s donor', (
+    'ntelo_skip'    : (n_telo, '-r x -s frag -s ndonor -s donor --max-subtelomere-graft 0', (
                        'chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tdonor#1#ctg#0\t32004\t3000\t0.0\t.\t.\taccepted\t.\t22004\t25004\n'
                        '#Patched assembly on chrX for frag#1:\n'
                        'frag#1#ctg#0\t0\t12004\t+\n'
@@ -277,8 +284,19 @@ n_cases = {
                        '#Unpatched (input contig) on chrX for frag#1:\n'
                        'frag#1#ctg#0\t0\t25004\t+\n'
                        '\n')),
-    'ntelo_handoff' : (dict(n_telo, frag=[1, 2, 3, 7]), '-r x -s frag -s ndonor -s donor', (
+    'ntelo_handoff' : (dict(n_telo, frag=[1, 2, 3, 7]), '-r x -s frag -s ndonor -s donor --max-subtelomere-graft 0', (
                        'chrX\t1\ttelomere\tfrag#1#ctg#0\t23004\tdonor#1#ctg#0\t32004\t1000\t0.0\t.\t.\taccepted\t.\t22004\t23004\n'
+                       '#Patched assembly on chrX for frag#1:\n'
+                       'frag#1#ctg#0\t0\t12004\t+\n'
+                       'donor#1#ctg#0\t10000\t32004\t+\n'
+                       '\n')),
+    'subtelo_graft' : (n_telo, '-r x -s frag -s donor', (
+                       "chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tdonor#1#ctg#0\t32004\t3000\t.\t.\t.\trejected\tdonor's graft carries 9904bp ahead of its telomere, over --max-subtelomere-graft 2000\t22004\t25004\n"
+                       '#Unpatched (input contig) on chrX for frag#1:\n'
+                       'frag#1#ctg#0\t0\t25004\t+\n'
+                       '\n')),
+    'subtelo_graft_ok' : (n_telo, '-r x -s frag -s donor --max-subtelomere-graft 9904', (
+                       'chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tdonor#1#ctg#0\t32004\t3000\t0.0\t.\t.\taccepted\t.\t22004\t25004\n'
                        '#Patched assembly on chrX for frag#1:\n'
                        'frag#1#ctg#0\t0\t12004\t+\n'
                        'donor#1#ctg#0\t10000\t32004\t+\n'
@@ -309,7 +327,8 @@ for base, (walks, args, truth) in n_cases.items():
 # A target contig that an accepted patch never threads through (an unplaced fragment binned to this
 # chromosome) is written through as its own record, with a passthrough row and BED block.  Before, the
 # patched chromosome was written and the fragment was silently dropped.  telopatch's layout (frag's q
-# telomere is grafted from donor), plus frag's second contig ctg2 on a node of its own (17)
+# telomere is grafted from donor, with --max-subtelomere-graft off), plus frag's second contig ctg2 on a
+# node of its own (17)
 n_nodes[17] = n_rnd(5000)
 with open('unthreaded_frag.gfa', 'w') as f:
     uf_walks = [('x', 0, 'chrX', [1, 2, 3, 4, 5]), ('frag', 1, 'ctg', [1, 2, 3, 6]), ('frag', 1, 'ctg2', [17]),
@@ -333,7 +352,7 @@ with open('unthreaded_frag.truth', 'w') as f:
         'frag#1#ctg2#0\t0\t5000\t+\n'
         '\n')
 run('vg convert unthreaded_frag.gfa > unthreaded_frag.vg')
-run('panpatch unthreaded_frag.vg -r x -s frag -s donor --bed unthreaded_frag.int -f unthreaded_frag.fa 2>/dev/null | grep -v "^chrom" | {0} > unthreaded_frag.rep ; cat unthreaded_frag.rep unthreaded_frag.int > unthreaded_frag.out'.format(telo_filter))
+run('panpatch unthreaded_frag.vg -r x -s frag -s donor --max-subtelomere-graft 0 --bed unthreaded_frag.int -f unthreaded_frag.fa 2>/dev/null | grep -v "^chrom" | {0} > unthreaded_frag.rep ; cat unthreaded_frag.rep unthreaded_frag.int > unthreaded_frag.out'.format(telo_filter))
 run('diff unthreaded_frag.out unthreaded_frag.truth')
 # and the fragment is in the FASTA, as it was input
 run('grep -q "^>frag#1#ctg2" unthreaded_frag.hap1.fa')

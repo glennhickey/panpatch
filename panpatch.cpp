@@ -959,6 +959,12 @@ static double kmer_recovery(const string& removed, const string& added) {
 //
 // This is graph-coherent: the handoff is a node genuinely shared by both paths, so the join
 // is supported by the graph rather than a blind concatenation.
+//
+// It is also kept small.  Telomeres are missing from an assembly because reads represent them
+// poorly, so read-based QC can rarely vouch for what is grafted at a contig end.  A handoff may
+// replace at most max_handoff bp of target (-M), and graft at most max_subtelomere bp of donor
+// sequence ahead of the donor's telomere (--max-subtelomere-graft): a telomere patch repairs or
+// supplies the telomere array, and does not bring in a subtelomere the target lacks.
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         const PathHandleGraph* graph,
         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
@@ -966,6 +972,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         const vector<string>& sample_names,
         double telo_threshold,
         int64_t max_handoff,
+        int64_t max_subtelomere,
         bool verbose,
         bool report_failures) {
 
@@ -1117,8 +1124,26 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         unordered_set<path_handle_t> n_tainted_fwd, n_tainted_rev;
         PatchRecord n_reject;
         bool have_n_reject = false;
-        auto report_n_reject = [&]() {
+        // covers (by direction) whose graft would carry more than max_subtelomere bp of sequence ahead of
+        // their telomere.  further in, the same cover's graft only grows on that (subtelomeric) side, so it
+        // too is skipped at every later handoff, and the first one is reported if nothing completes the end
+        unordered_set<path_handle_t> sub_tainted_fwd, sub_tainted_rev;
+        PatchRecord sub_reject;
+        bool have_sub_reject = false;
+        auto report_skipped = [&]() {
             if (have_n_reject) g_patch_records.push_back(n_reject);
+            if (have_sub_reject) g_patch_records.push_back(sub_reject);
+        };
+        // a rejected handoff to F that would replace the target's outermost `walked` bp
+        auto rejected_handoff = [&](const path_handle_t& F, int64_t walked, const string& reason) {
+            PatchRecord pr;
+            pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
+            pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
+            pr.replaced_bp = walked; pr.accepted = false;
+            if (is_front != rev) { pr.target_start = 0; pr.target_end = walked; }
+            else { pr.target_start = pr.target_bp - walked; pr.target_end = pr.target_bp; }
+            pr.reason = reason;
+            return pr;
         };
         while (true) {
             handle_t a_i = asm_handle(s_i);
@@ -1167,6 +1192,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 // its run out to that end must be free of N's (see n_tainted_* above)
                 unordered_set<path_handle_t>& n_tainted = f_forward ? n_tainted_fwd : n_tainted_rev;
                 if (n_tainted.count(F)) continue;
+                unordered_set<path_handle_t>& sub_tainted = f_forward ? sub_tainted_fwd : sub_tainted_rev;
+                if (sub_tainted.count(F)) continue;
 
                 // `walked` is the length of the target's capless tail this handoff would replace.
                 bool within_cap = (walked <= max_handoff);
@@ -1197,14 +1224,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 if (has_n) {
                     n_tainted.insert(F);
                     if (!have_n_reject) {
-                        n_reject = PatchRecord();
-                        n_reject.type = "telomere"; n_reject.target = graph->get_path_name(P);
-                        n_reject.target_bp = path_bp(graph, P);
-                        n_reject.donor = graph->get_path_name(F); n_reject.donor_bp = path_bp(graph, F);
-                        n_reject.replaced_bp = walked; n_reject.accepted = false;
-                        if (is_front != rev) { n_reject.target_start = 0; n_reject.target_end = walked; }
-                        else { n_reject.target_start = n_reject.target_bp - walked; n_reject.target_end = n_reject.target_bp; }
-                        n_reject.reason = "donor's run to its telomere contains N (an assembly gap or masked error region)";
+                        n_reject = rejected_handoff(F, walked, "donor's run to its telomere contains N (an assembly gap or masked error region)");
                         have_n_reject = true;
                     }
                     if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
@@ -1227,18 +1247,31 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
 
                 if (!within_cap) {
                     // nearest usable handoff is too far in: replacing this much target is risky, so skip
-                    {
-                        PatchRecord pr;
-                        pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
-                        pr.donor = graph->get_path_name(F); pr.donor_bp = path_bp(graph, F);
-                        pr.replaced_bp = walked; pr.accepted = false;
-                        if (is_front != rev) { pr.target_start = 0; pr.target_end = walked; }
-                        else { pr.target_start = pr.target_bp - walked; pr.target_end = pr.target_bp; }
-                        pr.reason = "handoff would replace " + std::to_string(walked) + "bp, over --max-telomere-patch " + std::to_string(max_handoff);
-                        g_patch_records.push_back(pr);
-                    }
-                    report_n_reject();
+                    g_patch_records.push_back(rejected_handoff(F, walked, "handoff would replace " + std::to_string(walked) +
+                                                               "bp, over --max-telomere-patch " + std::to_string(max_handoff)));
+                    report_skipped();
                     return false;
+                }
+
+                // the graft must be the donor's telomere array, not a subtelomere the target lacks: added_seq
+                // is read outward, so the donor's telomere is at its end, and what precedes the telomeric run
+                // found there is subtelomere (all of it, for a graft too short to hold a run)
+                if (max_subtelomere > 0) {
+                    int64_t run_start = find_telomere_boundary(added_seq, 0, (int64_t)added_seq.size(), false);
+                    int64_t sub_bp = run_start < 0 ? (int64_t)added_seq.size() : run_start;
+                    if (sub_bp > max_subtelomere) {
+                        sub_tainted.insert(F);
+                        if (!have_sub_reject) {
+                            sub_reject = rejected_handoff(F, walked, "donor's graft carries " + std::to_string(sub_bp) +
+                                                          "bp ahead of its telomere, over --max-subtelomere-graft " +
+                                                          std::to_string(max_subtelomere));
+                            have_sub_reject = true;
+                        }
+                        if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
+                                          << " handoff to " << graph->get_path_name(F) << " at " << walked
+                                          << "bp in would graft " << sub_bp << "bp of subtelomere; skipping that cover" << endl;
+                        continue;
+                    }
                 }
 
                 // replaced target tail (tip .. just inside the handoff node) for the recovery stat
@@ -1276,9 +1309,9 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         // missing telomere is why a contig reverts) records why -- which ends were left as-is, and
         // whether it's a simple gap (no telomere anywhere, no donor) or a telomere present but
         // buried/degraded at the tip.  when telomere patching is just the default (not required), this
-        // is a non-event, so stay quiet.  (a cover skipped for N's is always reported: it is a donor
-        // that would have completed the end.)
-        report_n_reject();
+        // is a non-event, so stay quiet.  (a cover skipped for N's or for its subtelomere is always
+        // reported: it is a donor that would have completed the end.)
+        report_skipped();
         if (report_failures) {
             PatchRecord pr;
             pr.type = "telomere"; pr.target = graph->get_path_name(P); pr.target_bp = path_bp(graph, P);
@@ -1427,6 +1460,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool patch_ends,
                                                                double telo_threshold,
                                                                int64_t max_telomere_patch,
+                                                               int64_t max_subtelomere_graft,
                                                                bool verbose,
                                                                bool report_telomere_failures,
                                                                unordered_set<path_handle_t>* threaded_tgt_paths) {
@@ -1573,7 +1607,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
 
     if (patch_ends) {
         extended_intervals = extend_to_telomeres(graph, extended_intervals, sample_covers,
-                                                 sample_names, telo_threshold, max_telomere_patch, verbose,
+                                                 sample_names, telo_threshold, max_telomere_patch,
+                                                 max_subtelomere_graft, verbose,
                                                  report_telomere_failures);
         check_intervals(graph, extended_intervals);
     }

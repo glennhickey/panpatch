@@ -76,7 +76,8 @@ Missing system libraries are a subset of [vg's](https://github.com/vgteam/vg?tab
 | `-b, --exclude-bed FILE` | target regions to leave untouched (see [Excluding regions](#excluding-regions)) | |
 | `--patch-types LIST` | which of `{gap,telomere}` to attempt, comma-separated (scaffolding is always attempted) | `gap,telomere` |
 | `-T, --require-telomeres` | require a telomere at both ends and none internal, else revert (see [Telomeres](#telomeres)) | off |
-| `-M, --max-telomere-patch N` | max bp a telomere graft may replace | 500000 |
+| `-M, --max-telomere-patch N` | max bp of target sequence a telomere graft may replace | 20000 |
+| `--max-subtelomere-graft N` | max bp of donor sequence a telomere graft may carry ahead of the donor's telomere (0 disables) | 2000 |
 | `--telomere-threshold F` | min hexamer density to call a telomere | 0.8 |
 | `--min-cover F` | revert a patch covering less than this fraction of the input length | 0.95 |
 | `--graft-recovery F` | revert a foreign interior graft sharing less than this % of the replaced k-mers | 50 |
@@ -113,7 +114,9 @@ PAN028-verkko#1#haplotype1-0000008#0	0	64821530	+
 
 ## Telomeres
 
-Telomere completion is **on by default** (as are gap-filling and scaffolding; use `--patch-types` to attempt only a subset — e.g. `--patch-types gap` turns telomere completion off, `--patch-types telomere` turns gap-filling off). If the target stops short of a telomere at an end, panpatch splices on a higher-priority donor that does reach one: the handoff is made at the nearest graph node both assemblies share, so the (divergent) subtelomere past it is replaced by the donor's run to the telomere. `-M/--max-telomere-patch` caps how much target sequence one such graft may replace. Each completed telomere is a `telomere` row in the report.
+Telomere completion is **on by default** (as are gap-filling and scaffolding; use `--patch-types` to attempt only a subset — e.g. `--patch-types gap` turns telomere completion off, `--patch-types telomere` turns gap-filling off). If the target stops short of a telomere at an end, panpatch splices on a higher-priority donor that does reach one: the handoff is made at the nearest graph node both assemblies share, so the (divergent) subtelomere past it is replaced by the donor's run to the telomere. Each completed telomere is a `telomere` row in the report.
+
+Telomere grafts are kept small, because a telomere is missing from an assembly for a reason: reads represent it poorly, so neither the assembler nor read-based QC can vouch for much sequence at a contig end. `-M/--max-telomere-patch` caps how much target sequence one graft may replace, and `--max-subtelomere-graft` how much donor sequence it may carry ahead of the donor's telomere array. A telomere patch therefore repairs or supplies the array (typically by trimming a short capless tail off the target and taking the donor's telomere), and does not bring in a subtelomere the target lacks.
 
 By default a contig whose end can't be completed is simply **kept** as-is (with its other patches) — only an *internal* telomere, which signals a scaffold misjoin, reverts it. `-T/--require-telomeres` makes it strict: each patched haplotype must then begin and end with a telomere, and a contig that doesn't (no donor reaches one, or the tip is degraded/buried) reverts to its input — with `-T` those uncapped ends are also reported. The always-on guard against *discarding* an already-capped end applies in every mode.
 
@@ -139,8 +142,9 @@ panpatch emits a patched sequence only when it passes the checks below; otherwis
 - **Foreign scaffold bridge** — a donor bridging two target contigs must anchor (≥ `--min-flank`) to both; else the scaffold reverts.
 - **Discarded telomere** — a patch must not trim off a target contig's already-capped end.
 - **Donor N's** — a patch never takes sequence from a donor's `N`s (an assembly gap, or a region masked as an error, as `cactus-panpatch --assemblyErrorBeds` does). A telomere graft whose donor run contains one moves to the next donor, and is reported as rejected if no donor completes the end; only the target may be threaded across `N`s, keeping its own gap.
+- **Telomere graft too large** — a telomere graft that would replace more than `--max-telomere-patch` of target, or carry more than `--max-subtelomere-graft` of donor sequence ahead of the donor's telomere, is not taken (the latter moves to the next donor, like donor `N`s).
 
-**With `-T`:** the result must begin and end with a telomere (density ≥ `--telomere-threshold`) and have none internal, and a terminal telomere is grafted only if it replaces ≤ `--max-telomere-patch` of target sequence.
+**With `-T`:** the result must begin and end with a telomere (density ≥ `--telomere-threshold`) and have none internal, and an end it cannot cap (e.g. because its only graft is too large) reverts the contig.
 
 Quality control is heuristic — these guards catch the common misjoins, but there is no full alignment-based scoring of a patch.
 
