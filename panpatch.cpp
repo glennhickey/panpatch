@@ -68,6 +68,52 @@ static int64_t step_offset(const PathHandleGraph* graph, const step_handle_t& st
     return offset;
 }
 
+ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed) {
+    ErrorRegions regions;
+    if (error_bed.empty()) return regions;
+    graph->for_each_path_handle([&](path_handle_t p) {
+        // the full path name, else its PanSN sample#haplotype#locus (which leaves out the phase block and
+        // subrange the graph may add: cactus names a donor contig SAMPLE#HAP#CONTIG#0, or CONTIG[a-b])
+        auto it = error_bed.find(graph->get_path_name(p));
+        if (it == error_bed.end() && graph->get_sample_name(p) != PathMetadata::NO_SAMPLE_NAME) {
+            size_t hap = graph->get_haplotype(p);
+            string key = graph->get_sample_name(p) + "#" +
+                (hap == PathMetadata::NO_HAPLOTYPE ? string() : to_string(hap) + "#") + graph->get_locus_name(p);
+            it = error_bed.find(key);
+        }
+        if (it == error_bed.end()) return;
+        int64_t offset = 0;
+        if (graph->get_subrange(p) != PathMetadata::NO_SUBRANGE) offset = graph->get_subrange(p).first;
+        int64_t len = path_bp(graph, p);
+        vector<pair<int64_t, int64_t>> ivs;
+        for (const auto& iv : it->second) {
+            int64_t s = max((int64_t)0, iv.first - offset), e = min(len, iv.second - offset);
+            if (s < e) ivs.push_back(make_pair(s, e));
+        }
+        if (ivs.empty()) return;
+        sort(ivs.begin(), ivs.end());
+        vector<pair<int64_t, int64_t>>& merged = regions[p];
+        for (const auto& iv : ivs) {
+            if (!merged.empty() && iv.first <= merged.back().second) merged.back().second = max(merged.back().second, iv.second);
+            else merged.push_back(iv);
+        }
+    });
+    return regions;
+}
+
+bool step_in_error(const PathHandleGraph* graph, const step_handle_t& step, const ErrorRegions& error_regions) {
+    if (error_regions.empty()) return false;
+    auto it = error_regions.find(graph->get_path_handle_of_step(step));
+    if (it == error_regions.end()) return false;
+    int64_t s = step_offset(graph, step);
+    int64_t e = s + graph->get_length(graph->get_handle_of_step(step));
+    const vector<pair<int64_t, int64_t>>& ivs = it->second;
+    // the first interval that ends after the node starts
+    auto j = upper_bound(ivs.begin(), ivs.end(), s,
+                         [](int64_t v, const pair<int64_t, int64_t>& iv) { return v < iv.second; });
+    return j != ivs.end() && j->first < e;
+}
+
 // the distinct paths of a list of intervals, in the order they first appear (ie output order).  used
 // to walk the per-contig maps below, which are unordered, in a stable order
 static vector<path_handle_t> paths_in_order(const PathHandleGraph* graph,
@@ -425,7 +471,8 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    int64_t pos,
                                                    int64_t direction,
                                                    bool cross_Ns,
-                                                   int64_t bound) {
+                                                   int64_t bound,
+                                                   const ErrorRegions* error_regions) {
 
     // NOTE:
     // As currently implemented, anchors are all on the reference genome.  This means
@@ -451,10 +498,20 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
         }
         return false;
     };
+    // a step the interval may not use: an N in its node (an assembly gap), or an --error-bed interval on
+    // its own path.  the second is per path, not per node: where the target's flagged sequence is
+    // aligned to a donor's clean copy of it, the shared node is blocked for the target and open to the donor
+    auto blocked = [&](const step_handle_t& s) {
+        return has_n(graph->get_handle_of_step(s)) || (error_regions && step_in_error(graph, s, *error_regions));
+    };
 
     // the interval starts on this step's node, so it must be N-free too: where the target's and a
-    // donor's N runs (gaps, or regions masked as errors) were aligned to each other, the shared N node
-    // can be an anchor, and a donor interval starting there would carry its N's into the patch
+    // donor's N runs (gaps) were aligned to each other, the shared N node can be an anchor, and a donor
+    // interval starting there would carry its N's into the patch.  an --error-bed interval does not
+    // block the start: the anchor is a node this path shares with another, so its sequence is the same
+    // whichever of them is threaded through it, and only the steps after it decide what goes in.  this
+    // is what lets the target take over again on the last shared node of its flagged region, so a swap
+    // stops there instead of also taking the donor's allele of the next, unflagged, bubble
     if (!cross_Ns && has_n(graph->get_handle_of_step(step))) {
         return make_pair(graph->path_end(path), false);
     }
@@ -467,7 +524,7 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
         for (; next_step != graph->path_end(path); next_step = graph->get_next_step(next_step)) {
             handle_t next_handle = graph->get_handle_of_step(next_step);
             ++fcount;
-            if (!cross_Ns && has_n(next_handle)) {
+            if (!cross_Ns && blocked(next_step)) {
                 break;
             }
             if (anchors.count(graph->get_id(next_handle))) {
@@ -493,7 +550,7 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
         for (; next_step != graph->path_front_end(path); next_step = graph->get_previous_step(next_step)) {
             handle_t next_handle = graph->get_handle_of_step(next_step);
             ++bcount;
-            if (!cross_Ns && has_n(next_handle)) {
+            if (!cross_Ns && blocked(next_step)) {
                 break;
             }
             if (anchors.count(graph->get_id(next_handle))) {
@@ -525,7 +582,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                                                                    const unordered_map<int64_t, int64_t>& ref_anchors,
                                                                    const vector<path_handle_t>& tgt_paths,
                                                                    const vector<path_handle_t>& other_paths,
-                                                                   const ExcludedRefRegions& excluded_regions) {
+                                                                   const ExcludedRefRegions& excluded_regions,
+                                                                   const ErrorRegions* error_regions) {
 
     // fewer than two reference anchors: the target shares <=1 node with the reference path (common
     // for acrocentric short arms aligned against an external reference), so there is nothing to
@@ -617,9 +675,10 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                      << " cur_back " << cur_backward << " " << graph->get_id(graph->get_handle_of_step(step)) << ":"
                      << graph->get_is_reverse(graph->get_handle_of_step(step)) << endl;
 #endif
-                // the second pass, when no path reaches the next anchor without crossing an N, is for the
-                // target alone: it keeps its own gap rather than stopping here.  a donor crossing its N's
-                // (an assembly gap, or a region masked as an error) would put them in the patch
+                // the second pass, when no path reaches the next anchor without crossing an N or an
+                // --error-bed interval, is for the target alone: it keeps its own gap (or its own flagged
+                // sequence) rather than stopping here.  a donor crossing its N's or its own flagged
+                // sequence would put them in the patch
                 bool cross_gaps = iteration > 0;
                 if (cross_gaps && !tgt_path_set.count(graph->get_path_handle_of_step(step))) {
                     continue;
@@ -632,7 +691,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                     direction = get<2>(interval_cover.back()) ? -1 : 1;
                 }
                 pair<step_handle_t, bool> next_anchor = find_next_anchor_on_path(graph, ref_anchors, step, cur_pos,
-                                                                                 direction, cross_gaps);
+                                                                                 direction, cross_gaps, 10000,
+                                                                                 error_regions);
                 if (next_anchor.first != graph->path_end(graph->get_path_handle_of_step(step))) {
                     // check if this interval overlaps an excluded region for non-target paths
                     path_handle_t step_path = graph->get_path_handle_of_step(step);
@@ -727,17 +787,19 @@ vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHan
 
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHandleGraph* graph,
                                                                    const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
-                                                                   const vector<path_handle_t>& tgt_paths) {
+                                                                   const vector<path_handle_t>& tgt_paths,
+                                                                   const ErrorRegions* error_regions) {
     vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = intervals;
     unordered_set<path_handle_t> tgt_path_set(tgt_paths.begin(), tgt_paths.end());
 
     // a terminal interval on the target is extended to the end of its path.  one on a donor (where
-    // threading ended on a donor) is extended only up to its first N: past that is an assembly gap or
-    // a region masked as an error, which would otherwise come into the patch with the donor's tail.
-    // a patch that comes up short of a target telomere this way is reverted by discards_target_telomere
+    // threading ended on a donor) is extended only up to its first N or --error-bed interval: past that
+    // is an assembly gap or sequence flagged as an error, which would otherwise come into the patch with
+    // the donor's tail.  a patch that comes up short of a target telomere this way is reverted by
+    // discards_target_telomere
     auto node_has_n = [&](const step_handle_t& s) {
         string seq = graph->get_sequence(graph->get_handle_of_step(s));
-        return seq.find_first_of("Nn") != string::npos;
+        return seq.find_first_of("Nn") != string::npos || (error_regions && step_in_error(graph, s, *error_regions));
     };
     // walk from s toward the start (forward=false) or end of its path, as far as the path (target) or
     // its first N (donor) allows
@@ -931,6 +993,59 @@ static double kmer_distinct_fraction(const string& s) {
     return total ? (double)seen.size() / (double)total : -1.0;
 }
 
+// the lowest kmer_distinct_fraction over windows of `window` bp (overlapping by half) along s.  measured over
+// a whole graft, a satellite array is diluted by the unique sequence around it (a 60 kb HSat1B array inside a
+// 100 kb swap leaves the graft's fraction near 0.6), so the array shows only in the windows that fall inside
+// it.  it does not replace the whole-sequence measure: a repeat whose copies lie further apart than half a
+// window (a tandem duplication with a long unit) shows over the whole graft but in no window.  -1 if window
+// is 0, s is no longer than one window, or no window has enough k-mers to judge (MIN_SAMPLED, ~1.6 kb of
+// sequence at the 1/16 subsample)
+static double min_window_distinct_fraction(const string& s, int64_t window) {
+    if (window <= 0 || (int64_t)s.size() <= window) return -1.0;
+    const int K = 31;
+    const uint64_t SAMPLE_MASK = 0xF;   // the same ~1/16 subsample as kmer_distinct_fraction
+    const int64_t MIN_SAMPLED = 100;
+    vector<pair<int64_t, uint64_t>> sampled;   // (start position, hash) of each sampled k-mer, in order
+    uint64_t fwd = 0, rev = 0, mask = (1ULL << (2 * K)) - 1;
+    int valid = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        int c;
+        switch (s[i]) {
+            case 'A': case 'a': c = 0; break;
+            case 'C': case 'c': c = 1; break;
+            case 'G': case 'g': c = 2; break;
+            case 'T': case 't': c = 3; break;
+            default: c = -1;
+        }
+        if (c < 0) { valid = 0; fwd = rev = 0; continue; }
+        fwd = ((fwd << 2) | (uint64_t)c) & mask;
+        rev = (rev >> 2) | ((uint64_t)(3 - c) << (2 * (K - 1)));
+        if (++valid >= K) {
+            uint64_t h = hash64(min(fwd, rev));
+            if ((h & SAMPLE_MASK) == 0) sampled.push_back(make_pair((int64_t)i + 1 - K, h));
+        }
+    }
+    double lowest = -1.0;
+    int64_t step = max((int64_t)1, window / 2);
+    size_t first = 0;
+    for (int64_t a = 0; a < (int64_t)s.size(); a += step) {
+        // the last window is aligned to the end of s, so its tail is judged on a full window too
+        int64_t start = min(a, (int64_t)s.size() - window);
+        while (first < sampled.size() && sampled[first].first < start) ++first;
+        unordered_set<uint64_t> seen;
+        int64_t total = 0;
+        for (size_t j = first; j < sampled.size() && sampled[j].first + K <= start + window; ++j) {
+            ++total; seen.insert(sampled[j].second);
+        }
+        if (total >= MIN_SAMPLED) {
+            double f = (double)seen.size() / (double)total;
+            if (lowest < 0 || f < lowest) lowest = f;
+        }
+        if (start + window >= (int64_t)s.size()) break;
+    }
+    return lowest;
+}
+
 // percent of the distinct (sampled) k-mers in `removed` that also occur in `added`. a cheap,
 // strand-independent proxy for how much of the replaced target sequence the graft recapitulates.
 static double kmer_recovery(const string& removed, const string& added) {
@@ -974,7 +1089,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         int64_t max_handoff,
         int64_t max_subtelomere,
         bool verbose,
-        bool report_failures) {
+        bool report_failures,
+        const ErrorRegions* error_regions) {
 
     static const int64_t OUTER = 20000;            // inspect this many bp at a contig tip for a telomere
     static const int64_t TIP_CHECK = 50000;        // validate_telomeres' (-T) window at a patched contig's tip
@@ -1116,11 +1232,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         int64_t walked = 0;
         step_handle_t s_i = tip_step;
 
-        // covers (by the direction they are read in) whose run out to their telomere holds an N: an
-        // assembly gap, or a region masked as an error before the graph was built.  a graft from them
-        // would put those N's in the patched assembly.  further in, the same cover's run out is only
-        // longer, so it is skipped at every later handoff too.  if no other cover completes the end,
-        // the first such cover is reported, so a missing telomere is never silently down to N's
+        // covers (by the direction they are read in) whose run out to their telomere holds an N (an
+        // assembly gap, or a region masked as an error before the graph was built) or crosses an
+        // --error-bed interval on the cover.  a graft from them would put those N's, or that flagged
+        // sequence, in the patched assembly.  further in, the same cover's run out is only longer, so it
+        // is skipped at every later handoff too.  if no other cover completes the end, the first such
+        // cover is reported, so a missing telomere is never silently down to N's or a flag
         unordered_set<path_handle_t> n_tainted_fwd, n_tainted_rev;
         PatchRecord n_reject;
         bool have_n_reject = false;
@@ -1209,27 +1326,31 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 // the target's and the donor's N runs were aligned, it is a shared N node
                 bool reached = false, any = false;
                 bool has_n = graph->get_sequence(graph->get_handle_of_step(s_F)).find_first_of("Nn") != string::npos;
-                while (!has_n) {
+                bool flagged = !has_n && error_regions && step_in_error(graph, s_F, *error_regions);
+                while (!has_n && !flagged) {
                     bool at_end = f_forward ? (fs == graph->path_end(F)) : (fs == graph->path_front_end(F));
                     if (at_end) { reached = true; break; }
                     handle_t fh = graph->get_handle_of_step(fs);
                     string fseq = graph->get_sequence(f_forward ? fh : graph->flip(fh));
                     if (fseq.find_first_of("Nn") != string::npos) { has_n = true; break; }
+                    if (error_regions && step_in_error(graph, fs, *error_regions)) { flagged = true; break; }
                     if (within_cap) added_seq += fseq;
                     ext += fseq.size();
                     f_last = fs; any = true;
                     if (ext > MAX_FOREIGN_EXT) break;
                     fs = f_forward ? graph->get_next_step(fs) : graph->get_previous_step(fs);
                 }
-                if (has_n) {
+                if (has_n || flagged) {
                     n_tainted.insert(F);
                     if (!have_n_reject) {
-                        n_reject = rejected_handoff(F, walked, "donor's run to its telomere contains N (an assembly gap or masked error region)");
+                        n_reject = rejected_handoff(F, walked, has_n ?
+                                                    "donor's run to its telomere contains N (an assembly gap or masked error region)" :
+                                                    "donor's run to its telomere crosses one of its --error-bed intervals");
                         have_n_reject = true;
                     }
                     if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
                                       << " handoff to " << graph->get_path_name(F) << " at " << walked
-                                      << "bp in would graft N's; skipping that cover" << endl;
+                                      << "bp in would graft " << (has_n ? "N's" : "flagged sequence") << "; skipping that cover" << endl;
                     continue;
                 }
                 if (!reached || !any) continue;  // not a usable handoff; keep looking
@@ -1463,7 +1584,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                int64_t max_subtelomere_graft,
                                                                bool verbose,
                                                                bool report_telomere_failures,
-                                                               unordered_set<path_handle_t>* threaded_tgt_paths) {
+                                                               unordered_set<path_handle_t>* threaded_tgt_paths,
+                                                               const ErrorRegions* error_regions) {
 
 
 #ifdef debug
@@ -1532,7 +1654,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                                            ref_anchors,
                                                                                            tgt_paths,
                                                                                            other_paths,
-                                                                                           excluded_regions);
+                                                                                           excluded_regions,
+                                                                                           error_regions);
 
     // the target contigs the threading went through: a telomere graft or trim below can take one out of
     // the final intervals again, but it was still patched over, unlike a contig never threaded at all
@@ -1564,7 +1687,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     cerr << "number of smoothed intervals found " << smoothed_intervals.size() << endl;
 #endif
 
-    vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = extend_intervals(graph, smoothed_intervals, tgt_paths);
+    vector<tuple<step_handle_t, step_handle_t, bool>> extended_intervals = extend_intervals(graph, smoothed_intervals, tgt_paths,
+                                                                                            error_regions);
 
     check_intervals(graph, extended_intervals);
 
@@ -1609,7 +1733,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
         extended_intervals = extend_to_telomeres(graph, extended_intervals, sample_covers,
                                                  sample_names, telo_threshold, max_telomere_patch,
                                                  max_subtelomere_graft, verbose,
-                                                 report_telomere_failures);
+                                                 report_telomere_failures, error_regions);
         check_intervals(graph, extended_intervals);
     }
 
@@ -1928,7 +2052,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 double min_flank, int64_t flank_window,
                                 bool patch_gap,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN,
-                                int64_t max_size_change, double min_complexity) {
+                                int64_t max_size_change, double min_complexity, int64_t complexity_window) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -1976,7 +2100,10 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 if (rgj.second > rgi.first) continue;
                 lo = rgj.second; hi = rgi.first;
             }
-            if (hi <= lo) continue;                          // pieces adjacent: nothing of C was replaced
+            if (hi < lo) continue;                           // pieces overlap: not a clean graft, leave it to the backstop
+            // hi == lo: the pieces are adjacent, so nothing of C was replaced.  the donor run between them
+            // either only passes through the anchor nodes it shares with C (handled below: folded back
+            // into C), or inserts sequence C lacks there, which is judged and reported like any graft
             string removed; int64_t p = 0;
             graph->for_each_step_in_path(C, [&](step_handle_t s) {
                 handle_t h = graph->get_handle_of_step(s); int64_t l = graph->get_length(h);
@@ -2002,7 +2129,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // grafts that neither test can vouch for, excised to stay conservative: one that makes the
             // contig much longer or shorter (a satellite array or rDNA gap swapped for the donor's), and one
             // that replaces or inserts a long low-complexity run, whose k-mers any array of the same
-            // satellite family shares (k-mer recovery passes whether or not the copy is faithful)
+            // satellite family shares (k-mer recovery passes whether or not the copy is faithful).  the run
+            // is looked for in complexity_window-bp windows, so an array is caught inside a larger swap
             // the foreign run starts and ends on the anchor nodes it shares with C's pieces either side,
             // which `removed` (C between its pieces) leaves out, so leave them out of what was inserted too
             int64_t trim_front = 0, trim_back = 0;
@@ -2012,19 +2140,47 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 trim_back = graph->get_length(graph->get_handle_of_step(get<1>(foreign.back())));
             string inserted = (trim_front + trim_back < (int64_t)added.size())
                 ? added.substr(trim_front, added.size() - trim_front - trim_back) : string();
+            if (removed.empty() && inserted.empty()) {
+                // a donor run through nothing but the anchor nodes it shares with C: no patch at all (it
+                // arises where C's --error-bed interval starts or ends at a shared node), so it is folded
+                // back into C, without a report row, as if C had been threaded straight through
+                tuple<step_handle_t, step_handle_t, bool> merged =
+                    make_tuple(get<0>(intervals[i]), get<1>(intervals[j]), get<2>(intervals[i]));
+                intervals.erase(intervals.begin() + i, intervals.begin() + j + 1);
+                intervals.insert(intervals.begin() + i, merged);
+                changed = true;
+                continue;
+            }
             int64_t size_change = (int64_t)inserted.size() - (int64_t)removed.size();
             bool too_big = max_size_change > 0 && llabs(size_change) > max_size_change;
-            double cx_removed = -1.0, cx_added = -1.0;
+            // complexity of the replaced and inserted sequence, over the whole of each (cx_) and in its
+            // lowest window (cxw_); either one low is enough
+            double cx_removed = -1.0, cx_added = -1.0, cxw_removed = -1.0, cxw_added = -1.0;
             int64_t added_nonN = 0; for (char c : inserted) if (c != 'N' && c != 'n') ++added_nonN;
             if (min_complexity > 0) {
-                if (nonN >= min_replaced) cx_removed = kmer_distinct_fraction(removed);
-                if (added_nonN >= min_replaced) cx_added = kmer_distinct_fraction(inserted);
+                if (nonN >= min_replaced) {
+                    cx_removed = kmer_distinct_fraction(removed);
+                    cxw_removed = min_window_distinct_fraction(removed, complexity_window);
+                }
+                if (added_nonN >= min_replaced) {
+                    cx_added = kmer_distinct_fraction(inserted);
+                    cxw_added = min_window_distinct_fraction(inserted, complexity_window);
+                }
             }
-            bool low_cx = (cx_removed >= 0 && cx_removed < min_complexity) || (cx_added >= 0 && cx_added < min_complexity);
+            auto low = [&](double cx) { return cx >= 0 && cx < min_complexity; };
+            bool low_cx = low(cx_removed) || low(cx_added) || low(cxw_removed) || low(cxw_added);
             // reported as unverifiable only when the content/locus tests above passed it, so a graft they
             // reject keeps its own reason
             bool unverifiable = !bad && (too_big || low_cx);
             if (unverifiable) bad = true;
+            // a donor run that spells exactly the target sequence it replaces changes nothing.  in a graph
+            // built from unmasked assemblies, a donor that agrees with the target across an --error-bed
+            // interval threads the target's own nodes there: drop it, so the report counts only patches
+            // that change the assembly
+            bool same_seq = !bad && removed.size() == inserted.size() &&
+                equal(removed.begin(), removed.end(), inserted.begin(),
+                      [](char a, char b) { return toupper(a) == toupper(b); });
+            if (same_seq) bad = true;
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
             // from the top after every excision, so only the final settled pass's kept grafts should be
@@ -2041,17 +2197,24 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             {
                 ostringstream rs; rs << fixed << setprecision(1);
                 if (!patch_gap)    rs << "gap-fill excluded by --patch-types";
+                else if (same_seq) rs << "donor sequence is identical to the target's: nothing to patch";
                 else if (unverifiable && too_big)  rs << "changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change
                                       << "bp, over --max-graft-size-change " << max_size_change << " (unverifiable)";
-                else if (unverifiable)  rs << setprecision(2) << "low-complexity sequence (distinct k-mer fraction "
-                                      << (cx_removed >= 0 && cx_removed < min_complexity ? cx_removed : cx_added)
-                                      << " replaced/inserted < --min-graft-complexity " << min_complexity << ") (unverifiable)";
+                else if (unverifiable) {
+                    // the whole-sequence fraction when it is the low one, else the lowest window's
+                    bool whole = low(cx_removed) || low(cx_added);
+                    double cx = whole ? (low(cx_removed) ? cx_removed : cx_added)
+                                      : (low(cxw_removed) ? cxw_removed : cxw_added);
+                    rs << setprecision(2) << "low-complexity sequence (distinct k-mer fraction " << cx;
+                    if (!whole) rs << " in a " << complexity_window << "bp window";
+                    rs << " replaced/inserted < --min-graft-complexity " << min_complexity << ") (unverifiable)";
+                }
                 else if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
                 else               rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
                 pr.reason = rs.str();
             }
             g_patch_records.push_back(pr);
-            excised_nonN[C] += nonN;   // so the revert backstop's threshold still sees this replaced bp
+            if (!same_seq) excised_nonN[C] += nonN;   // so the revert backstop's threshold still sees this replaced bp
             // the patch visits piece i then piece j; merging them spans the whole region in the patch's
             // own direction -- (get<0> of i, get<1> of j) works for forward and reverse alike.
             tuple<step_handle_t, step_handle_t, bool> merged =

@@ -429,11 +429,20 @@ temp_files += ['tip_extension.gfa', 'tip_extension.vg', 'tip_extension.truth', '
 #   graft_satellite - frag's 12kb tandem array (4, a 171bp unit, then a short N run 5 that sends the threading
 #                  to donor) is replaced by donor's copy of the same array (8): k-mer recovery passes, as it
 #                  would for any array of the family, but the run is low-complexity and cannot be verified
+#   graft_satellite_window - the same array inside a larger swap: frag's 20kb either side of it (11, 12) differ
+#                  from donor's (13, 14) by a SNP every 300bp, so the graft replaces 52kb whose distinct k-mer
+#                  fraction is well over 0.5 as a whole.  measured in 10kb windows too (the default) the array
+#                  still shows, and the graft is excised; with --graft-complexity-window 0 (the whole graft only)
+#                  it is kept
 gv_rng = random.Random(17)
 gv_rnd = lambda n: ''.join(gv_rng.choice('ACGT') for _ in range(n))
 gv_unit = gv_rnd(171)
 gv_nodes = {0: gv_rnd(10000), 1: gv_rnd(10000), 2: 'N' * 1000, 3: gv_rnd(10000), 9: gv_rnd(10000), 10: gv_rnd(10000),
-            7: gv_rnd(5000), 4: (gv_unit * 71)[:12000], 5: 'N' * 100, 8: (gv_unit * 72)[:12200]}
+            7: gv_rnd(5000), 4: (gv_unit * 71)[:12000], 5: 'N' * 100, 8: (gv_unit * 72)[:12200],
+            11: gv_rnd(20000), 12: gv_rnd(20000)}
+gv_snp = lambda s: ''.join({'A': 'C', 'C': 'G', 'G': 'T', 'T': 'A'}[c] if i % 300 == 150 else c for i, c in enumerate(s))
+gv_nodes[13], gv_nodes[14] = gv_snp(gv_nodes[11]), gv_snp(gv_nodes[12])
+gv_win_walks = {'frag' : [0, 1, 3, 11, 4, 5, 12, 9, 10], 'donor' : [0, 1, 3, 13, 8, 14, 9, 10]}
 gv_cases = {
     'graft_growth'    : ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '', (
                           'ctg\t1\tgap-fill\tfrag#1#ctg#0\t51000\tdonor#1#ctg#0\t55000\t1000\t.\t100.0\t100.0\taccepted\t.\t20000\t21000\n'
@@ -452,6 +461,18 @@ gv_cases = {
                           '#Unpatched (input contig) on ctg for frag#1:\n'
                           'frag#1#ctg#0\t0\t62100\t+\n'
                           '\n')),
+    'graft_satellite_window' : (gv_win_walks, '', (
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t102100\tdonor#1#ctg#0\t102200\t52100\t89.6\t100.0\t100.0\trejected\tlow-complexity sequence (distinct k-mer fraction 0.02 in a 10000bp window replaced/inserted < --min-graft-complexity 0.50) (unverifiable)\t30000\t82100\n'
+                          '#Unpatched (input contig) on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t102100\t+\n'
+                          '\n')),
+    'graft_satellite_whole' : (gv_win_walks, '--graft-complexity-window 0', (
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t102100\tdonor#1#ctg#0\t102200\t52100\t89.6\t100.0\t100.0\taccepted\t.\t30000\t82100\n'
+                          '#Patched assembly on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t20000\t+\n'
+                          'donor#1#ctg#0\t20000\t82200\t+\n'
+                          'frag#1#ctg#0\t82100\t102100\t+\n'
+                          '\n')),
 }
 for base, (walks, args, truth) in gv_cases.items():
     with open(base + '.gfa', 'w') as f:
@@ -468,6 +489,81 @@ for base, (walks, args, truth) in gv_cases.items():
     run('panpatch {0}.vg -r frag -s frag -s donor {1} --bed {0}.int 2>/dev/null | grep -v "^chrom" | {2} > {0}.rep ; cat {0}.rep {0}.int > {0}.out'.format(base, args, telo_filter))
     run('diff {0}.out {0}.truth'.format(base))
     temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
+
+# --error-bed: assembly-error intervals block the steps of their own path, not the node, so where the target's
+# flagged sequence is aligned to a donor's clean copy, the donor can thread across it and the patch differs
+# from the target only where the donor does.  Reference-free, every node 10kb unless noted:
+#   frag  10 0 1 2 3 5 6 8 9 - 3 is frag's 1kb allele of a bubble
+#   donor 10 0 1 2 4 5 6 8 9 - 4 is the donor's; the donor is ctg[1000-82000], so its BED is shifted by 1000
+#   errbed_swap     - frag's 2 3 5 flagged: the donor's 4 replaces frag's 3, and only that (the target takes
+#                     over again on 5, the last shared node of its flagged region)
+#   errbed_same     - frag's 1 2 flagged, where the donor is the same; the 3/4 bubble is past the region, so
+#                     it stays frag's 3: the donor run spells exactly what it replaces, nothing to patch
+#   errbed_donor    - as errbed_swap, but the donor's 4 is flagged too: frag keeps its own sequence
+#   errbed_collapse - frag 10 0 1 2 5 6 8 9 with 2 5 flagged, and the donor has 2kb more (7) between them: the
+#                     donor's insertion goes in (a collapse fix, which N-masking the target's unaligned
+#                     sequence could not make: frag has none there)
+#   errbed_edge     - as errbed_collapse, but only frag's 5 flagged: the insertion right where the region
+#                     starts goes in, replacing nothing
+eb_rng = random.Random(23)
+eb_rnd = lambda n: ''.join(eb_rng.choice('ACGT') for _ in range(n))
+eb_nodes = {0: eb_rnd(10000), 1: eb_rnd(10000), 2: eb_rnd(10000), 3: eb_rnd(1000), 4: eb_rnd(1000),
+            5: eb_rnd(10000), 6: eb_rnd(10000), 7: eb_rnd(2000), 8: eb_rnd(10000), 9: eb_rnd(10000), 10: eb_rnd(10000)}
+eb_swap_walks = {'frag': [10, 0, 1, 2, 3, 5, 6, 8, 9], 'donor': [10, 0, 1, 2, 4, 5, 6, 8, 9]}
+eb_ins_walks = {'frag': [10, 0, 1, 2, 5, 6, 8, 9], 'donor': [10, 0, 1, 2, 7, 5, 6, 8, 9]}
+eb_patched = lambda d: 'donor#1#ctg#0[1000-{}]'.format(1000 + d)
+eb_cases = {
+    'errbed_swap'     : (eb_swap_walks, 'frag#1#ctg\t30000\t51000\n', [10, 0, 1, 2, 4, 5, 6, 8, 9],
+                         'ctg\t1\tgap-fill\tfrag#1#ctg#0\t81000\t' + eb_patched(81000) + '\t81000\t11000\t91.0\t100.0\t100.0\taccepted\t.\t30000\t41000\n'
+                         '#Patched assembly on ctg for frag#1:\n'
+                         'frag#1#ctg#0\t0\t20000\t+\n' + eb_patched(81000) + '\t20000\t41000\t+\n'
+                         'frag#1#ctg#0\t41000\t81000\t+\n\n'),
+    'errbed_same'     : (eb_swap_walks, 'frag#1#ctg\t20000\t40000\n', None,
+                         'ctg\t1\tgap-fill\tfrag#1#ctg#0\t81000\t' + eb_patched(81000) + '\t81000\t10000\t100.0\t100.0\t97.6\trejected\t'
+                         "donor sequence is identical to the target's: nothing to patch\t20000\t30000\n"
+                         '#Unpatched (input contig) on ctg for frag#1:\n'
+                         'frag#1#ctg#0\t0\t81000\t+\n\n'),
+    'errbed_donor'    : (eb_swap_walks, 'frag#1#ctg\t30000\t51000\ndonor#1#ctg\t41000\t42000\n', None,
+                         '#Unpatched (input contig) on ctg for frag#1:\n'
+                         'frag#1#ctg#0\t0\t81000\t+\n\n'),
+    'errbed_collapse' : (eb_ins_walks, 'frag#1#ctg\t30000\t50000\n', [10, 0, 1, 2, 7, 5, 6, 8, 9],
+                         'ctg\t1\tgap-fill\tfrag#1#ctg#0\t80000\t' + eb_patched(82000) + '\t82000\t10000\t100.0\t100.0\t100.0\taccepted\t.\t30000\t40000\n'
+                         '#Patched assembly on ctg for frag#1:\n'
+                         'frag#1#ctg#0\t0\t20000\t+\n' + eb_patched(82000) + '\t20000\t42000\t+\n'
+                         'frag#1#ctg#0\t40000\t80000\t+\n\n'),
+    'errbed_edge'     : (eb_ins_walks, 'frag#1#ctg\t40000\t50000\n', [10, 0, 1, 2, 7, 5, 6, 8, 9],
+                         'ctg\t1\tgap-fill\tfrag#1#ctg#0\t80000\t' + eb_patched(82000) + '\t82000\t0\t.\t100.0\t100.0\taccepted\t.\t40000\t40000\n'
+                         '#Patched assembly on ctg for frag#1:\n'
+                         'frag#1#ctg#0\t0\t30000\t+\n' + eb_patched(82000) + '\t30000\t42000\t+\n'
+                         'frag#1#ctg#0\t40000\t80000\t+\n\n'),
+}
+for base, (walks, errors, patched_walk, truth) in eb_cases.items():
+    with open(base + '.gfa', 'w') as f:
+        f.write('H\tVN:Z:1.1\n')
+        for n in sorted(eb_nodes):
+            if any(n in w for w in walks.values()):
+                f.write('S\t{}\t{}\n'.format(n, eb_nodes[n]))
+        for a, b in sorted(set(e for w in walks.values() for e in zip(w, w[1:]))):
+            f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+        for sample, w in walks.items():
+            st = 1000 if sample == 'donor' else 0
+            f.write('W\t{}\t1\tctg\t{}\t{}\t{}\n'.format(sample, st, st + sum(len(eb_nodes[n]) for n in w),
+                                                       ''.join('>{}'.format(n) for n in w)))
+    with open(base + '.errors.bed', 'w') as f:
+        f.write(errors)
+    with open(base + '.truth', 'w') as f:
+        f.write(truth)
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    run('panpatch {0}.vg -r frag -s frag -s donor --error-bed {0}.errors.bed --bed {0}.int -f {0}.fa 2>/dev/null | grep -v "^chrom" | {1} > {0}.rep ; cat {0}.rep {0}.int > {0}.out'.format(base, telo_filter))
+    run('diff {0}.out {0}.truth'.format(base))
+    if patched_walk:
+        # the patched contig spells the donor's walk across the swap, the target's elsewhere
+        with open(base + '.hap1.fa') as f:
+            got = ''.join(l.strip() for l in f if not l.startswith('>'))
+        if got != ''.join(eb_nodes[n] for n in patched_walk):
+            print('failed: {} patched sequence is not {}'.format(base, patched_walk))
+            fail_count += 1
+    temp_files += ['{0}.{1}'.format(base, x) for x in ['gfa', 'vg', 'errors.bed', 'truth', 'out', 'hap1.fa']]
 
 # --telomere-report: the standalone FASTA scan must agree exactly with the in-graph measurement, since
 # both go through print_contig_telomere_line.  Patch a graph with only the target sample, so the output

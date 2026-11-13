@@ -77,6 +77,11 @@ void help(char** argv) {
        << "        --max-subtelomere-graft N  Max bp of donor sequence a telomere patch may graft ahead of the donor's" << endl
        << "                                 telomere (a subtelomere the target lacks, which reads rarely vouch for).  0 disables [2000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
+       << "        --error-bed FILE         BED of assembly-error intervals on any input assembly, contigs named as the graph" << endl
+       << "                                 names its paths (SAMPLE#HAP#CONTIG; HAP 0 for a haploid sample).  The target's" << endl
+       << "                                 are replaced by donor sequence where a donor can thread across them (and kept" << endl
+       << "                                 where none can); a donor's never go into a patch.  The assemblies are aligned" << endl
+       << "                                 unmasked, so a patch differs from the target only where the donor does" << endl
        << "        --min-cover FLOAT        Revert a patch covering less than this fraction of the input length [0.95]" << endl
        << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by the" << endl
        << "                                 -T validation/patch and the always-on discarded-telomere guard) [0.8]" << endl
@@ -87,8 +92,12 @@ void help(char** argv) {
        << "        --max-graft-size-change N  Excise a foreign interior graft that makes its contig more than N bp longer" << endl
        << "                                 or shorter: too large a change to verify (satellite arrays, rDNA gaps).  0 disables [100000]" << endl
        << "        --min-graft-complexity F  Excise a foreign interior graft that replaces or inserts >= --graft-min-bp of" << endl
-       << "                                 low-complexity sequence (distinct k-mer fraction < F), which k-mer recovery" << endl
-       << "                                 cannot check (tandem satellites).  0 disables [0.5]" << endl
+       << "                                 low-complexity sequence (distinct k-mer fraction < F over all of it, or in" << endl
+       << "                                 some --graft-complexity-window), which k-mer recovery cannot check (tandem" << endl
+       << "                                 satellites).  0 disables [0.5]" << endl
+       << "        --graft-complexity-window N  Also measure --min-graft-complexity in windows of N bp, so a satellite" << endl
+       << "                                 array inside a larger graft is not diluted by the sequence around it.  0" << endl
+       << "                                 measures the whole graft only [10000]" << endl
        << "        --telomere-report FILE   Standalone: print per-contig telomere cap status (#Contig lines) for" << endl
        << "                                 a finished FASTA and exit. No graph or -r/-s needed. Use this to" << endl
        << "                                 measure an assembly that was post-processed after panpatch ran" << endl
@@ -104,6 +113,7 @@ int main(int argc, char** argv) {
     string out_bed_filename;
     string default_sample;
     string exclude_bed_filename;
+    string error_bed_filename;
     string telomere_report_filename;
     int c;
     int64_t window_size = 1000;
@@ -120,6 +130,7 @@ int main(int argc, char** argv) {
     int64_t flank_window = 500000;
     int64_t max_graft_size_change = 100000;
     double min_graft_complexity = 0.5;
+    int64_t graft_complexity_window = 10000;
     optind = 1;
     while (true) {
 
@@ -147,6 +158,8 @@ int main(int argc, char** argv) {
             {"max-graft-size-change", required_argument, 0, 1010},
             {"max-subtelomere-graft", required_argument, 0, 1012},
             {"min-graft-complexity", required_argument, 0, 1011},
+            {"error-bed", required_argument, 0, 1013},
+            {"graft-complexity-window", required_argument, 0, 1014},
             {0, 0, 0, 0}
         };
 
@@ -225,6 +238,9 @@ int main(int argc, char** argv) {
         case 'b':
             exclude_bed_filename = optarg;
             break;
+        case 1013:
+            error_bed_filename = optarg;
+            break;
         case 1001:
             fail_threshold = atof(optarg);
             break;
@@ -251,6 +267,9 @@ int main(int argc, char** argv) {
             break;
         case 1011:
             min_graft_complexity = atof(optarg);
+            break;
+        case 1014:
+            graft_complexity_window = strtoll(optarg, nullptr, 10);
             break;
         case 1007:
             out_bed_filename = optarg;
@@ -308,6 +327,7 @@ int main(int argc, char** argv) {
     if (flank_window <= 0) { cerr << "[panpatch] error: --flank-window must be > 0" << endl; return 1; }
     if (max_graft_size_change < 0) { cerr << "[panpatch] error: --max-graft-size-change must be >= 0" << endl; return 1; }
     if (min_graft_complexity < 0 || min_graft_complexity > 1) { cerr << "[panpatch] error: --min-graft-complexity must be in [0,1]" << endl; return 1; }
+    if (graft_complexity_window < 0) { cerr << "[panpatch] error: --graft-complexity-window must be >= 0" << endl; return 1; }
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
     if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
     // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
@@ -328,6 +348,17 @@ int main(int argc, char** argv) {
             for (const auto& br : bed_regions) total_regions += br.second.size();
             cerr << "[panpatch]: Loaded " << total_regions << " regions from " << bed_regions.size()
                  << " contigs in BED exclusion file" << endl;
+        }
+    }
+
+    BedRegions error_bed;
+    if (!error_bed_filename.empty()) {
+        error_bed = parse_bed_file(error_bed_filename);
+        if (progress) {
+            int64_t total_regions = 0;
+            for (const auto& br : error_bed) total_regions += br.second.size();
+            cerr << "[panpatch]: Loaded " << total_regions << " error intervals on " << error_bed.size()
+                 << " contigs from " << error_bed_filename << endl;
         }
     }
 
@@ -352,6 +383,16 @@ int main(int argc, char** argv) {
             for (const string& m : missing) cerr << " " << m;
             cerr << endl;
             return 1;
+        }
+        // an --error-bed contig whose sample is in no graph is almost certainly misnamed (its intervals
+        // would silently do nothing).  a contig on a chromosome these graphs don't hold is normal
+        set<string> unknown;
+        for (const auto& br : error_bed) {
+            string s = br.first.substr(0, br.first.find('#'));
+            if (!present_samples.count(s)) unknown.insert(s);
+        }
+        for (const string& s : unknown) {
+            cerr << "[panpatch] warning: --error-bed names sample " << s << ", which is in no input graph" << endl;
         }
     }
 
@@ -435,6 +476,14 @@ int main(int argc, char** argv) {
         continue;
     }
     path_handle_t ref_path = ref_paths.front();
+    // the --error-bed intervals on this graph's paths
+    ErrorRegions error_regions = error_bed_to_paths(graph, error_bed);
+    if (progress && !error_bed.empty()) {
+        int64_t n = 0, bp = 0;
+        for (const auto& er : error_regions) for (const auto& iv : er.second) { ++n; bp += iv.second - iv.first; }
+        cerr << "[panpatch]: " << n << " error intervals (" << bp << " bp) on " << error_regions.size()
+             << " paths of " << graph_filename << endl;
+    }
     if (!seen_loci.insert(graph->get_locus_name(ref_path)).second) {
         cerr << "[panpatch]: warning: reference locus " << graph->get_locus_name(ref_path)
              << " appears in more than one input graph; output records will share names" << endl;
@@ -520,7 +569,7 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
             patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, progress, require_telomeres,
-            &threaded_tgt_paths);
+            &threaded_tgt_paths, &error_regions);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -529,7 +578,7 @@ int main(int argc, char** argv) {
         unordered_map<path_handle_t, int64_t> excised_nonN;
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, patch_gap, excised_nonN,
-                                   max_graft_size_change, min_graft_complexity);
+                                   max_graft_size_change, min_graft_complexity, graft_complexity_window);
 
         // record scaffold joins (patch spans >1 target contig) for the report, and guard foreign-bridged
         // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.

@@ -15,6 +15,14 @@ using BedRegions = unordered_map<string, vector<pair<int64_t, int64_t>>>;
 // Sorted, merged intervals in reference coordinates representing excluded regions
 using ExcludedRefRegions = vector<pair<int64_t, int64_t>>;
 
+// Assembly-error intervals (--error-bed) on the paths of one graph: path -> sorted, merged [start, end)
+// offsets along the path.  A step that overlaps one cannot be used to patch: the target's flagged steps
+// are replaced by donor sequence where a donor can thread across them (and kept where none can), and a
+// donor's flagged steps never go into a patch.  Unlike masking the assemblies to N before the graph is
+// built, the flagged sequence is still aligned, so a donor that agrees with the target shares its nodes
+// and the patch differs from the target only where the donor does.
+using ErrorRegions = unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>;
+
 // Path order.  panpatch never relies on the order in which the graph lists paths, or the steps on a
 // node: that order belongs to the graph implementation, it changes between libbdsg versions, and the
 // position overlay builds it in parallel (so it can even change with the thread count).  Paths are
@@ -51,6 +59,14 @@ unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHand
 // skips comment/header lines (starting with #, track, browser)
 BedRegions parse_bed_file(const string& bed_filename);
 
+// map --error-bed regions onto the paths of one graph.  a BED contig names a path as SAMPLE#HAP#CONTIG
+// (PanSN, as the graph names it: HAP is 0 for a haploid sample) or by its full path name; a path's
+// subrange, if it has one, shifts the coordinates.  intervals are clipped to the path
+ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed);
+
+// true if this step's node overlaps an error interval of the step's own path
+bool step_in_error(const PathHandleGraph* graph, const step_handle_t& step, const ErrorRegions& error_regions);
+
 // convert BED regions (in target assembly coordinates) to reference coordinate ranges
 // using the anchor map to map between coordinate systems
 ExcludedRefRegions bed_to_ref_regions(const PathHandleGraph* graph,
@@ -73,13 +89,16 @@ unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
 // search along a path to the next anchor
 // the bool flag returned is true if search went backwards on path
 // direction: -1 backward, 0 both, 1 forward
+// unless cross_Ns, the search may not start on or pass a step it cannot use: an N in its node (an
+// assembly gap) or an --error-bed interval on its path (error_regions)
 pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    const unordered_map<int64_t, int64_t>& anchors,
                                                    step_handle_t step,
                                                    int64_t pos,
                                                    int64_t direction,
                                                    bool cross_Ns,
-                                                   int64_t bound=10000);
+                                                   int64_t bound=10000,
+                                                   const ErrorRegions* error_regions=nullptr);
 
 // thread the anchors using the paths
 // return a set of intervals that represent the patched genome
@@ -92,7 +111,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                                                                    const unordered_map<int64_t, int64_t>& ref_anchors,
                                                                    const vector<path_handle_t>& tgt_paths,
                                                                    const vector<path_handle_t>& other_paths,
-                                                                   const ExcludedRefRegions& excluded_regions = {});
+                                                                   const ExcludedRefRegions& excluded_regions = {},
+                                                                   const ErrorRegions* error_regions = nullptr);
 
 // smooth out the threaded intervals
 vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHandleGraph* graph,
@@ -101,7 +121,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHan
 // extend the intervals to the telomeres where appropriate
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHandleGraph* graph,
                                                                    const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
-                                                                   const vector<path_handle_t>& tgt_paths);
+                                                                   const vector<path_handle_t>& tgt_paths,
+                                                                   const ErrorRegions* error_regions = nullptr);
 
 // patch a missing telomere onto a terminal end by handing off to a foreign cover that has one.
 // for each terminal end lacking a telomere, walk inward from the tip to the nearest node also
@@ -117,7 +138,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
                                                                       int64_t max_handoff=20000,
                                                                       int64_t max_subtelomere=2000,
                                                                       bool verbose=false,
-                                                                      bool report_failures=false);
+                                                                      bool report_failures=false,
+                                                                      const ErrorRegions* error_regions=nullptr);
 
 // one row of the patch report: a candidate patch (telomere completion, gap-fill, or scaffold join),
 // with its similarity metrics and the accept/reject decision.  Accumulated in g_patch_records during a
@@ -176,7 +198,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                int64_t max_subtelomere_graft = 2000,
                                                                bool verbose = false,
                                                                bool report_telomere_failures = false,
-                                                               unordered_set<path_handle_t>* threaded_tgt_paths = nullptr);
+                                                               unordered_set<path_handle_t>* threaded_tgt_paths = nullptr,
+                                                               const ErrorRegions* error_regions = nullptr);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
@@ -191,7 +214,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 bool patch_gap,
                                 std::unordered_map<path_handle_t, int64_t>& excised_nonN,
                                 int64_t max_size_change = 0,
-                                double min_complexity = 0.0);
+                                double min_complexity = 0.0,
+                                int64_t complexity_window = 0);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,
