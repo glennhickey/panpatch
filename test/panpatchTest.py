@@ -478,6 +478,14 @@ gv_cases = {
                           'donor#1#ctg#0\t10000\t25000\t+\n'
                           'frag#1#ctg#0\t21000\t51000\t+\n'
                           '\n')),
+    # --max-swap-size-change does not apply to a gap fill: an N gap's length is only a placeholder
+    'graft_growth_swapcap': ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '--max-swap-size-change 1000', (
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t51000\tdonor#1#ctg#0\t55000\t1000\t.\t100.0\t100.0\taccepted\t.\t20000\t21000\n'
+                          '#Patched assembly on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t10000\t+\n'
+                          'donor#1#ctg#0\t10000\t25000\t+\n'
+                          'frag#1#ctg#0\t21000\t51000\t+\n'
+                          '\n')),
     'graft_growth_cap': ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '--max-graft-size-change 1000', (
                           "ctg\t1\tgap-fill\tfrag#1#ctg#0\t51000\tdonor#1#ctg#0\t55000\t1000\t.\t100.0\t100.0\trejected\tchanges the contig's length by +4000bp, over --max-graft-size-change 1000 (unverifiable)\t20000\t21000\n"
                           '#Unpatched (input contig) on ctg for frag#1:\n'
@@ -810,6 +818,14 @@ rg_n[20] = 'N' * 1000; rg_n[21] = 'N' * 2000
 rg_case('rg_unfilled_gap', rg_n, [('frag', 1, 'ctg', rg_fwd([1, 2, 20, 3, 4, 21, 5, 6])), ('donor', 1, 'ctg', rg_fwd([1, 2, 7, 3, 4]))],
         '-r frag -s frag -s donor', None, {'ctg_hap_1': '+1 +2 +7 +3 +4 +21 +5 +6'},
         ['ctg\t1\tgap-fill\tfrag#1#ctg#0\t103000\t.\t0\t.\t.\t.\t.\trejected\tno donor could be threaded across this gap; kept as it is\t81000\t83000'])
+# --max-swap-size-change: the donor's 2kb insertion into frag's flagged region (errbed_collapse, with no N gap
+# to fill) is a swap that changes the length, so with a 1kb cap frag keeps its own sequence; the 10kb default
+# keeps the insertion
+rg_ins = [('frag', 1, 'ctg', rg_fwd([10, 0, 1, 2, 5, 6, 8, 9])), ('donor', 1, 'ctg', rg_fwd([10, 0, 1, 2, 7, 5, 6, 8, 9]))]
+rg_case('rg_swap_cap', eb_nodes, rg_ins, '-r frag -s frag -s donor --max-swap-size-change 1000', 'frag#1#ctg\t30000\t50000\n',
+        {'frag#1#ctg#0': '+10 +0 +1 +2 +5 +6 +8 +9'}, ['swap changes the contig\'s length by +2000bp, over --max-swap-size-change 1000 (unverifiable)'])
+rg_case('rg_swap_cap_default', eb_nodes, rg_ins, '-r frag -s frag -s donor', 'frag#1#ctg\t30000\t50000\n',
+        {'ctg_hap_1': '+10 +0 +1 +2 +7 +5 +6 +8 +9'})
 # -e naming a sample with two contigs here: a failed patch aborted the run (assert) ...
 run('vg convert interior_splice.gfa > interior_splice.e.vg')
 run('panpatch interior_splice.e.vg -r x -s frag -e frag -f interior_splice.e.fa 2>/dev/null > interior_splice.e.rep && test $(grep -c "^>" interior_splice.e.hap1.fa) -eq 2')

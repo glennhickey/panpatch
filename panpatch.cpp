@@ -2406,7 +2406,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 bool patch_gap,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN,
                                 int64_t max_size_change, double min_complexity, int64_t complexity_window,
-                                int64_t complexity_min_bp, int64_t max_graft_pieces) {
+                                int64_t complexity_min_bp, int64_t max_graft_pieces, int64_t max_swap_size_change) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -2508,6 +2508,11 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             }
             int64_t size_change = (int64_t)inserted.size() - (int64_t)removed.size();
             bool too_big = max_size_change > 0 && llabs(size_change) > max_size_change;
+            // a swap -- a graft over sequence with no N gap in it, or a pure insertion -- that changes the length
+            // is a copy-number change (an array, a tandem duplication), which k-mer recovery cannot check.  an
+            // N gap's length is only a placeholder, so a gap fill is held to max_size_change alone
+            bool swap_too_big = max_swap_size_change > 0 && nonN == (int64_t)removed.size() &&
+                llabs(size_change) > max_swap_size_change;
             // complexity of the replaced and inserted sequence, over the whole of each (cx_) and in its
             // lowest window (cxw_); either one low is enough
             double cx_removed = -1.0, cx_added = -1.0, cxw_removed = -1.0, cxw_added = -1.0;
@@ -2533,7 +2538,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // piece, and that neither test above can vouch for: each piece is anchored where it switches
             int64_t n_pieces = j - i - 1;
             bool chimeric = max_graft_pieces > 0 && n_pieces > max_graft_pieces;
-            bool unverifiable = !bad && (too_big || low_cx || chimeric);
+            bool unverifiable = !bad && (too_big || swap_too_big || low_cx || chimeric);
             if (unverifiable) bad = true;
             // a donor run that spells exactly the target sequence it replaces changes nothing.  in a graph
             // built from unmasked assemblies, a donor that agrees with the target across an --error-bed
@@ -2572,6 +2577,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                       << max_graft_pieces << " (no donor has it in one piece) (unverifiable)";
                 else if (unverifiable && too_big)  rs << "changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change
                                       << "bp, over --max-graft-size-change " << max_size_change << " (unverifiable)";
+                else if (unverifiable && swap_too_big) rs << "swap changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change
+                                      << "bp, over --max-swap-size-change " << max_swap_size_change << " (unverifiable)";
                 else if (unverifiable) {
                     // the whole-sequence fraction when it is the low one, else the lowest window's
                     bool whole = low(cx_removed) || low(cx_added);

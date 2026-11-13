@@ -105,6 +105,9 @@ void help(char** argv) {
        << "                                 measures the whole graft only [10000]" << endl
        << "        --graft-complexity-min-bp N  Apply --min-graft-complexity only when at least this many non-N bp are" << endl
        << "                                 replaced or inserted [2000]" << endl
+       << "        --max-swap-size-change N  Excise a swap (a graft over sequence with no N gap, or an insertion) that" << endl
+       << "                                 makes its contig more than N bp longer or shorter: a copy-number change k-mer" << endl
+       << "                                 recovery cannot check.  Gap fills are held to --max-graft-size-change only.  0 disables [10000]" << endl
        << "        --max-graft-pieces N     Excise a graft (interior, tip or scaffold bridge) spliced from more than N" << endl
        << "                                 pieces of donor sequence: two donor contigs, or one on both strands or out of" << endl
        << "                                 its order, which no donor has in one piece.  0 disables [1]" << endl
@@ -143,6 +146,7 @@ int main(int argc, char** argv) {
     int64_t graft_complexity_window = 10000;
     int64_t graft_complexity_min_bp = 2000;
     int64_t max_graft_pieces = 1;
+    int64_t max_swap_size_change = 10000;
     optind = 1;
     while (true) {
 
@@ -174,6 +178,7 @@ int main(int argc, char** argv) {
             {"graft-complexity-window", required_argument, 0, 1014},
             {"graft-complexity-min-bp", required_argument, 0, 1015},
             {"max-graft-pieces", required_argument, 0, 1016},
+            {"max-swap-size-change", required_argument, 0, 1017},
             {0, 0, 0, 0}
         };
 
@@ -291,6 +296,9 @@ int main(int argc, char** argv) {
         case 1016:
             max_graft_pieces = strtoll(optarg, nullptr, 10);
             break;
+        case 1017:
+            max_swap_size_change = strtoll(optarg, nullptr, 10);
+            break;
         case 1007:
             out_bed_filename = optarg;
             break;
@@ -349,6 +357,7 @@ int main(int argc, char** argv) {
     if (graft_complexity_window < 0) { cerr << "[panpatch] error: --graft-complexity-window must be >= 0" << endl; return 1; }
     if (graft_complexity_min_bp < 0) { cerr << "[panpatch] error: --graft-complexity-min-bp must be >= 0" << endl; return 1; }
     if (max_graft_pieces < 0) { cerr << "[panpatch] error: --max-graft-pieces must be >= 0" << endl; return 1; }
+    if (max_swap_size_change < 0) { cerr << "[panpatch] error: --max-swap-size-change must be >= 0" << endl; return 1; }
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
     if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
     // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
@@ -600,7 +609,7 @@ int main(int argc, char** argv) {
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, patch_gap, excised_nonN,
                                    max_graft_size_change, min_graft_complexity, graft_complexity_window,
-                                   graft_complexity_min_bp, max_graft_pieces);
+                                   graft_complexity_min_bp, max_graft_pieces, max_swap_size_change);
 
         // final consistency guard: a patch that would write any sequence twice or out of order (see
         // patch_reuses_sequence) reverts the contig, whatever else passed

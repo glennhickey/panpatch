@@ -119,6 +119,7 @@ Patch checks (see [Why a patch is rejected](#why-a-patch-is-rejected)):
 | `--min-graft-complexity F` | reject an interior graft that replaces or inserts sequence whose distinct k-mer fraction is below F, over all of it or in any `--graft-complexity-window` (0 disables) | 0.5 |
 | `--graft-complexity-window N` | window (bp) in which `--min-graft-complexity` is also measured, so a satellite array inside a larger graft is not diluted (0: whole graft only) | 10000 |
 | `--graft-complexity-min-bp N` | apply `--min-graft-complexity` only when at least this many non-N bp are replaced or inserted | 2000 |
+| `--max-swap-size-change N` | excise a swap (a graft over sequence with no `N` gap, or an insertion) that changes its contig's length by more than N; gap fills are held to `--max-graft-size-change` only (0 disables) | 10000 |
 | `--max-graft-pieces N` | excise a graft (interior, tip, or scaffold bridge) spliced from more than N pieces of donor sequence (0 disables) | 1 |
 
 ## The report
@@ -222,6 +223,7 @@ An interior graft, a donor run between two pieces of the same target contig, is 
 - **A misjoin by content** — it replaces ≥ `--graft-min-bp` non-N bp and its sequence shares < `--graft-recovery` % of their k-mers.
 - **A misjoin by locus** — it replaces less than that (an N-gap fill, say) and its donor shares < `--min-flank` % of the target's flank, within `--flank-window`, on either side.
 - **Unverifiable by size** — it changes the contig's length by more than `--max-graft-size-change` (a satellite array or rDNA gap swapped for the donor's).
+- **Swap changing the length** — a graft over sequence with no `N` gap (or a pure insertion) that changes the contig's length by more than `--max-swap-size-change`: a copy-number change in an array or a tandem duplication, which k-mer recovery cannot check. An `N` gap's length is only a placeholder, so gap fills are not held to it.
 - **Spliced from several donor pieces** — the graft is more than `--max-graft-pieces` pieces of donor sequence: pieces of two donor contigs, or of one contig on both strands or out of its order. Each piece is anchored where it switches, so the tests above can pass, but the graft spells sequence that no donor has in one piece. On the HPRC pilot such grafts were the largest length changes in a recipe's swaps (+44 kb, +27 kb, −19 kb, +13 kb), in pericentromeric segmental duplications. A scaffold bridge of several pieces reverts the scaffold.
 - **Unverifiable by content** — it replaces or inserts ≥ `--graft-complexity-min-bp` of low-complexity sequence: a distinct k-mer fraction < `--min-graft-complexity` over all of it, or in any `--graft-complexity-window`, so an array inside a larger graft is caught. Any tandem array of the same satellite family shares its k-mers, so k-mer recovery cannot tell a faithful copy from a different one.
 - **Identical** — the donor spells exactly the sequence it replaces: `nothing to patch`.

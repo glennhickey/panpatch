@@ -241,7 +241,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 double min_complexity = 0.0,
                                 int64_t complexity_window = 0,
                                 int64_t complexity_min_bp = 10000,
-                                int64_t max_graft_pieces = 0);
+                                int64_t max_graft_pieces = 0,
+                                int64_t max_swap_size_change = 0);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,
