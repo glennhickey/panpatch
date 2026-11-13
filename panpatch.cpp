@@ -683,6 +683,15 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                 if (cross_gaps && !tgt_path_set.count(graph->get_path_handle_of_step(step))) {
                     continue;
                 }
+                // the path we are following goes on only from the step we reached this anchor on.  a path
+                // can visit the anchor's node more than once (a donor through a satellite array): taking up
+                // another of its visits here would put two pieces of it side by side that are not contiguous
+                // on it, which smooth_intervals then merges into one interval running the wrong way (and
+                // even kept apart, they would splice the donor's sequence out of order)
+                if (have_cur_step && graph->get_path_handle_of_step(step) == graph->get_path_handle_of_step(cur_step) &&
+                    step != cur_step) {
+                    continue;
+                }
                 bool step_backward = graph->get_is_reverse(graph->get_handle_of_step(step));
                 int64_t direction = 0;
                 if (!interval_cover.empty() && graph->get_path_handle_of_step(get<0>(interval_cover.back())) ==
@@ -1587,6 +1596,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                unordered_set<path_handle_t>* threaded_tgt_paths,
                                                                const ErrorRegions* error_regions) {
 
+    size_t records_at_entry = g_patch_records.size();   // this call's report rows start here
 
 #ifdef debug
     cerr << "greedy patch\n"
@@ -1735,6 +1745,27 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                  max_subtelomere_graft, verbose,
                                                  report_telomere_failures, error_regions);
         check_intervals(graph, extended_intervals);
+    }
+
+    // backstop: every interval must run forward along its path in its own direction, or no sequence can be
+    // read from it (intervals_to_sequence would walk off the path's end).  should one not, give up on this
+    // patch -- the contig is kept as it is -- rather than crash or write a patch spliced out of order
+    for (const auto& iv : extended_intervals) {
+        int64_t a = step_offset(graph, get<0>(iv)), b = step_offset(graph, get<1>(iv));
+        if (get<2>(iv) ? a < b : a > b) {
+            path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+            cerr << "[panpatch] warning: patch of " << graph->get_path_name(tgt_paths.front()) << " has an interval of "
+                 << graph->get_path_name(p) << " running " << a << " -> " << b << (get<2>(iv) ? " (reverse)" : "")
+                 << "; keeping the contig as it is" << endl;
+            g_patch_records.resize(records_at_entry);
+            PatchRecord pr;
+            pr.type = "gap-fill"; pr.target = graph->get_path_name(tgt_paths.front()); pr.target_bp = path_bp(graph, tgt_paths.front());
+            pr.donor = graph->get_path_name(p); pr.donor_bp = path_bp(graph, p);
+            pr.accepted = false;
+            pr.reason = "patch splices this path out of order (internal); contig kept as it is";
+            g_patch_records.push_back(pr);
+            return {};
+        }
     }
 
     return extended_intervals;
@@ -2052,7 +2083,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 double min_flank, int64_t flank_window,
                                 bool patch_gap,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN,
-                                int64_t max_size_change, double min_complexity, int64_t complexity_window) {
+                                int64_t max_size_change, double min_complexity, int64_t complexity_window,
+                                int64_t complexity_min_bp) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -2157,12 +2189,14 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // lowest window (cxw_); either one low is enough
             double cx_removed = -1.0, cx_added = -1.0, cxw_removed = -1.0, cxw_added = -1.0;
             int64_t added_nonN = 0; for (char c : inserted) if (c != 'N' && c != 'n') ++added_nonN;
+            // judged from complexity_min_bp, well below the k-mer test's min_replaced: a satellite swap of a
+            // few kb is no easier to verify than a long one
             if (min_complexity > 0) {
-                if (nonN >= min_replaced) {
+                if (nonN >= complexity_min_bp) {
                     cx_removed = kmer_distinct_fraction(removed);
                     cxw_removed = min_window_distinct_fraction(removed, complexity_window);
                 }
-                if (added_nonN >= min_replaced) {
+                if (added_nonN >= complexity_min_bp) {
                     cx_added = kmer_distinct_fraction(inserted);
                     cxw_added = min_window_distinct_fraction(inserted, complexity_window);
                 }

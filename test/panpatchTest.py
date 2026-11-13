@@ -565,6 +565,37 @@ for base, (walks, errors, patched_walk, truth) in eb_cases.items():
             fail_count += 1
     temp_files += ['{0}.{1}'.format(base, x) for x in ['gfa', 'vg', 'errors.bed', 'truth', 'out', 'hap1.fa']]
 
+# A donor that visits a node twice (as through a satellite array) is followed on only from the visit the
+# threading reached it on.  frag 1 2 3 4 5 6 (10kb each) with 3 4 5 flagged; donor 1 4 5 6 2 3 4 N 8.  The
+# threading leaves frag at 2 for the donor's second half (2 3 4), which runs into its N after 4.  Its first
+# visit of 4 does go on to 5, and taking it put donor pieces [2 3 4] and [4 5] side by side, which were merged
+# into one interval running backwards along the donor (a crash in intervals_to_sequence).  Now frag carries
+# on across its own flagged sequence, and the donor's 3, shared with frag, changes nothing
+rv_rng = random.Random(29)
+rv_rnd = lambda n: ''.join(rv_rng.choice('ACGT') for _ in range(n))
+rv_nodes = {1: rv_rnd(10000), 2: rv_rnd(10000), 3: rv_rnd(10000), 4: rv_rnd(10000), 5: rv_rnd(10000), 6: rv_rnd(10000),
+            7: 'N' * 1000, 8: rv_rnd(10000)}
+rv_walks = {'frag': [1, 2, 3, 4, 5, 6], 'donor': [1, 4, 5, 6, 2, 3, 4, 7, 8]}
+with open('donor_revisit.gfa', 'w') as f:
+    f.write('H\tVN:Z:1.1\n')
+    for n in sorted(rv_nodes):
+        f.write('S\t{}\t{}\n'.format(n, rv_nodes[n]))
+    for a, b in sorted(set(e for w in rv_walks.values() for e in zip(w, w[1:]))):
+        f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+    for sample, w in rv_walks.items():
+        f.write('W\t{}\t1\tctg\t0\t{}\t{}\n'.format(sample, sum(len(rv_nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
+with open('donor_revisit.errors.bed', 'w') as f:
+    f.write('frag#1#ctg\t20000\t50000\n')
+with open('donor_revisit.truth', 'w') as f:
+    f.write("ctg\t1\tgap-fill\tfrag#1#ctg#0\t60000\tdonor#1#ctg#0\t81000\t10000\t100.0\t100.0\t100.0\trejected\t"
+            "donor sequence is identical to the target's: nothing to patch\t20000\t30000\n"
+            '#Unpatched (input contig) on ctg for frag#1:\n'
+            'frag#1#ctg#0\t0\t60000\t+\n\n')
+run('vg convert donor_revisit.gfa > donor_revisit.vg')
+run('panpatch donor_revisit.vg -r frag -s frag -s donor --error-bed donor_revisit.errors.bed --bed donor_revisit.int 2>/dev/null | grep -v "^chrom" | {0} > donor_revisit.rep ; cat donor_revisit.rep donor_revisit.int > donor_revisit.out'.format(telo_filter))
+run('diff donor_revisit.out donor_revisit.truth')
+temp_files += ['donor_revisit.{}'.format(x) for x in ['gfa', 'vg', 'errors.bed', 'truth', 'out']]
+
 # --telomere-report: the standalone FASTA scan must agree exactly with the in-graph measurement, since
 # both go through print_contig_telomere_line.  Patch a graph with only the target sample, so the output
 # FASTA is that one path verbatim and the two measurements describe identical sequence -- then the

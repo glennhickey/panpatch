@@ -91,13 +91,15 @@ void help(char** argv) {
        << "        --flank-window N         Window (bp) each side of a graft over which flank anchoring is measured [500000]" << endl
        << "        --max-graft-size-change N  Excise a foreign interior graft that makes its contig more than N bp longer" << endl
        << "                                 or shorter: too large a change to verify (satellite arrays, rDNA gaps).  0 disables [100000]" << endl
-       << "        --min-graft-complexity F  Excise a foreign interior graft that replaces or inserts >= --graft-min-bp of" << endl
+       << "        --min-graft-complexity F  Excise a foreign interior graft that replaces or inserts >= --graft-complexity-min-bp of" << endl
        << "                                 low-complexity sequence (distinct k-mer fraction < F over all of it, or in" << endl
        << "                                 some --graft-complexity-window), which k-mer recovery cannot check (tandem" << endl
        << "                                 satellites).  0 disables [0.5]" << endl
        << "        --graft-complexity-window N  Also measure --min-graft-complexity in windows of N bp, so a satellite" << endl
        << "                                 array inside a larger graft is not diluted by the sequence around it.  0" << endl
        << "                                 measures the whole graft only [10000]" << endl
+       << "        --graft-complexity-min-bp N  Apply --min-graft-complexity only when at least this many non-N bp are" << endl
+       << "                                 replaced or inserted [2000]" << endl
        << "        --telomere-report FILE   Standalone: print per-contig telomere cap status (#Contig lines) for" << endl
        << "                                 a finished FASTA and exit. No graph or -r/-s needed. Use this to" << endl
        << "                                 measure an assembly that was post-processed after panpatch ran" << endl
@@ -131,6 +133,7 @@ int main(int argc, char** argv) {
     int64_t max_graft_size_change = 100000;
     double min_graft_complexity = 0.5;
     int64_t graft_complexity_window = 10000;
+    int64_t graft_complexity_min_bp = 2000;
     optind = 1;
     while (true) {
 
@@ -160,6 +163,7 @@ int main(int argc, char** argv) {
             {"min-graft-complexity", required_argument, 0, 1011},
             {"error-bed", required_argument, 0, 1013},
             {"graft-complexity-window", required_argument, 0, 1014},
+            {"graft-complexity-min-bp", required_argument, 0, 1015},
             {0, 0, 0, 0}
         };
 
@@ -271,6 +275,9 @@ int main(int argc, char** argv) {
         case 1014:
             graft_complexity_window = strtoll(optarg, nullptr, 10);
             break;
+        case 1015:
+            graft_complexity_min_bp = strtoll(optarg, nullptr, 10);
+            break;
         case 1007:
             out_bed_filename = optarg;
             break;
@@ -328,6 +335,7 @@ int main(int argc, char** argv) {
     if (max_graft_size_change < 0) { cerr << "[panpatch] error: --max-graft-size-change must be >= 0" << endl; return 1; }
     if (min_graft_complexity < 0 || min_graft_complexity > 1) { cerr << "[panpatch] error: --min-graft-complexity must be in [0,1]" << endl; return 1; }
     if (graft_complexity_window < 0) { cerr << "[panpatch] error: --graft-complexity-window must be >= 0" << endl; return 1; }
+    if (graft_complexity_min_bp < 0) { cerr << "[panpatch] error: --graft-complexity-min-bp must be >= 0" << endl; return 1; }
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
     if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
     // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
@@ -578,7 +586,8 @@ int main(int argc, char** argv) {
         unordered_map<path_handle_t, int64_t> excised_nonN;
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, patch_gap, excised_nonN,
-                                   max_graft_size_change, min_graft_complexity, graft_complexity_window);
+                                   max_graft_size_change, min_graft_complexity, graft_complexity_window,
+                                   graft_complexity_min_bp);
 
         // record scaffold joins (patch spans >1 target contig) for the report, and guard foreign-bridged
         // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.
