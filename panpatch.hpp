@@ -153,7 +153,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
 struct PatchRecord {
     std::string chrom;
     int64_t hap = 0;
-    std::string type;            // "telomere" | "gap-fill" | "scaffold"
+    std::string type;            // "telomere" | "gap-fill" | "scaffold" | "passthrough"
     std::string target;          // target contig name
     int64_t target_bp = 0;
     std::string donor = ".";     // donor contig name
@@ -215,7 +215,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool verbose = false,
                                                                bool report_telomere_failures = false,
                                                                unordered_set<path_handle_t>* threaded_tgt_paths = nullptr,
-                                                               const ErrorRegions* error_regions = nullptr);
+                                                               const ErrorRegions* error_regions = nullptr,
+                                                               bool patch_gap = true);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
@@ -256,7 +257,7 @@ void check_intervals(const PathHandleGraph* graph,
 // validate that intervals have telomeres at both ends and no internal telomeres
 // returns true if valid, false otherwise (sets fail_reason on failure).
 // an internal telomere (scaffold misjoin) always fails; require_ends additionally demands a telomere
-// at both ends (-T) -- with require_ends=false (--patch-telomeres) missing ends are allowed.
+// at both ends (-T) -- with require_ends=false (telomere patching alone) missing ends are allowed.
 // if verbose is true, prints diagnostic messages
 bool validate_telomeres(const PathHandleGraph* graph,
                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
@@ -272,6 +273,5 @@ void print_contig_telomere_line(const std::string& name, const std::string& sequ
 
 // Scan a plaintext FASTA and print a "#Contig" cap-status line per record, then return 0 (non-zero on
 // a read error).  This is how a caller measures telomere completeness of a *finished* assembly -- in
-// particular one that was post-processed after panpatch ran (e.g. cactus-panpatch reverting masked
-// regions to their original sequence), which the in-graph measurement cannot see.
+// particular one that was post-processed after panpatch ran, which the in-graph measurement cannot see.
 int telomere_report_fasta(const std::string& fasta_path, double threshold);

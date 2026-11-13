@@ -1327,7 +1327,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         step_handle_t s_i = tip_step;
 
         // covers (by the direction they are read in) whose run out to their telomere holds an N (an
-        // assembly gap, or a region masked as an error before the graph was built) or crosses an
+        // assembly gap) or crosses an
         // --error-bed interval on the cover.  a graft from them would put those N's, or that flagged
         // sequence, in the patched assembly.  further in, the same cover's run out is only longer, so it
         // is skipped at every later handoff too.  if no other cover completes the end, the first such
@@ -1438,7 +1438,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                     n_tainted.insert(F);
                     if (!have_n_reject) {
                         n_reject = rejected_handoff(F, walked, has_n ?
-                                                    "donor's run to its telomere contains N (an assembly gap or masked error region)" :
+                                                    "donor's run to its telomere contains N (an assembly gap)" :
                                                     "donor's run to its telomere crosses one of its --error-bed intervals");
                         have_n_reject = true;
                     }
@@ -1694,7 +1694,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool verbose,
                                                                bool report_telomere_failures,
                                                                unordered_set<path_handle_t>* threaded_tgt_paths,
-                                                               const ErrorRegions* error_regions) {
+                                                               const ErrorRegions* error_regions,
+                                                               bool patch_gap) {
 
     size_t records_at_entry = g_patch_records.size();   // this call's report rows start here
 
@@ -1847,7 +1848,10 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
             int64_t added = (int64_t)intervals_to_sequence(graph, tip).size()
                 - (int64_t)graph->get_length(graph->get_handle_of_step(junction));
             string why;
-            if (max_telomere_patch > 0 && replaced > max_telomere_patch) {
+            if (!patch_gap) {
+                // a tip graft is gap filling: --patch-types without gap excludes it, as excise does interior ones
+                why = "excluded by --patch-types (gap filling is off)";
+            } else if (replaced > max_telomere_patch) {   // (as for a telomere graft, 0 lets it replace nothing)
                 why = "replaces " + to_string(replaced) + "bp of the target's end, over --max-telomere-patch " +
                     to_string(max_telomere_patch);
             } else if (max_subtelomere_graft > 0 && added - replaced > max_subtelomere_graft) {
@@ -2038,8 +2042,8 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
                 if (oa < ob) removed += graph->get_sequence(h).substr(oa - na, ob - oa); }
         });
         int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
-        // nothing left to judge by content: the grafts still in place replaced only N's (assembly gaps,
-        // or regions masked as errors), which excise_bad_interior_grafts judged by flank anchoring.  the
+        // nothing left to judge by content: the grafts still in place replaced only N's (assembly gaps),
+        // which excise_bad_interior_grafts judged by flank anchoring.  the
         // excised count below would otherwise lift this over min_replaced, and with no k-mers to sample
         // kmer_recovery is 0.0, so one excised graft would revert the whole contig, good patches and all
         {
@@ -2781,12 +2785,12 @@ bool validate_telomeres(const PathHandleGraph* graph,
         cerr << "[panpatch]   Internal telomeres: " << (has_internal_telomere ? "FOUND (BAD)" : "NOT FOUND (GOOD)") << endl;
     }
 
-    // an internal telomere is a scaffold misjoin -- always disqualifying (both -T and --patch-telomeres)
+    // an internal telomere is a scaffold misjoin -- always disqualifying (with -T or without)
     if (has_internal_telomere) {
         fail_reason = "internal telomere in patched contig (scaffold misjoin)";
         return false;
     }
-    // require_ends (-T) additionally demands a real telomere at BOTH ends; --patch-telomeres does not
+    // require_ends (-T) additionally demands a real telomere at BOTH ends; telomere patching alone does not
     if (require_ends && !(has_start_telomere && has_end_telomere)) {
         fail_reason = "telomere validation failed";
         return false;

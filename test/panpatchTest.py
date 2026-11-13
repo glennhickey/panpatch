@@ -280,7 +280,7 @@ n_cases = {
                        'donor#1#ctg#0\t10000\t32004\t+\n'
                        '\n')),
     'ntelo_only'    : (n_telo, '-r x -s frag -s ndonor', (
-                       "chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tndonor#1#ctg#0\t33004\t3000\t.\t.\t.\trejected\tdonor's run to its telomere contains N (an assembly gap or masked error region)\t22004\t25004\n"
+                       "chrX\t1\ttelomere\tfrag#1#ctg#0\t25004\tndonor#1#ctg#0\t33004\t3000\t.\t.\t.\trejected\tdonor's run to its telomere contains N (an assembly gap)\t22004\t25004\n"
                        '#Unpatched (input contig) on chrX for frag#1:\n'
                        'frag#1#ctg#0\t0\t25004\t+\n'
                        '\n')),
@@ -426,6 +426,20 @@ te_truth = {
           '#Patched assembly on ctg for frag#1:\n'
           'frag#1#ctg#0\t0\t10000\t+\n'
           'donor#1#ctg#0\t10000\t35000\t+\n'
+          '\n'),
+    # -M 0 lets a tip graft replace nothing, as it does a telomere graft
+    '--max-subtelomere-graft 5000 -M 0' : (
+          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t31000\tdonor#1#ctg#0\t35000\t11000\t.\t.\t.\trejected\ttip graft replaces 11000bp '
+          "of the target's end, over --max-telomere-patch 0; the target keeps its own end\t20000\t31000\n"
+          '#Unpatched (input contig) on ctg for frag#1:\n'
+          'frag#1#ctg#0\t0\t31000\t+\n'
+          '\n'),
+    # a tip graft is gap filling, so --patch-types telomere leaves it out
+    '--max-subtelomere-graft 5000 --patch-types telomere' : (
+          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t31000\tdonor#1#ctg#0\t35000\t11000\t.\t.\t.\trejected\ttip graft excluded by '
+          "--patch-types (gap filling is off); the target keeps its own end\t20000\t31000\n"
+          '#Unpatched (input contig) on ctg for frag#1:\n'
+          'frag#1#ctg#0\t0\t31000\t+\n'
           '\n'),
 }
 run('vg convert tip_extension.gfa > tip_extension.vg')

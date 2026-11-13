@@ -58,7 +58,7 @@ static const size_t fasta_width = 80;
 
 void help(char** argv) {
   cerr << "usage: " << argv[0] << " [options] <graph> [graph2 ...]" << endl
-       << "Use a pangenome alignment (of single sample and reference) to make patched assembly" << endl
+       << "Patch an assembly toward telomere-to-telomere chromosomes with the other assemblies in a pangenome graph" << endl
        << endl
        << "options: " << endl
        << "    -p, --progress               Print progress" << endl
@@ -74,7 +74,8 @@ void help(char** argv) {
        << "        --patch-types LIST       Which of {gap,telomere} to attempt, comma-separated [default: both]; scaffolding is always attempted" << endl
        << "    -T, --require-telomeres      Require a telomere at both ends (revert a contig that isn't); implies telomere patching" << endl
        << "    -M, --max-telomere-patch N   Max bp of target sequence a telomere patch, or a tip graft (a donor carrying" << endl
-       << "                                 the patch past the target's outermost piece), may replace at a contig end [20000]" << endl
+       << "                                 the patch past the target's outermost piece), may replace at a contig end (0:" << endl
+       << "                                 none: a graft may only add sequence at the tip) [20000]" << endl
        << "        --max-subtelomere-graft N  Max bp of donor sequence a telomere patch may graft ahead of the donor's" << endl
        << "                                 telomere (a subtelomere the target lacks, which reads rarely vouch for), and a" << endl
        << "                                 tip graft may add beyond the target bp it replaces.  0 disables [2000]" << endl
@@ -84,12 +85,14 @@ void help(char** argv) {
        << "                                 are replaced by donor sequence where a donor can thread across them (and kept" << endl
        << "                                 where none can); a donor's never go into a patch.  The assemblies are aligned" << endl
        << "                                 unmasked, so a patch differs from the target only where the donor does" << endl
-       << "        --min-cover FLOAT        Revert a patch covering less than this fraction of the input length [0.95]" << endl
+       << "        --min-cover FLOAT        Revert a patch shorter than this fraction of the target contigs it is made from [0.95]" << endl
        << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by the" << endl
        << "                                 -T validation/patch and the always-on discarded-telomere guard) [0.8]" << endl
-       << "        --graft-recovery FLOAT   Revert a foreign interior graft sharing less than this % of the replaced k-mers [50]" << endl
+       << "        --graft-recovery FLOAT   Excise a foreign interior graft sharing less than this % of the replaced k-mers [50]" << endl
        << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
-       << "        --min-flank FLOAT        Revert a foreign interior graft anchored to less than this % of the target flank [50]" << endl
+       << "        --min-flank FLOAT        Excise a foreign interior graft replacing fewer than --graft-min-bp non-N bp (an" << endl
+       << "                                 N-gap fill), or revert a scaffold bridge, anchored to less than this % of the" << endl
+       << "                                 target flank on either side [50]" << endl
        << "        --flank-window N         Window (bp) each side of a graft over which flank anchoring is measured [500000]" << endl
        << "        --max-graft-size-change N  Excise a foreign interior graft that makes its contig more than N bp longer" << endl
        << "                                 or shorter: too large a change to verify (satellite arrays, rDNA gaps).  0 disables [100000]" << endl
@@ -304,9 +307,8 @@ int main(int argc, char** argv) {
     }
     // --telomere-report: standalone mode.  Scan a finished FASTA, print its per-contig telomere cap
     // status ("#Contig" lines, the same ones a normal run prints), and exit.  This is how a caller
-    // measures the assembly it actually delivered when that differs from what panpatch emitted --
-    // cactus-panpatch reverts masked regions to their original sequence after panpatch runs, so the
-    // in-graph measurement describes a sequence that never reaches the user.  No graph or samples needed.
+    // measures the assembly it actually delivered when that differs from what panpatch emitted (after
+    // post-processing it, say), which the in-graph measurement cannot see.  No graph or samples needed.
     if (!telomere_report_filename.empty()) {
         if (telo_threshold < 0 || telo_threshold > 1) {
             cerr << "[panpatch] error: --telomere-threshold must be in [0,1]" << endl;
@@ -579,7 +581,7 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
             patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, progress, require_telomeres,
-            &threaded_tgt_paths, &error_regions);
+            &threaded_tgt_paths, &error_regions, patch_gap);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -602,8 +604,8 @@ int main(int argc, char** argv) {
         string bridge_detail;
         bool bad_bridge = record_scaffolds(graph, patched_intervals, sample_names[0], min_flank, flank_window, bridge_detail);
 
-        // Check telomere validation.  -T requires a telomere at both ends (and no internal one);
-        // --patch-telomeres only rejects an internal-telomere scaffold misjoin (missing ends are kept).
+        // Check telomere validation.  -T requires a telomere at both ends (and no internal one); telomere
+        // patching alone (on by default) only rejects an internal-telomere scaffold misjoin (missing ends are kept).
         bool telomere_validation_failed = false;
         string telo_fail_reason;
         if (patch_telomere && !patched_intervals.empty()) {
