@@ -795,6 +795,21 @@ rg_case('rg_min_cover', rg_n, [('x', 0, 'chrX', rg_fwd([1, 2, 3, 4, 5])), ('frag
 rg_n = rg_K({1: 1401, 2: 1402, 3: 1403}, 10000); rg_n[9] = 'N' * 100
 rg_case('rg_reverse_first', rg_n, [('frag', 1, 'ctg', ['-1', '+2', '+9', '+3']), ('donor', 1, 'ctg', ['-1', '+2', '+3'])],
         '-r frag -s frag -s donor', None, {'ctg_hap_1': '-1 +2 +3'})
+# a graft spliced from two donor contigs (frag's flagged 3 4: ctgA has 3 then runs off, ctgB goes on from 3 through
+# 9 to 5): sequence no donor has in one piece, excised by default and kept with --max-graft-pieces 0
+rg_n = rg_K({1: 1501, 2: 1502, 5: 1505, 6: 1506, 7: 1507}, 10000); rg_n.update(rg_K({3: 1503, 4: 1504, 8: 1508, 9: 1509}, 1000))
+rg_w = [('frag', 1, 'ctg', rg_fwd(range(1, 8))), ('donor', 1, 'ctgA', rg_fwd([1, 2, 3, 8])), ('donor', 1, 'ctgB', rg_fwd([3, 9, 5, 6, 7]))]
+rg_case('rg_two_piece_graft', rg_n, rg_w, '-r frag -s frag -s donor', 'frag#1#ctg\t20000\t22000\n',
+        {'frag#1#ctg#0': '+1 +2 +3 +4 +5 +6 +7'},
+        ['spliced from 2 pieces of donor sequence, over --max-graft-pieces 1 (no donor has it in one piece) (unverifiable)'])
+rg_case('rg_two_piece_graft_off', rg_n, rg_w, '-r frag -s frag -s donor --max-graft-pieces 0', 'frag#1#ctg\t20000\t22000\n',
+        {'ctg_hap_1': '+1 +2 +3 +9 +5 +6 +7'})
+# a patched contig keeps a gap (21) that no donor crosses: it gets a row of its own, not silence
+rg_n = rg_K({1: 1601, 2: 1602, 5: 1605, 6: 1606, 7: 1607}, 10000); rg_n.update(rg_K({3: 1603, 4: 1604}, 30000))
+rg_n[20] = 'N' * 1000; rg_n[21] = 'N' * 2000
+rg_case('rg_unfilled_gap', rg_n, [('frag', 1, 'ctg', rg_fwd([1, 2, 20, 3, 4, 21, 5, 6])), ('donor', 1, 'ctg', rg_fwd([1, 2, 7, 3, 4]))],
+        '-r frag -s frag -s donor', None, {'ctg_hap_1': '+1 +2 +7 +3 +4 +21 +5 +6'},
+        ['ctg\t1\tgap-fill\tfrag#1#ctg#0\t103000\t.\t0\t.\t.\t.\t.\trejected\tno donor could be threaded across this gap; kept as it is\t81000\t83000'])
 # -e naming a sample with two contigs here: a failed patch aborted the run (assert) ...
 run('vg convert interior_splice.gfa > interior_splice.e.vg')
 run('panpatch interior_splice.e.vg -r x -s frag -e frag -f interior_splice.e.fa 2>/dev/null > interior_splice.e.rep && test $(grep -c "^>" interior_splice.e.hap1.fa) -eq 2')

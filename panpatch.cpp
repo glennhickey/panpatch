@@ -1695,7 +1695,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool report_telomere_failures,
                                                                unordered_set<path_handle_t>* threaded_tgt_paths,
                                                                const ErrorRegions* error_regions,
-                                                               bool patch_gap) {
+                                                               bool patch_gap,
+                                                               int64_t max_graft_pieces) {
 
     size_t records_at_entry = g_patch_records.size();   // this call's report rows start here
 
@@ -1851,6 +1852,9 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
             if (!patch_gap) {
                 // a tip graft is gap filling: --patch-types without gap excludes it, as excise does interior ones
                 why = "excluded by --patch-types (gap filling is off)";
+            } else if (max_graft_pieces > 0 && (int64_t)tip.size() > max_graft_pieces) {
+                why = "is spliced from " + to_string(tip.size()) + " pieces of donor sequence, over --max-graft-pieces " +
+                    to_string(max_graft_pieces) + " (no donor has it in one piece)";
             } else if (replaced > max_telomere_patch) {   // (as for a telomere graft, 0 lets it replace nothing)
                 why = "replaces " + to_string(replaced) + "bp of the target's end, over --max-telomere-patch " +
                     to_string(max_telomere_patch);
@@ -2234,6 +2238,62 @@ bool patch_reuses_sequence(const PathHandleGraph* graph,
     return false;
 }
 
+void report_unfilled_gaps(const PathHandleGraph* graph,
+                          const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                          const string& target_sample) {
+    // each target contig's forward ranges in the output: half-open intervals, all but the last, which is closed
+    unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>> ranges;
+    for (size_t k = 0; k < intervals.size(); ++k) {
+        const auto& iv = intervals[k];
+        path_handle_t p = graph->get_path_handle_of_step(get<0>(iv));
+        if (graph->get_sample_name(p) != target_sample) continue;
+        bool last = k + 1 == intervals.size();
+        int64_t o0 = step_offset(graph, get<0>(iv)), o1 = step_offset(graph, get<1>(iv));
+        int64_t l0 = graph->get_length(graph->get_handle_of_step(get<0>(iv)));
+        int64_t l1 = graph->get_length(graph->get_handle_of_step(get<1>(iv)));
+        pair<int64_t, int64_t> r = !get<2>(iv) ? make_pair(o0, o1 + (last ? l1 : 0))
+                                               : make_pair(o1 + (last ? 0 : l1), o0 + l0);
+        if (r.first < r.second) ranges[p].push_back(r);
+    }
+    for (const path_handle_t& P : paths_in_order(graph, intervals)) {
+        auto rit = ranges.find(P);
+        if (rit == ranges.end()) continue;
+        string name = graph->get_path_name(P);
+        int64_t L = path_bp(graph, P);
+        // the contig's N runs
+        vector<pair<int64_t, int64_t>> gaps;
+        int64_t off = 0, run_start = -1;
+        graph->for_each_step_in_path(P, [&](step_handle_t s) {
+            string seq = graph->get_sequence(graph->get_handle_of_step(s));
+            for (size_t c = 0; c < seq.size(); ++c) {
+                bool n = seq[c] == 'N' || seq[c] == 'n';
+                if (n && run_start < 0) run_start = off + (int64_t)c;
+                if (!n && run_start >= 0) { gaps.push_back(make_pair(run_start, off + (int64_t)c)); run_start = -1; }
+            }
+            off += seq.size();
+        });
+        if (run_start >= 0) gaps.push_back(make_pair(run_start, off));
+        for (const auto& g : gaps) {
+            bool in_output = false;
+            for (const auto& r : rit->second) if (r.first < g.second && g.first < r.second) { in_output = true; break; }
+            if (!in_output) continue;
+            bool explained = false;
+            for (const PatchRecord& pr : g_patch_records) {
+                if (pr.target == name && pr.target_start >= 0 && pr.target_start < g.second && g.first < pr.target_end) {
+                    explained = true; break;
+                }
+            }
+            if (explained) continue;
+            PatchRecord pr;
+            pr.type = "gap-fill"; pr.target = name; pr.target_bp = L;
+            pr.accepted = false;
+            pr.reason = "no donor could be threaded across this gap; kept as it is";
+            pr.target_start = g.first; pr.target_end = g.second;
+            g_patch_records.push_back(pr);
+        }
+    }
+}
+
 // every node id a path traverses (used to test donor/target homology by shared nodes)
 static unordered_set<nid_t> path_node_set(const PathHandleGraph* g, path_handle_t p) {
     unordered_set<nid_t> s;
@@ -2275,7 +2335,7 @@ static double flank_fraction(const PathHandleGraph* g, step_handle_t start, bool
 bool record_scaffolds(const PathHandleGraph* graph,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                       const string& target_sample, double min_flank, int64_t flank_window,
-                      string& bridge_detail) {
+                      string& bridge_detail, int64_t max_graft_pieces) {
     bool bad = false;
     unordered_set<path_handle_t> seen;   // target contigs already recorded (so [A|B|A] splices give one row)
     int prev_tgt = -1;       // index of the most recent target-sample interval
@@ -2306,6 +2366,13 @@ bool record_scaffolds(const PathHandleGraph* graph,
                         pr.reason = rs.str();
                         bridge_detail = "contig " + pr.target + " scaffolded to " + graph->get_path_name(p)
                                       + " by foreign " + pr.donor + ": " + rs.str();
+                        bad = true;
+                    } else if (max_graft_pieces > 0 && i - foreign_start > max_graft_pieces) {
+                        // a bridge spliced from several pieces of donor sequence, as for an interior graft
+                        pr.accepted = false;
+                        pr.reason = "foreign bridge spliced from " + to_string(i - foreign_start) +
+                            " pieces of donor sequence, over --max-graft-pieces " + to_string(max_graft_pieces);
+                        bridge_detail = "contig " + pr.target + " scaffolded to " + graph->get_path_name(p) + ": " + pr.reason;
                         bad = true;
                     }
                 } else {   // adjacent target-to-target scaffold (no foreign bridge)
@@ -2339,7 +2406,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 bool patch_gap,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN,
                                 int64_t max_size_change, double min_complexity, int64_t complexity_window,
-                                int64_t complexity_min_bp) {
+                                int64_t complexity_min_bp, int64_t max_graft_pieces) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -2461,7 +2528,12 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             bool low_cx = low(cx_removed) || low(cx_added) || low(cxw_removed) || low(cxw_added);
             // reported as unverifiable only when the content/locus tests above passed it, so a graft they
             // reject keeps its own reason
-            bool unverifiable = !bad && (too_big || low_cx);
+            // a graft spliced from more than one piece of donor sequence (pieces of two donor contigs, or of
+            // one contig on both strands or out of its order) spells sequence that no donor has in one
+            // piece, and that neither test above can vouch for: each piece is anchored where it switches
+            int64_t n_pieces = j - i - 1;
+            bool chimeric = max_graft_pieces > 0 && n_pieces > max_graft_pieces;
+            bool unverifiable = !bad && (too_big || low_cx || chimeric);
             if (unverifiable) bad = true;
             // a donor run that spells exactly the target sequence it replaces changes nothing.  in a graph
             // built from unmasked assemblies, a donor that agrees with the target across an --error-bed
@@ -2496,6 +2568,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 ostringstream rs; rs << fixed << setprecision(1);
                 if (!patch_gap)    rs << "gap-fill excluded by --patch-types";
                 else if (same_seq) rs << "donor sequence is identical to the target's: nothing to patch";
+                else if (unverifiable && chimeric) rs << "spliced from " << n_pieces << " pieces of donor sequence, over --max-graft-pieces "
+                                      << max_graft_pieces << " (no donor has it in one piece) (unverifiable)";
                 else if (unverifiable && too_big)  rs << "changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change
                                       << "bp, over --max-graft-size-change " << max_size_change << " (unverifiable)";
                 else if (unverifiable) {

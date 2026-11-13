@@ -189,7 +189,13 @@ bool patch_reuses_sequence(const PathHandleGraph* graph,
 bool record_scaffolds(const PathHandleGraph* graph,
                       const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
                       const std::string& target_sample, double min_flank, int64_t flank_window,
-                      std::string& bridge_detail);
+                      std::string& bridge_detail, int64_t max_graft_pieces = 0);
+
+// a report row for every N gap of a target contig the patch uses that is still in the output and that no
+// row already covers (no donor could be threaded across it), so a gap left as it is is never silent
+void report_unfilled_gaps(const PathHandleGraph* graph,
+                          const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                          const std::string& target_sample);
 
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
@@ -216,7 +222,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool report_telomere_failures = false,
                                                                unordered_set<path_handle_t>* threaded_tgt_paths = nullptr,
                                                                const ErrorRegions* error_regions = nullptr,
-                                                               bool patch_gap = true);
+                                                               bool patch_gap = true,
+                                                               int64_t max_graft_pieces = 0);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
@@ -233,7 +240,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 int64_t max_size_change = 0,
                                 double min_complexity = 0.0,
                                 int64_t complexity_window = 0,
-                                int64_t complexity_min_bp = 10000);
+                                int64_t complexity_min_bp = 10000,
+                                int64_t max_graft_pieces = 0);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,

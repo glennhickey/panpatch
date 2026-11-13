@@ -105,6 +105,9 @@ void help(char** argv) {
        << "                                 measures the whole graft only [10000]" << endl
        << "        --graft-complexity-min-bp N  Apply --min-graft-complexity only when at least this many non-N bp are" << endl
        << "                                 replaced or inserted [2000]" << endl
+       << "        --max-graft-pieces N     Excise a graft (interior, tip or scaffold bridge) spliced from more than N" << endl
+       << "                                 pieces of donor sequence: two donor contigs, or one on both strands or out of" << endl
+       << "                                 its order, which no donor has in one piece.  0 disables [1]" << endl
        << "        --telomere-report FILE   Standalone: print per-contig telomere cap status (#Contig lines) for" << endl
        << "                                 a finished FASTA and exit. No graph or -r/-s needed. Use this to" << endl
        << "                                 measure an assembly that was post-processed after panpatch ran" << endl
@@ -139,6 +142,7 @@ int main(int argc, char** argv) {
     double min_graft_complexity = 0.5;
     int64_t graft_complexity_window = 10000;
     int64_t graft_complexity_min_bp = 2000;
+    int64_t max_graft_pieces = 1;
     optind = 1;
     while (true) {
 
@@ -169,6 +173,7 @@ int main(int argc, char** argv) {
             {"error-bed", required_argument, 0, 1013},
             {"graft-complexity-window", required_argument, 0, 1014},
             {"graft-complexity-min-bp", required_argument, 0, 1015},
+            {"max-graft-pieces", required_argument, 0, 1016},
             {0, 0, 0, 0}
         };
 
@@ -283,6 +288,9 @@ int main(int argc, char** argv) {
         case 1015:
             graft_complexity_min_bp = strtoll(optarg, nullptr, 10);
             break;
+        case 1016:
+            max_graft_pieces = strtoll(optarg, nullptr, 10);
+            break;
         case 1007:
             out_bed_filename = optarg;
             break;
@@ -340,6 +348,7 @@ int main(int argc, char** argv) {
     if (min_graft_complexity < 0 || min_graft_complexity > 1) { cerr << "[panpatch] error: --min-graft-complexity must be in [0,1]" << endl; return 1; }
     if (graft_complexity_window < 0) { cerr << "[panpatch] error: --graft-complexity-window must be >= 0" << endl; return 1; }
     if (graft_complexity_min_bp < 0) { cerr << "[panpatch] error: --graft-complexity-min-bp must be >= 0" << endl; return 1; }
+    if (max_graft_pieces < 0) { cerr << "[panpatch] error: --max-graft-pieces must be >= 0" << endl; return 1; }
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
     if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
     // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
@@ -581,7 +590,7 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
             patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, progress, require_telomeres,
-            &threaded_tgt_paths, &error_regions, patch_gap);
+            &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -591,7 +600,7 @@ int main(int argc, char** argv) {
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, patch_gap, excised_nonN,
                                    max_graft_size_change, min_graft_complexity, graft_complexity_window,
-                                   graft_complexity_min_bp);
+                                   graft_complexity_min_bp, max_graft_pieces);
 
         // final consistency guard: a patch that would write any sequence twice or out of order (see
         // patch_reuses_sequence) reverts the contig, whatever else passed
@@ -602,7 +611,8 @@ int main(int argc, char** argv) {
         // record scaffold joins (patch spans >1 target contig) for the report, and guard foreign-bridged
         // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.
         string bridge_detail;
-        bool bad_bridge = record_scaffolds(graph, patched_intervals, sample_names[0], min_flank, flank_window, bridge_detail);
+        bool bad_bridge = record_scaffolds(graph, patched_intervals, sample_names[0], min_flank, flank_window, bridge_detail,
+                                           max_graft_pieces);
 
         // Check telomere validation.  -T requires a telomere at both ends (and no internal one); telomere
         // patching alone (on by default) only rejects an internal-telomere scaffold misjoin (missing ends are kept).
@@ -685,6 +695,8 @@ int main(int argc, char** argv) {
                 pr.accepted = true; pr.reason = "not part of the patched contig; written as it is";
                 g_patch_records.push_back(pr);
             }
+            // an N gap the patched contig still has, with no row about it, gets one
+            report_unfilled_gaps(graph, patched_intervals, sample_names[0]);
         }
 
         // emit this haplotype's report rows.  Finalize each decision first: a whole-contig revert

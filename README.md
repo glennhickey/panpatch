@@ -119,6 +119,7 @@ Patch checks (see [Why a patch is rejected](#why-a-patch-is-rejected)):
 | `--min-graft-complexity F` | reject an interior graft that replaces or inserts sequence whose distinct k-mer fraction is below F, over all of it or in any `--graft-complexity-window` (0 disables) | 0.5 |
 | `--graft-complexity-window N` | window (bp) in which `--min-graft-complexity` is also measured, so a satellite array inside a larger graft is not diluted (0: whole graft only) | 10000 |
 | `--graft-complexity-min-bp N` | apply `--min-graft-complexity` only when at least this many non-N bp are replaced or inserted | 2000 |
+| `--max-graft-pieces N` | excise a graft (interior, tip, or scaffold bridge) spliced from more than N pieces of donor sequence (0 disables) | 1 |
 
 ## The report
 
@@ -136,6 +137,7 @@ chr14  1    gap-fill  haplotype1-0000004  101799395  CM090131.1  101948476  1972
 - `replaced_bp` is the target sequence replaced, and `target_start`/`target_end` its place on the target contig.
 - `kmer%` is the percent of the replaced sequence's k-mers found in the graft (content); `flankL%`/`flankR%` are how much of the target's flank each side the donor shares (locus).
 - `decision` is `accepted` or `rejected`, with the cause in `reason`. When a whole contig reverts, every patch accepted on it becomes `rejected` with `contig reverted: <cause>`.
+- An `N` gap that is still in a patched contig, with no other row about it, gets a rejected `gap-fill` row of its own (`no donor could be threaded across this gap; kept as it is`, with the gap's place). A contig with gaps and no patch at all gets one row, `no patches from other assemblies were found; contig kept as it is`.
 - A value that does not apply is `.`.
 
 A contig that needs no patch has no row. After each haplotype's rows comes a `#Contig` line for every sequence written, with its length and whether each end has a telomere (and the hexamer density measured there):
@@ -180,7 +182,8 @@ Where the target cannot reach one of its ends (an `N` gap or a flagged region ne
 
 - it may replace at most `--max-telomere-patch` bp of the target's end;
 - it may add at most `--max-subtelomere-graft` bp more than it replaces;
-- it may not take off a telomere the target has.
+- it may not take off a telomere the target has;
+- it must be one piece of donor sequence (`--max-graft-pieces`).
 
 One that fails is dropped and the target keeps its own end. The donor's end is taken only up to its first `N` or `--error-bed` interval, and no telomere graft is made on top of it. Tip grafts are gap filling: they are `gap-fill` rows in the report, and `--patch-types telomere` leaves them out.
 
@@ -219,6 +222,7 @@ An interior graft, a donor run between two pieces of the same target contig, is 
 - **A misjoin by content** — it replaces ≥ `--graft-min-bp` non-N bp and its sequence shares < `--graft-recovery` % of their k-mers.
 - **A misjoin by locus** — it replaces less than that (an N-gap fill, say) and its donor shares < `--min-flank` % of the target's flank, within `--flank-window`, on either side.
 - **Unverifiable by size** — it changes the contig's length by more than `--max-graft-size-change` (a satellite array or rDNA gap swapped for the donor's).
+- **Spliced from several donor pieces** — the graft is more than `--max-graft-pieces` pieces of donor sequence: pieces of two donor contigs, or of one contig on both strands or out of its order. Each piece is anchored where it switches, so the tests above can pass, but the graft spells sequence that no donor has in one piece. On the HPRC pilot such grafts were the largest length changes in a recipe's swaps (+44 kb, +27 kb, −19 kb, +13 kb), in pericentromeric segmental duplications. A scaffold bridge of several pieces reverts the scaffold.
 - **Unverifiable by content** — it replaces or inserts ≥ `--graft-complexity-min-bp` of low-complexity sequence: a distinct k-mer fraction < `--min-graft-complexity` over all of it, or in any `--graft-complexity-window`, so an array inside a larger graft is caught. Any tandem array of the same satellite family shares its k-mers, so k-mer recovery cannot tell a faithful copy from a different one.
 - **Identical** — the donor spells exactly the sequence it replaces: `nothing to patch`.
 - **Not asked for** — gap filling is turned off by `--patch-types`.
