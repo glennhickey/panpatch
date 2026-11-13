@@ -76,8 +76,9 @@ Missing system libraries are a subset of [vg's](https://github.com/vgteam/vg?tab
 | `-b, --exclude-bed FILE` | target regions to leave untouched (see [Excluding regions](#excluding-regions)) | |
 | `--patch-types LIST` | which of `{gap,telomere}` to attempt, comma-separated (scaffolding is always attempted) | `gap,telomere` |
 | `-T, --require-telomeres` | require a telomere at both ends and none internal, else revert (see [Telomeres](#telomeres)) | off |
-| `-M, --max-telomere-patch N` | max bp of target sequence a telomere graft may replace | 20000 |
-| `--max-subtelomere-graft N` | max bp of donor sequence a telomere graft may carry ahead of the donor's telomere (0 disables) | 2000 |
+| `--error-bed FILE` | assembly-error intervals on any input assembly, contigs named `SAMPLE#HAP#CONTIG` (see [Error regions](#error-regions)) | |
+| `-M, --max-telomere-patch N` | max bp of target sequence a telomere graft or tip graft may replace | 20000 |
+| `--max-subtelomere-graft N` | max bp of donor sequence a telomere graft may carry ahead of the donor's telomere, and a tip graft beyond what it replaces (0 disables) | 2000 |
 | `--telomere-threshold F` | min hexamer density to call a telomere | 0.8 |
 | `--min-cover F` | revert a patch covering less than this fraction of the input length | 0.95 |
 | `--graft-recovery F` | revert a foreign interior graft sharing less than this % of the replaced k-mers | 50 |
@@ -85,7 +86,9 @@ Missing system libraries are a subset of [vg's](https://github.com/vgteam/vg?tab
 | `--min-flank F` | revert an N-gap fill anchored to less than this % of the target flank | 50 |
 | `--flank-window N` | window (bp) each side of an N-gap fill over which flank anchoring is measured | 500000 |
 | `--max-graft-size-change N` | excise an interior graft that makes its contig more than N bp longer or shorter (0 disables) | 100000 |
-| `--min-graft-complexity F` | excise an interior graft that replaces or inserts ≥ `--graft-min-bp` of sequence whose distinct k-mer fraction is below F (0 disables) | 0.5 |
+| `--min-graft-complexity F` | excise an interior graft that replaces or inserts ≥ `--graft-complexity-min-bp` of sequence whose distinct k-mer fraction is below F over all of it or in any `--graft-complexity-window` (0 disables) | 0.5 |
+| `--graft-complexity-window N` | window (bp) in which `--min-graft-complexity` is also measured, so a satellite array inside a larger graft is not diluted (0: whole graft only) | 10000 |
+| `--graft-complexity-min-bp N` | apply `--min-graft-complexity` only when at least this many non-N bp are replaced or inserted | 2000 |
 | `-w, --window N` | window size for haplotype-identity binning | 1000 |
 | `-t, --threads N` | threads | all |
 | `-p, --progress` | print progress to stderr | |
@@ -120,6 +123,10 @@ Telomere grafts are kept small, because a telomere is missing from an assembly f
 
 By default a contig whose end can't be completed is simply **kept** as-is (with its other patches) — only an *internal* telomere, which signals a scaffold misjoin, reverts it. `-T/--require-telomeres` makes it strict: each patched haplotype must then begin and end with a telomere, and a contig that doesn't (no donor reaches one, or the tip is degraded/buried) reverts to its input — with `-T` those uncapped ends are also reported. The always-on guard against *discarding* an already-capped end applies in every mode.
 
+## Error regions
+
+`--error-bed FILE` lists intervals that QC flagged as assembly errors, on the target or on any donor (contig names `SAMPLE#HAP#CONTIG`, as the graph names them; a donor's subrange shifts its coordinates). The assemblies are aligned unmasked, so where a donor agrees with a flagged stretch of the target the two share nodes, and a swap differs from the target only where the donor does. A flagged step on the target is one the threading tries to replace with a donor; a flagged step on a donor never goes into a patch. A donor that spells exactly what it would replace is reported as `nothing to patch`.
+
 ## Excluding regions
 
 `-b/--exclude-bed FILE` lists target regions panpatch must leave untouched (it keeps the original target sequence there, never substituting a donor). Coordinates are in the first `-s` sample, and the first column is the full target-contig path name as it appears in panpatch output. This is handy for acrocentric rDNA-adjacent gaps that would otherwise be overfilled:
@@ -138,13 +145,15 @@ panpatch emits a patched sequence only when it passes the checks below; otherwis
 - **Too short** — the patch covers less than `--min-cover` of the input length.
 - **Same-sample interior splice** — one of the target's own spare fragments is stitched into the middle of a contig that already spans the region (a repeat-region misjoin); reverted.
 - **Foreign interior graft** — a donor spliced into a contig's interior is *excised* (the rest of the patch kept) unless it recapitulates ≥ `--graft-recovery` of the replaced k-mers (a real-sequence replacement of ≥ `--graft-min-bp`), or — for an N-gap fill — stays homologous over ≥ `--min-flank` of *both* flanks within `--flank-window`.
-- **Unverifiable interior graft** — even when it passes the tests above, a graft is excised if it changes its contig's length by more than `--max-graft-size-change` (a satellite array or rDNA gap swapped for the donor's), or replaces or inserts ≥ `--graft-min-bp` of low-complexity sequence (distinct k-mer fraction < `--min-graft-complexity`): any tandem array of the same satellite family shares its k-mers, so k-mer recovery cannot tell a faithful copy from a different one. These err on the side of leaving the target as it is.
+- **Unverifiable interior graft** — even when it passes the tests above, a graft is excised if it changes its contig's length by more than `--max-graft-size-change` (a satellite array or rDNA gap swapped for the donor's), or replaces or inserts ≥ `--graft-complexity-min-bp` of low-complexity sequence (distinct k-mer fraction < `--min-graft-complexity`, over the whole graft or in any `--graft-complexity-window`, so an array inside a larger swap is caught): any tandem array of the same satellite family shares its k-mers, so k-mer recovery cannot tell a faithful copy from a different one. These err on the side of leaving the target as it is.
+- **Tip graft** — where the target cannot reach one of its ends (an `N` gap or a flagged region near the tip) and a donor carries the patch out past the target's outermost piece, nothing anchors the far end. The graft may replace at most `--max-telomere-patch` of the target's end, may add at most `--max-subtelomere-graft` more than it replaces, and may not take off a telomere the target has; otherwise the target keeps its own end.
 - **Foreign scaffold bridge** — a donor bridging two target contigs must anchor (≥ `--min-flank`) to both; else the scaffold reverts.
-- **Discarded telomere** — a patch must not trim off a target contig's already-capped end.
+- **Discarded telomere** — a patch must not trim off a target contig's already-capped end, however little it trims.
+- **Sequence written twice or out of order** — a final check on every patch: if it would use any stretch of a path twice, use a target contig on both strands or out of its own order, or put donor sequence where a target contig it does not use (and so writes through as it is) already has it, the contig reverts. The threading itself follows a donor only on the strand the reference runs, stops a donor at an anchor behind it or at an inversion, and does not take up a path at a node it visits more than once; this check is the backstop.
 - **Donor N's** — a patch never takes sequence from a donor's `N`s (an assembly gap, or a region masked as an error, as `cactus-panpatch --assemblyErrorBeds` does). A telomere graft whose donor run contains one moves to the next donor, and is reported as rejected if no donor completes the end; only the target may be threaded across `N`s, keeping its own gap.
 - **Telomere graft too large** — a telomere graft that would replace more than `--max-telomere-patch` of target, or carry more than `--max-subtelomere-graft` of donor sequence ahead of the donor's telomere, is not taken (the latter moves to the next donor, like donor `N`s).
 
-**With `-T`:** the result must begin and end with a telomere (density ≥ `--telomere-threshold`) and have none internal, and an end it cannot cap (e.g. because its only graft is too large) reverts the contig.
+**With `-T`:** the result must begin and end with a telomere (density ≥ `--telomere-threshold`) and have none internal, and an end it cannot cap (e.g. because its only graft is too large) reverts the contig. A telomeric run of 1 kb or more at a scaffold join (either contig's end there, or the donor bridge between them) is an internal telomere, with or without `-T`.
 
 Quality control is heuristic — these guards catch the common misjoins, but there is no full alignment-based scoring of a patch.
 

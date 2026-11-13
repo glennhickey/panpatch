@@ -73,9 +73,11 @@ void help(char** argv) {
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
        << "        --patch-types LIST       Which of {gap,telomere} to attempt, comma-separated [default: both]; scaffolding is always attempted" << endl
        << "    -T, --require-telomeres      Require a telomere at both ends (revert a contig that isn't); implies telomere patching" << endl
-       << "    -M, --max-telomere-patch N   Max bp of target sequence a telomere patch may replace at a contig end [20000]" << endl
+       << "    -M, --max-telomere-patch N   Max bp of target sequence a telomere patch, or a tip graft (a donor carrying" << endl
+       << "                                 the patch past the target's outermost piece), may replace at a contig end [20000]" << endl
        << "        --max-subtelomere-graft N  Max bp of donor sequence a telomere patch may graft ahead of the donor's" << endl
-       << "                                 telomere (a subtelomere the target lacks, which reads rarely vouch for).  0 disables [2000]" << endl
+       << "                                 telomere (a subtelomere the target lacks, which reads rarely vouch for), and a" << endl
+       << "                                 tip graft may add beyond the target bp it replaces.  0 disables [2000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << "        --error-bed FILE         BED of assembly-error intervals on any input assembly, contigs named as the graph" << endl
        << "                                 names its paths (SAMPLE#HAP#CONTIG; HAP 0 for a haploid sample).  The target's" << endl
@@ -589,6 +591,12 @@ int main(int argc, char** argv) {
                                    max_graft_size_change, min_graft_complexity, graft_complexity_window,
                                    graft_complexity_min_bp);
 
+        // final consistency guard: a patch that would write any sequence twice or out of order (see
+        // patch_reuses_sequence) reverts the contig, whatever else passed
+        string reuse_detail;
+        bool bad_reuse = !patched_intervals.empty() &&
+            patch_reuses_sequence(graph, patched_intervals, sample_names[0], hap_tgts.second, threaded_tgt_paths, reuse_detail);
+
         // record scaffold joins (patch spans >1 target contig) for the report, and guard foreign-bridged
         // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.
         string bridge_detail;
@@ -615,20 +623,22 @@ int main(int argc, char** argv) {
                                          patched_intervals, input_intervals,
                                          default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN, revert_reason);
 
-        // Also revert if telomere validation failed or a foreign-bridged scaffold is a wrong-locus misjoin
-        if (!reverted && (telomere_validation_failed || bad_bridge)) {
+        // Also revert if the patch reuses sequence, telomere validation failed or a foreign-bridged scaffold
+        // is a wrong-locus misjoin
+        if (!reverted && (bad_reuse || telomere_validation_failed || bad_bridge)) {
             reverted = true;
-            revert_reason = bad_bridge ? bridge_detail : telo_fail_reason;
+            revert_reason = bad_reuse ? reuse_detail : bad_bridge ? bridge_detail : telo_fail_reason;
             // Generate input intervals if not already done
             if (input_intervals.empty()) {
+                vector<path_handle_t> default_paths;
                 if (!default_sample.empty()) {
-                    vector<path_handle_t> default_paths = default_sample_paths(graph, default_sample,
-                                                                               graph->get_haplotype(hap_tgts.second.front()));
-                    if (!default_paths.empty()) {
-                        const path_handle_t& def_path = default_paths[0];
-                        input_intervals.push_back(make_tuple(graph->path_begin(def_path),
-                                                            graph->path_back(def_path), false));
-                    }
+                    default_paths = default_sample_paths(graph, default_sample, graph->get_haplotype(hap_tgts.second.front()));
+                }
+                // as in revert_bad_patch: the default sample stands in only with exactly one contig here;
+                // otherwise every one of the target's own contigs is kept (none may be dropped)
+                if (default_paths.size() == 1) {
+                    input_intervals.push_back(make_tuple(graph->path_begin(default_paths[0]),
+                                                        graph->path_back(default_paths[0]), false));
                 } else {
                     for (const path_handle_t& tgt_path : hap_tgts.second) {
                         input_intervals.push_back(make_tuple(graph->path_begin(tgt_path),

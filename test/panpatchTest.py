@@ -395,10 +395,13 @@ run('diff backstop_nfill.out backstop_nfill.truth')
 temp_files += ['backstop_nfill.gfa', 'backstop_nfill.vg', 'backstop_nfill.truth', 'backstop_nfill.out']
 
 # A patch that ends on a donor carries the donor's tail out to its end, replacing the target's tip beyond
-# its outermost threaded piece.  It is reported as a gap-fill row like any other.  Reference-free:
+# its outermost threaded piece: a tip graft, reported as a gap-fill row.  Nothing anchors its far end, so it
+# is held to a telomere graft's limits (-M on the target bp it replaces, --max-subtelomere-graft on the donor bp
+# it adds beyond that).  Reference-free:
 #   frag  1 2 3 5    - an N gap (3) near its end, so the threading cannot get from 2 to 5 on frag
 #   donor 1 2 4 5 6  - bridges it (4) and runs on past frag's end (6)
-# frag 1-2, then donor 2-6: frag's 3 and 5 are replaced, and before nothing in the report said so
+# frag 1-2, then donor 2-6 would replace frag's 3 and 5 (11kb) with 15kb: 4kb more than the 2kb default allows,
+# so frag keeps its own end; with --max-subtelomere-graft 5000 the graft goes in
 te_rng = random.Random(19)
 te_rnd = lambda n: ''.join(te_rng.choice('ACGT') for _ in range(n))
 te_nodes = {1: te_rnd(10000), 2: te_rnd(10000), 3: 'N' * 1000, 4: te_rnd(2000), 5: te_rnd(10000), 6: te_rnd(3000)}
@@ -411,16 +414,26 @@ with open('tip_extension.gfa', 'w') as f:
         f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
     for sample, w in te_walks.items():
         f.write('W\t{}\t1\tctg\t0\t{}\t{}\n'.format(sample, sum(len(te_nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
-with open('tip_extension.truth', 'w') as f:
-    f.write(
-        'ctg\t1\tgap-fill\tfrag#1#ctg#0\t31000\tdonor#1#ctg#0\t35000\t11000\t.\t.\t.\taccepted\t.\t20000\t31000\n'
-        '#Patched assembly on ctg for frag#1:\n'
-        'frag#1#ctg#0\t0\t10000\t+\n'
-        'donor#1#ctg#0\t10000\t35000\t+\n'
-        '\n')
+te_truth = {
+    '' : ('ctg\t1\tgap-fill\tfrag#1#ctg#0\t31000\tdonor#1#ctg#0\t35000\t11000\t.\t.\t.\trejected\ttip graft adds 15000bp '
+          "of donor sequence for 11000bp of the target's end, more than --max-subtelomere-graft 2000 beyond it; the target "
+          'keeps its own end\t20000\t31000\n'
+          '#Unpatched (input contig) on ctg for frag#1:\n'
+          'frag#1#ctg#0\t0\t31000\t+\n'
+          '\n'),
+    '--max-subtelomere-graft 5000' : (
+          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t31000\tdonor#1#ctg#0\t35000\t11000\t.\t.\t.\taccepted\t.\t20000\t31000\n'
+          '#Patched assembly on ctg for frag#1:\n'
+          'frag#1#ctg#0\t0\t10000\t+\n'
+          'donor#1#ctg#0\t10000\t35000\t+\n'
+          '\n'),
+}
 run('vg convert tip_extension.gfa > tip_extension.vg')
-run('panpatch tip_extension.vg -r frag -s frag -s donor --bed tip_extension.int 2>/dev/null | grep -v "^chrom" | {0} > tip_extension.rep ; cat tip_extension.rep tip_extension.int > tip_extension.out'.format(telo_filter))
-run('diff tip_extension.out tip_extension.truth')
+for te_args, te_expect in te_truth.items():
+    with open('tip_extension.truth', 'w') as f:
+        f.write(te_expect)
+    run('panpatch tip_extension.vg -r frag -s frag -s donor {1} --bed tip_extension.int 2>/dev/null | grep -v "^chrom" | {0} > tip_extension.rep ; cat tip_extension.rep tip_extension.int > tip_extension.out'.format(telo_filter, te_args))
+    run('diff tip_extension.out tip_extension.truth')
 temp_files += ['tip_extension.gfa', 'tip_extension.vg', 'tip_extension.truth', 'tip_extension.out']
 
 # Interior grafts that the content and locus tests cannot vouch for are excised (the rest of the patch kept):
@@ -526,6 +539,10 @@ eb_cases = {
     'errbed_donor'    : (eb_swap_walks, 'frag#1#ctg\t30000\t51000\ndonor#1#ctg\t41000\t42000\n', None,
                          '#Unpatched (input contig) on ctg for frag#1:\n'
                          'frag#1#ctg#0\t0\t81000\t+\n\n'),
+    # the donor's interval named with its phase block (donor#1#ctg#0), as the path is less its [1000-82000]
+    'errbed_donor_phase' : (eb_swap_walks, 'frag#1#ctg\t30000\t51000\ndonor#1#ctg#0\t41000\t42000\n', None,
+                         '#Unpatched (input contig) on ctg for frag#1:\n'
+                         'frag#1#ctg#0\t0\t81000\t+\n\n'),
     'errbed_collapse' : (eb_ins_walks, 'frag#1#ctg\t30000\t50000\n', [10, 0, 1, 2, 7, 5, 6, 8, 9],
                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t80000\t' + eb_patched(82000) + '\t82000\t10000\t100.0\t100.0\t100.0\taccepted\t.\t30000\t40000\n'
                          '#Patched assembly on ctg for frag#1:\n'
@@ -612,6 +629,165 @@ run('panpatch --telomere-report telorep.lower.fa > telorep.lower.txt')
 run('diff telorep.fasta.txt telorep.lower.txt')
 temp_files += ['telorep.vg', 'telorep.hap1.fa', 'telorep.lower.fa',
                'telorep.graph.txt', 'telorep.fasta.txt', 'telorep.lower.txt']
+
+# Regressions from a review of the threading, graft and telomere code (Nov 2026).  Each graph is built from
+# signed walks; the output FASTA is decoded back into signed node ids and compared with what should be
+# written, and the report must carry the reason given.  Before the fixes, each of these wrote a false patch
+# (deleted, duplicated, inverted or appended sequence, a lost telomere), a misleading report, or aborted.
+def rg_rnd(seed, n):
+    rng = random.Random(seed)
+    return ''.join(rng.choice('ACGT') for _ in range(n))
+
+def rg_rc(s):
+    return s[::-1].translate(str.maketrans('ACGTN', 'TGCAN'))
+
+def rg_case(base, nodes, walks, args, errors, expect, reasons=()):
+    """walks: [(sample, hap, contig, ['+1', '-2', ...])]; expect: {output record: 'signed node ids'}"""
+    global fail_count
+    pw = lambda w: [(int(x[1:]), x[0] == '-') for x in w]
+    with open(base + '.gfa', 'w') as f:
+        f.write('H\tVN:Z:1.1\n')
+        for n in sorted(set(n for _, _, _, w in walks for n, _ in pw(w))):
+            f.write('S\t{}\t{}\n'.format(n, nodes[n]))
+        edges = set()
+        for _, _, _, w in walks:
+            for (a, ar), (b, br) in zip(pw(w), pw(w)[1:]):
+                edges.add((a, '-' if ar else '+', b, '-' if br else '+'))
+        for e in sorted(edges):
+            f.write('L\t{}\t{}\t{}\t{}\t0M\n'.format(*e))
+        for sample, hap, contig, w in walks:
+            f.write('W\t{}\t{}\t{}\t0\t{}\t{}\n'.format(sample, hap, contig, sum(len(nodes[n]) for n, _ in pw(w)),
+                                                      ''.join(('<' if r else '>') + str(n) for n, r in pw(w))))
+    if errors:
+        with open(base + '.errors.bed', 'w') as f:
+            f.write(errors)
+        args += ' --error-bed {}.errors.bed'.format(base)
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    if os.path.exists(base + '.hap1.fa'):
+        os.remove(base + '.hap1.fa')
+    p = subprocess.run('panpatch {0}.vg {1} -f {0}.fa 2>/dev/null'.format(base, args), shell=True, capture_output=True, text=True)
+    recs, cur = {}, None
+    if os.path.exists(base + '.hap1.fa'):
+        for l in open(base + '.hap1.fa'):
+            l = l.strip()
+            if l.startswith('>'):
+                cur = l[1:]; recs[cur] = ''
+            elif cur is not None:
+                recs[cur] += l
+    by_len = sorted(nodes.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    got = {}
+    for name, seq in recs.items():
+        ids, i = [], 0
+        while i < len(seq):
+            for n, s in by_len:
+                if seq.startswith(s, i):
+                    ids.append('+%d' % n); i += len(s); break
+                if seq.startswith(rg_rc(s), i):
+                    ids.append('-%d' % n); i += len(s); break
+            else:
+                ids.append('?'); break
+        got[name] = ' '.join(ids)
+    if p.returncode != 0 or got != expect or not all(r in p.stdout for r in reasons):
+        print('failed: {} (exit {}) wrote {}, expected {}'.format(base, p.returncode, got, expect))
+        for r in reasons:
+            if r not in p.stdout:
+                print('  report lacks: {}'.format(r))
+        fail_count += 1
+    temp_files.extend([base + x for x in ['.gfa', '.vg', '.errors.bed', '.hap1.fa']])
+
+rg_K = lambda seeds, n: {k: rg_rnd(s, n) for k, s in seeds.items()}
+rg_fwd = lambda ids: ['+%d' % k for k in ids]
+
+# strand: the donor carries an inversion of 3-5, and frag's 3 is flagged.  The donor was searched both ways
+# and followed into its inverted copy, deleting frag's 3 4 with nothing put back; frag now keeps its own
+rg_n = rg_K({1: 101, 2: 102, 3: 103, 4: 104, 5: 105, 6: 106}, 1000); rg_n[1] = rg_rnd(107, 50000); rg_n[6] = rg_rnd(108, 50000)
+rg_case('rg_inversion', rg_n, [('frag', 1, 'ctg', rg_fwd(range(1, 7))), ('donor', 1, 'ctg', ['+1', '+2', '-5', '-4', '-3', '+6'])],
+        '-r frag -s frag -s donor', 'frag#1#ctg\t51000\t52000\n', {'frag#1#ctg#0': '+1 +2 +3 +4 +5 +6'})
+# strand: the donor is a rotation of the target (3 4 1 2): it was followed backwards across frag's gap,
+# writing an inverted chimera with 50kb repeated.  frag keeps its gap
+rg_n = {1: rg_rnd(201, 50000), 2: rg_rnd(202, 1000), 3: rg_rnd(203, 1000), 4: rg_rnd(204, 50000), 7: 'N' * 1000}
+rg_case('rg_rotation', rg_n, [('frag', 1, 'ctg', ['+1', '+2', '+7', '+3', '+4']), ('donor', 1, 'ctg', ['+3', '+4', '+1', '+2'])],
+        '-r frag -s frag -s donor', None, {'frag#1#ctg#0': '+1 +2 +7 +3 +4'})
+# a donor visiting the node it is taken up on twice (a stray copy of 5 at its start): its first visit was
+# taken, and the run went back over 0-4, turning a 1kb gap fill into a 51kb duplication
+rg_n = rg_K({k: 300 + k for k in range(9)}, 10000); rg_n[5] = rg_rnd(399, 1000); rg_n[10] = 'N' * 1000
+rg_case('rg_stray_copy', rg_n, [('frag', 1, 'ctg', rg_fwd([0, 1, 2, 3, 4, 5, 10, 6, 7, 8])), ('donor', 1, 'ctg', rg_fwd([5, 0, 1, 2, 3, 4, 5, 6, 7, 8]))],
+        '-r frag -s frag -s donor', None, {'frag#1#ctg#0': '+0 +1 +2 +3 +4 +5 +10 +6 +7 +8'})
+# a donor run back over anchors already patched (donor 3 1 2 4 5 across frag's gap after 3): 1 2 written twice
+rg_n = rg_K({k: 400 + k for k in range(6)}, 10000); rg_n[9] = 'N' * 1000
+rg_case('rg_backtrack', rg_n, [('frag', 1, 'ctg', rg_fwd([0, 1, 2, 3, 9, 4, 5])), ('donor', 1, 'ctg', rg_fwd([3, 1, 2, 4, 5]))],
+        '-r frag -s frag -s donor', None, {'frag#1#ctg#0': '+0 +1 +2 +3 +9 +4 +5'})
+# tip graft: frag's last 5kb flagged and the donor running 300kb past frag's end: the whole tail was appended
+rg_n = rg_K({1: 501, 2: 502, 3: 503}, 10000); rg_n.update(rg_K({4: 504, 5: 505, 6: 506}, 100000)); rg_n[0] = rg_rnd(500, 200000)
+rg_case('rg_tip_tail', rg_n, [('frag', 1, 'ctg', rg_fwd([0, 1, 2, 3])), ('donor', 1, 'ctg', rg_fwd(range(7)))],
+        '-r frag -s frag -s donor', 'frag#1#ctg\t225000\t230000\n', {'frag#1#ctg#0': '+0 +1 +2 +3'},
+        ['tip graft adds 310000bp of donor sequence for 10000bp'])
+# an identical donor across a flagged region of a target stored antisense to the reference: compared strand
+# against strand, it passed as a change (and the contig came out reverse-complemented)
+rg_n = rg_K({k: 600 + k for k in range(1, 9)}, 10000)
+rg_case('rg_same_reverse', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 9))), ('frag', 1, 'ctg', ['-%d' % k for k in range(8, 0, -1)]),
+                                  ('donor', 1, 'ctg', rg_fwd(range(1, 9)))],
+        '-r x -s frag -s donor', 'frag#1#ctg\t30000\t50000\n', {'frag#1#ctg#0': '-8 -7 -6 -5 -4 -3 -2 -1'},
+        ["donor sequence is identical to the target's: nothing to patch"])
+# a target contig (ctgB) flagged end to end, covered by the donor: it was written twice, once as the donor's
+# copy in the patched record and once as itself
+rg_n = rg_K({k: 700 + k for k in range(1, 9)}, 10000)
+rg_case('rg_flagged_contig', rg_n, [('x', 0, 'chrX', rg_fwd([1, 2, 3, 5, 6, 7, 8])), ('frag', 1, 'ctgA', rg_fwd([1, 2, 3, 5])),
+                                    ('frag', 1, 'ctgB', rg_fwd([6, 7, 8])), ('donor', 1, 'ctg', rg_fwd([1, 2, 3, 5, 6, 7, 8]))],
+        '-r x -s frag -s donor', 'frag#1#ctgB\t0\t30000\n', {'frag#1#ctgA#0': '+1 +2 +3 +5', 'frag#1#ctgB#0': '+6 +7 +8'})
+# frag carries its own copy of 5 6 at its start; after the donor bridges its gap, frag was taken up again at
+# that first copy and 60kb was written twice.  Now only the gap is filled
+rg_n = rg_K({k: 800 + k for k in range(1, 9)}, 10000); rg_n[9] = 'N' * 1000
+rg_case('rg_target_early', rg_n, [('x', 0, 'chr', rg_fwd(range(1, 9))), ('frag', 1, 'ctg', rg_fwd([5, 6, 1, 2, 3, 4, 9, 5, 6, 7, 8])),
+                                  ('donor', 1, 'ctg', rg_fwd(range(1, 9)))],
+        '-r x -s frag -s donor', None, {'chr_hap_1': '+5 +6 +1 +2 +3 +4 +5 +6 +7 +8'})
+# frag's capped 5' end (a 6kb telomere) would be trimmed off by the donor's run from its own end: the
+# telomere guard only looked at trims of 20kb or more
+rg_n = {1: 'CCCTAA' * 1000, 2: rg_rnd(902, 3000), 3: rg_rnd(903, 3000), 4: rg_rnd(904, 3000), 5: rg_rnd(905, 100000),
+        6: rg_rnd(906, 100000), 7: rg_rnd(907, 100000), 8: 'TTAGGG' * 1001}   # (not 1000: the decoder would read it as -1)
+rg_case('rg_telomere_trim', rg_n, [('x', 0, 'chrX', rg_fwd([2, 5, 6, 7, 8])), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 5, 6, 7, 8])),
+                                   ('donor', 1, 'ctg', rg_fwd([2, 4, 5, 6, 7, 8]))],
+        '-r x -s frag -s donor', 'frag#1#ctg\t9000\t12000\n', {'frag#1#ctg#0': '+1 +2 +3 +5 +6 +7 +8'},
+        ["tip graft would take off the telomere at the target's end"])
+# a scaffold join through a donor bridge that carries a telomere array (9): with -T it was accepted, the
+# internal-telomere check only looking at the interior's overall density
+rg_n = {20: 'CCCTAA' * 1400, 1: rg_rnd(1001, 60000), 2: rg_rnd(1002, 60000), 9: 'TTAGGG' * 1500, 5: rg_rnd(1005, 2000),
+        3: rg_rnd(1003, 60000), 4: rg_rnd(1004, 60000), 21: 'TTAGGG' * 1600}
+rg_case('rg_join_telomere', rg_n, [('x', 0, 'chrX', rg_fwd([20, 1, 2, 9, 5, 3, 4, 21])), ('frag', 1, 'ctgA', rg_fwd([20, 1, 2, 9])),
+                                   ('frag', 1, 'ctgB', rg_fwd([3, 4, 21])), ('donor', 1, 'ctg', rg_fwd([20, 1, 2, 9, 5, 3, 4, 21]))],
+        '-r x -s frag -s donor -T', None, {'frag#1#ctgA#0': '+20 +1 +2 +9', 'frag#1#ctgB#0': '+3 +4 +21'},
+        ['internal telomere in patched contig (scaffold misjoin)'])
+# a 25kb contig whose front and back telomere handoffs cross: the interval ran backwards
+rg_n = rg_K({1: 1101, 2: 1102, 3: 1103, 4: 1104, 5: 1105}, 5000); rg_n.update({10: 'CCCTAA' * 1000, 11: rg_rnd(1111, 500), 12: rg_rnd(1112, 500), 13: 'TTAGGG' * 1000})
+rg_case('rg_cross_handoff', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 6))), ('frag', 1, 'ctg', rg_fwd(range(1, 6))),
+                                   ('donor', 1, 'ctg', rg_fwd([10, 11, 4])), ('donor2', 1, 'ctg', rg_fwd([2, 12, 13]))],
+        '-r x -s frag -s donor -s donor2', None, {'frag#1#ctg#0': '+1 +2 +3 +4 +5'},
+        ["the contig is too short for both ends' telomere handoffs (they cross)"])
+# a scaffold bridge across two donors, the second sharing only the junction node with ctgB: both flanks were
+# measured against the first donor, and it passed at 100%/100%
+rg_n = rg_K({k: 1200 + k for k in range(1, 14)}, 10000); rg_n[10] = 'N' * 1000; rg_n[11] = 'N' * 1001
+rg_case('rg_two_donor_bridge', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 10))), ('frag', 1, 'ctgA', rg_fwd([1, 2, 3, 10, 5])),
+                                      ('frag', 1, 'ctgB', rg_fwd([7, 8, 9])), ('d1', 1, 'ctg', rg_fwd([1, 2, 3, 4, 5, 11, 7, 8, 9])),
+                                      ('d2', 1, 'ctg', rg_fwd([5, 6, 7, 12, 13]))],
+        '-r x -s frag -s d1 -s d2', None, {'frag#1#ctgA#0': '+1 +2 +3 +10 +5', 'frag#1#ctgB#0': '+7 +8 +9'},
+        ['foreign bridge anchoring 100.0%/0.0% < 50.0% (wrong-locus join)'])
+# --min-cover counted a 40kb fragment the patch never uses, and reverted a good telomere patch
+rg_n = {1: 'CCCTAA' * 334, 2: rg_rnd(1302, 10000), 3: rg_rnd(1303, 10000), 4: rg_rnd(1304, 10000), 5: 'TTAGGG' * 335,
+        6: rg_rnd(1306, 3000), 17: rg_rnd(1317, 40000)}
+rg_case('rg_min_cover', rg_n, [('x', 0, 'chrX', rg_fwd([1, 2, 3, 4, 5])), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 6])),
+                               ('frag', 1, 'ctg2', rg_fwd([17])), ('donor', 1, 'ctg', rg_fwd([2, 3, 4, 5]))],
+        '-r x -s frag -s donor --max-subtelomere-graft 0', None, {'chrX_hap_1': '+1 +2 +3 +4 +5', 'frag#1#ctg2#0': '+17'})
+# the reference's first node traversed in reverse: an assert aborted the whole run
+rg_n = rg_K({1: 1401, 2: 1402, 3: 1403}, 10000); rg_n[9] = 'N' * 100
+rg_case('rg_reverse_first', rg_n, [('frag', 1, 'ctg', ['-1', '+2', '+9', '+3']), ('donor', 1, 'ctg', ['-1', '+2', '+3'])],
+        '-r frag -s frag -s donor', None, {'ctg_hap_1': '-1 +2 +3'})
+# -e naming a sample with two contigs here: a failed patch aborted the run (assert) ...
+run('vg convert interior_splice.gfa > interior_splice.e.vg')
+run('panpatch interior_splice.e.vg -r x -s frag -e frag -f interior_splice.e.fa 2>/dev/null > interior_splice.e.rep && test $(grep -c "^>" interior_splice.e.hap1.fa) -eq 2')
+# ... and a telomere revert wrote only the first of them, dropping ctgB
+run('vg convert scaffold.gfa > scaffold.e.vg')
+run('panpatch scaffold.e.vg -r x -s frag -T -e frag -f scaffold.e.fa 2>/dev/null > scaffold.e.rep && test $(grep -c "^>" scaffold.e.hap1.fa) -eq 2')
+temp_files += ['interior_splice.e.vg', 'interior_splice.e.hap1.fa', 'scaffold.e.vg', 'scaffold.e.hap1.fa']
 
 temp_files += [f for f in os.listdir('.') if f.endswith('.int') or f.endswith('.rep')]
 for f in temp_files:

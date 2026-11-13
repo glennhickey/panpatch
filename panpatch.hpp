@@ -91,6 +91,9 @@ unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
 // direction: -1 backward, 0 both, 1 forward
 // unless cross_Ns, the search may not start on or pass a step it cannot use: an N in its node (an
 // assembly gap) or an --error-bed interval on its path (error_regions)
+// strict (a donor): the search stops at the first anchor it would reach that is not ahead of pos, or that it
+// traverses the opposite way to the reference (anchor_rev: the orientation the reference traverses each
+// anchor's node in), instead of passing up to `bound` anchors behind it
 pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    const unordered_map<int64_t, int64_t>& anchors,
                                                    step_handle_t step,
@@ -98,7 +101,9 @@ pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    int64_t direction,
                                                    bool cross_Ns,
                                                    int64_t bound=10000,
-                                                   const ErrorRegions* error_regions=nullptr);
+                                                   const ErrorRegions* error_regions=nullptr,
+                                                   const unordered_map<int64_t, bool>* anchor_rev=nullptr,
+                                                   bool strict=false);
 
 // thread the anchors using the paths
 // return a set of intervals that represent the patched genome
@@ -167,6 +172,17 @@ static const char* const NO_DONOR_PATCH_REASON = "no patches from other assembli
 
 // total sequence length (bp) of a path
 int64_t path_bp(const PathHandleGraph* g, path_handle_t p);
+
+// final consistency guard on a patch (after excise_bad_interior_grafts): true, with detail, if writing it
+// would put sequence in twice or out of order -- two intervals of one path covering the same bp, a target
+// contig used on both strands or out of its own order, or donor sequence covering a target contig that the
+// patch does not use (so that contig is also written through as it is).  the contig is then reverted
+bool patch_reuses_sequence(const PathHandleGraph* graph,
+                           const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                           const std::string& target_sample,
+                           const std::vector<path_handle_t>& tgt_paths,
+                           const std::unordered_set<path_handle_t>& threaded_tgt_paths,
+                           std::string& detail);
 
 // record scaffold joins (patch spanning >1 target contig) as report rows; flank-guard foreign-bridged
 // joins.  returns true (+ bridge_detail) if any foreign bridge is a wrong-locus misjoin -> revert.
