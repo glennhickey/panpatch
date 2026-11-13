@@ -15,6 +15,31 @@ using BedRegions = unordered_map<string, vector<pair<int64_t, int64_t>>>;
 // Sorted, merged intervals in reference coordinates representing excluded regions
 using ExcludedRefRegions = vector<pair<int64_t, int64_t>>;
 
+// Assembly-error intervals (--error-bed) on the paths of one graph: path -> sorted, merged [start, end)
+// offsets along the path.  A step that overlaps one cannot be used to patch: the target's flagged steps
+// are replaced by donor sequence where a donor can thread across them (and kept where none can), and a
+// donor's flagged steps never go into a patch.  Unlike masking the assemblies to N before the graph is
+// built, the flagged sequence is still aligned, so a donor that agrees with the target shares its nodes
+// and the patch differs from the target only where the donor does.
+using ErrorRegions = unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>;
+
+// Sequences no graft may replace or put in (the built-in rDNA unit, --no-patch-fasta), as (sampled, canonical) 31-mers:
+// a graft whose replaced or inserted sequence, as a whole or in any `window`-bp window, shares at least
+// `fraction` of its k-mers with them is not made.  For high-copy sequence whose k-mers any copy shares, so a
+// swap of it cannot be verified: the rDNA unit
+struct NoPatch {
+    unordered_set<uint64_t> kmers;
+    double fraction = 0.3;
+    int64_t window = 10000;
+};
+// load a (plaintext) FASTA into a NoPatch's k-mer set; returns the number of sequences read, -1 on error
+int64_t load_no_patch_fasta(const std::string& path, NoPatch& no_patch);
+// add one sequence (such as the built-in rDNA unit) to a NoPatch's k-mer set
+void add_no_patch_sequence(const std::string& seq, NoPatch& no_patch);
+// the fraction of the distinct sampled k-mers of s found in no_patch, the highest over the whole of s and its
+// no_patch->window-bp windows; -1 when s has too few to judge (or no_patch is empty)
+double no_patch_fraction(const std::string& s, const NoPatch* no_patch);
+
 // Path order.  panpatch never relies on the order in which the graph lists paths, or the steps on a
 // node: that order belongs to the graph implementation, it changes between libbdsg versions, and the
 // position overlay builds it in parallel (so it can even change with the thread count).  Paths are
@@ -51,6 +76,14 @@ unordered_map<string, vector<path_handle_t>> select_sample_covers(const PathHand
 // skips comment/header lines (starting with #, track, browser)
 BedRegions parse_bed_file(const string& bed_filename);
 
+// map --error-bed regions onto the paths of one graph.  a BED contig names a path as SAMPLE#HAP#CONTIG
+// (PanSN, as the graph names it: HAP is 0 for a haploid sample) or by its full path name; a path's
+// subrange, if it has one, shifts the coordinates.  intervals are clipped to the path
+ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed);
+
+// true if this step's node overlaps an error interval of the step's own path
+bool step_in_error(const PathHandleGraph* graph, const step_handle_t& step, const ErrorRegions& error_regions);
+
 // convert BED regions (in target assembly coordinates) to reference coordinate ranges
 // using the anchor map to map between coordinate systems
 ExcludedRefRegions bed_to_ref_regions(const PathHandleGraph* graph,
@@ -73,13 +106,21 @@ unordered_map<int64_t, int64_t> find_anchors(const PathHandleGraph* graph,
 // search along a path to the next anchor
 // the bool flag returned is true if search went backwards on path
 // direction: -1 backward, 0 both, 1 forward
+// unless cross_Ns, the search may not start on or pass a step it cannot use: an N in its node (an
+// assembly gap) or an --error-bed interval on its path (error_regions)
+// strict (a donor): the search stops at the first anchor it would reach that is not ahead of pos, or that it
+// traverses the opposite way to the reference (anchor_rev: the orientation the reference traverses each
+// anchor's node in), instead of passing up to `bound` anchors behind it
 pair<step_handle_t, bool> find_next_anchor_on_path(const PathHandleGraph* graph,
                                                    const unordered_map<int64_t, int64_t>& anchors,
                                                    step_handle_t step,
                                                    int64_t pos,
                                                    int64_t direction,
                                                    bool cross_Ns,
-                                                   int64_t bound=10000);
+                                                   int64_t bound=10000,
+                                                   const ErrorRegions* error_regions=nullptr,
+                                                   const unordered_map<int64_t, bool>* anchor_rev=nullptr,
+                                                   bool strict=false);
 
 // thread the anchors using the paths
 // return a set of intervals that represent the patched genome
@@ -92,7 +133,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> thread_intervals(const PathHan
                                                                    const unordered_map<int64_t, int64_t>& ref_anchors,
                                                                    const vector<path_handle_t>& tgt_paths,
                                                                    const vector<path_handle_t>& other_paths,
-                                                                   const ExcludedRefRegions& excluded_regions = {});
+                                                                   const ExcludedRefRegions& excluded_regions = {},
+                                                                   const ErrorRegions* error_regions = nullptr);
 
 // smooth out the threaded intervals
 vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHandleGraph* graph,
@@ -100,21 +142,26 @@ vector<tuple<step_handle_t, step_handle_t, bool>> smooth_intervals(const PathHan
 
 // extend the intervals to the telomeres where appropriate
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHandleGraph* graph,
-                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals);
+                                                                   const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                                                   const vector<path_handle_t>& tgt_paths,
+                                                                   const ErrorRegions* error_regions = nullptr);
 
 // patch a missing telomere onto a terminal end by handing off to a foreign cover that has one.
 // for each terminal end lacking a telomere, walk inward from the tip to the nearest node also
 // visited by a foreign cover, and if that cover runs outward to a real telomere and the patched
 // end would pass the -T telomere check, splice it on (replacing the target's capless tail beyond
-// the shared handoff node).
+// the shared handoff node).  a handoff replacing more than max_handoff bp of target, or grafting more
+// than max_subtelomere bp of donor sequence ahead of the donor's telomere (0: no limit), is not taken.
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const PathHandleGraph* graph,
                                                                       const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                                                       const unordered_map<string, vector<path_handle_t>>& sample_covers,
                                                                       const vector<string>& sample_names,
                                                                       double telo_threshold=0.8,
-                                                                      int64_t max_handoff=500000,
+                                                                      int64_t max_handoff=20000,
+                                                                      int64_t max_subtelomere=2000,
                                                                       bool verbose=false,
-                                                                      bool report_failures=false);
+                                                                      bool report_failures=false,
+                                                                      const ErrorRegions* error_regions=nullptr);
 
 // one row of the patch report: a candidate patch (telomere completion, gap-fill, or scaffold join),
 // with its similarity metrics and the accept/reject decision.  Accumulated in g_patch_records during a
@@ -123,7 +170,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
 struct PatchRecord {
     std::string chrom;
     int64_t hap = 0;
-    std::string type;            // "telomere" | "gap-fill" | "scaffold"
+    std::string type;            // "telomere" | "gap-fill" | "scaffold" | "passthrough"
     std::string target;          // target contig name
     int64_t target_bp = 0;
     std::string donor = ".";     // donor contig name
@@ -137,15 +184,36 @@ struct PatchRecord {
 };
 extern std::vector<PatchRecord> g_patch_records;
 
+// revert_bad_patch's reason when a contig with gaps has no patch from any donor (main reports it as a row)
+static const char* const NO_DONOR_PATCH_REASON = "no patches from other assemblies were found";
+
 // total sequence length (bp) of a path
 int64_t path_bp(const PathHandleGraph* g, path_handle_t p);
+
+// final consistency guard on a patch (after excise_bad_interior_grafts): true, with detail, if writing it
+// would put sequence in twice or out of order -- two intervals of one path covering the same bp, a target
+// contig used on both strands or out of its own order, or donor sequence covering a target contig that the
+// patch does not use (so that contig is also written through as it is).  the contig is then reverted
+bool patch_reuses_sequence(const PathHandleGraph* graph,
+                           const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                           const std::string& target_sample,
+                           const std::vector<path_handle_t>& tgt_paths,
+                           const std::unordered_set<path_handle_t>& threaded_tgt_paths,
+                           std::string& detail);
 
 // record scaffold joins (patch spanning >1 target contig) as report rows; flank-guard foreign-bridged
 // joins.  returns true (+ bridge_detail) if any foreign bridge is a wrong-locus misjoin -> revert.
 bool record_scaffolds(const PathHandleGraph* graph,
                       const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
                       const std::string& target_sample, double min_flank, int64_t flank_window,
-                      std::string& bridge_detail);
+                      std::string& bridge_detail, int64_t max_graft_pieces = 0,
+                      const NoPatch* no_patch = nullptr);
+
+// a report row for every N gap of a target contig the patch uses that is still in the output and that no
+// row already covers (no donor could be threaded across it), so a gap left as it is is never silent
+void report_unfilled_gaps(const PathHandleGraph* graph,
+                          const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                          const std::string& target_sample);
 
 // print the intervals in a bed-like format
 void print_intervals(const PathHandleGraph* graph,
@@ -166,9 +234,15 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const BedRegions& bed_regions = {},
                                                                bool patch_ends = false,
                                                                double telo_threshold = 0.8,
-                                                               int64_t max_telomere_patch = 500000,
+                                                               int64_t max_telomere_patch = 20000,
+                                                               int64_t max_subtelomere_graft = 2000,
                                                                bool verbose = false,
-                                                               bool report_telomere_failures = false);
+                                                               bool report_telomere_failures = false,
+                                                               unordered_set<path_handle_t>* threaded_tgt_paths = nullptr,
+                                                               const ErrorRegions* error_regions = nullptr,
+                                                               bool patch_gap = true,
+                                                               int64_t max_graft_pieces = 0,
+                                                               const NoPatch* no_patch = nullptr);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
@@ -181,7 +255,14 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 double min_flank,
                                 int64_t flank_window,
                                 bool patch_gap,
-                                std::unordered_map<path_handle_t, int64_t>& excised_nonN);
+                                std::unordered_map<path_handle_t, int64_t>& excised_nonN,
+                                int64_t max_size_change = 0,
+                                double min_complexity = 0.0,
+                                int64_t complexity_window = 0,
+                                int64_t complexity_min_bp = 10000,
+                                int64_t max_graft_pieces = 0,
+                                int64_t max_swap_size_change = 0,
+                                const NoPatch* no_patch = nullptr);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,
@@ -205,7 +286,7 @@ void check_intervals(const PathHandleGraph* graph,
 // validate that intervals have telomeres at both ends and no internal telomeres
 // returns true if valid, false otherwise (sets fail_reason on failure).
 // an internal telomere (scaffold misjoin) always fails; require_ends additionally demands a telomere
-// at both ends (-T) -- with require_ends=false (--patch-telomeres) missing ends are allowed.
+// at both ends (-T) -- with require_ends=false (telomere patching alone) missing ends are allowed.
 // if verbose is true, prints diagnostic messages
 bool validate_telomeres(const PathHandleGraph* graph,
                         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
@@ -214,19 +295,12 @@ bool validate_telomeres(const PathHandleGraph* graph,
                         bool verbose,
                         string& fail_reason);
 
-// log telomere information for each contig in the intervals
-// outputs to cout with # prefix showing which contigs have telomeres and where
-void log_contig_telomeres(const PathHandleGraph* graph,
-                          const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
-                          double threshold=0.8);
-
-// Print the "#Contig" cap-status line for one named sequence.  Shared by log_contig_telomeres (which
-// measures the patched graph intervals) and telomere_report_fasta (which measures a finished FASTA), so
-// telomere status is only ever decided in one place.
+// Print the "#Contig" cap-status line for one named sequence.  Shared by main (one line per output
+// record, measured on the sequence written to the FASTA) and telomere_report_fasta (which measures a
+// finished FASTA), so telomere status is only ever decided in one place.
 void print_contig_telomere_line(const std::string& name, const std::string& sequence, double threshold);
 
 // Scan a plaintext FASTA and print a "#Contig" cap-status line per record, then return 0 (non-zero on
 // a read error).  This is how a caller measures telomere completeness of a *finished* assembly -- in
-// particular one that was post-processed after panpatch ran (e.g. cactus-panpatch reverting masked
-// regions to their original sequence), which the in-graph measurement cannot see.
+// particular one that was post-processed after panpatch ran, which the in-graph measurement cannot see.
 int telomere_report_fasta(const std::string& fasta_path, double threshold);
