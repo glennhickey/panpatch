@@ -23,6 +23,23 @@ using ExcludedRefRegions = vector<pair<int64_t, int64_t>>;
 // and the patch differs from the target only where the donor does.
 using ErrorRegions = unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>;
 
+// Sequences no graft may replace or put in (the built-in rDNA unit, --no-patch-fasta), as (sampled, canonical) 31-mers:
+// a graft whose replaced or inserted sequence, as a whole or in any `window`-bp window, shares at least
+// `fraction` of its k-mers with them is not made.  For high-copy sequence whose k-mers any copy shares, so a
+// swap of it cannot be verified: the rDNA unit
+struct NoPatch {
+    unordered_set<uint64_t> kmers;
+    double fraction = 0.3;
+    int64_t window = 10000;
+};
+// load a (plaintext) FASTA into a NoPatch's k-mer set; returns the number of sequences read, -1 on error
+int64_t load_no_patch_fasta(const std::string& path, NoPatch& no_patch);
+// add one sequence (such as the built-in rDNA unit) to a NoPatch's k-mer set
+void add_no_patch_sequence(const std::string& seq, NoPatch& no_patch);
+// the fraction of the distinct sampled k-mers of s found in no_patch, the highest over the whole of s and its
+// no_patch->window-bp windows; -1 when s has too few to judge (or no_patch is empty)
+double no_patch_fraction(const std::string& s, const NoPatch* no_patch);
+
 // Path order.  panpatch never relies on the order in which the graph lists paths, or the steps on a
 // node: that order belongs to the graph implementation, it changes between libbdsg versions, and the
 // position overlay builds it in parallel (so it can even change with the thread count).  Paths are
@@ -189,7 +206,8 @@ bool patch_reuses_sequence(const PathHandleGraph* graph,
 bool record_scaffolds(const PathHandleGraph* graph,
                       const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
                       const std::string& target_sample, double min_flank, int64_t flank_window,
-                      std::string& bridge_detail, int64_t max_graft_pieces = 0);
+                      std::string& bridge_detail, int64_t max_graft_pieces = 0,
+                      const NoPatch* no_patch = nullptr);
 
 // a report row for every N gap of a target contig the patch uses that is still in the output and that no
 // row already covers (no donor could be threaded across it), so a gap left as it is is never silent
@@ -223,7 +241,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                unordered_set<path_handle_t>* threaded_tgt_paths = nullptr,
                                                                const ErrorRegions* error_regions = nullptr,
                                                                bool patch_gap = true,
-                                                               int64_t max_graft_pieces = 0);
+                                                               int64_t max_graft_pieces = 0,
+                                                               const NoPatch* no_patch = nullptr);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
@@ -242,7 +261,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 int64_t complexity_window = 0,
                                 int64_t complexity_min_bp = 10000,
                                 int64_t max_graft_pieces = 0,
-                                int64_t max_swap_size_change = 0);
+                                int64_t max_swap_size_change = 0,
+                                const NoPatch* no_patch = nullptr);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,

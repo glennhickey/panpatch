@@ -1053,6 +1053,87 @@ static void sample_kmers(const string& s, unordered_set<uint64_t>& out) {
     }
 }
 
+// the (start position, hash) of each k-mer sample_kmers would keep from s, in order along s
+static vector<pair<int64_t, uint64_t>> sampled_kmer_positions(const string& s) {
+    const int K = 31;
+    const uint64_t SAMPLE_MASK = 0xF;   // the same ~1/16 subsample as sample_kmers
+    vector<pair<int64_t, uint64_t>> sampled;
+    uint64_t fwd = 0, rev = 0, mask = (1ULL << (2 * K)) - 1;
+    int valid = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        int c;
+        switch (s[i]) {
+            case 'A': case 'a': c = 0; break;
+            case 'C': case 'c': c = 1; break;
+            case 'G': case 'g': c = 2; break;
+            case 'T': case 't': c = 3; break;
+            default: c = -1;
+        }
+        if (c < 0) { valid = 0; fwd = rev = 0; continue; }
+        fwd = ((fwd << 2) | (uint64_t)c) & mask;
+        rev = (rev >> 2) | ((uint64_t)(3 - c) << (2 * (K - 1)));
+        if (++valid >= K) {
+            uint64_t h = hash64(min(fwd, rev));
+            if ((h & SAMPLE_MASK) == 0) sampled.push_back(make_pair((int64_t)i + 1 - K, h));
+        }
+    }
+    return sampled;
+}
+
+int64_t load_no_patch_fasta(const string& path, NoPatch& no_patch) {
+    ifstream in(path);
+    if (!in) return -1;
+    string line, seq;
+    int64_t n = 0;
+    auto flush = [&]() { if (!seq.empty()) { sample_kmers(seq, no_patch.kmers); seq.clear(); } };
+    while (getline(in, line)) {
+        if (!line.empty() && line[0] == '>') { flush(); ++n; continue; }
+        // bases only: a '\r' (a CRLF file) or a space would otherwise break the k-mers at every line
+        for (char c : line) if (isalpha((unsigned char)c)) seq += (char)toupper(c);
+    }
+    flush();
+    return n;
+}
+
+void add_no_patch_sequence(const string& seq, NoPatch& no_patch) {
+    string up(seq);
+    for (char& c : up) c = (char)toupper(c);
+    sample_kmers(up, no_patch.kmers);
+}
+
+double no_patch_fraction(const string& s, const NoPatch* no_patch) {
+    const int K = 31;
+    // a sequence (or window) with fewer distinct sampled k-mers than this (~250 bp) is too short to judge
+    const size_t MIN_SAMPLED = 16;
+    if (!no_patch || no_patch->kmers.empty()) return -1.0;
+    vector<pair<int64_t, uint64_t>> sampled = sampled_kmer_positions(s);
+    // the share of the distinct k-mers among sampled[a, b) that are no-patch k-mers
+    auto fraction = [&](size_t a, size_t b) -> double {
+        unordered_set<uint64_t> seen;
+        size_t hit = 0;
+        for (size_t j = a; j < b; ++j) {
+            if (seen.insert(sampled[j].second).second && no_patch->kmers.count(sampled[j].second)) ++hit;
+        }
+        return seen.size() < MIN_SAMPLED ? -1.0 : (double)hit / (double)seen.size();
+    };
+    double highest = fraction(0, sampled.size());
+    // and in each window (overlapping by half; the last aligned to the end of s), where a unit inside a
+    // longer graft is not diluted by the sequence around it
+    int64_t W = no_patch->window;
+    if (W > 0 && (int64_t)s.size() > W) {
+        size_t first = 0, last = 0;
+        for (int64_t a = 0; a < (int64_t)s.size(); a += max((int64_t)1, W / 2)) {
+            int64_t start = min(a, (int64_t)s.size() - W);
+            while (first < sampled.size() && sampled[first].first < start) ++first;
+            last = max(last, first);
+            while (last < sampled.size() && sampled[last].first + K <= start + W) ++last;
+            highest = max(highest, fraction(first, last));
+            if (start + W >= (int64_t)s.size()) break;
+        }
+    }
+    return highest;
+}
+
 // fraction of the (sampled) canonical 31-mer positions in s that are distinct: near 1 for unique sequence,
 // near 0 for a tandem array (an alpha or HSat satellite repeats a few k-mers over and over), so a low value
 // means k-mer recovery cannot tell a faithful copy from any other array of the same family.  -1 if s has no
@@ -1094,28 +1175,8 @@ static double kmer_distinct_fraction(const string& s) {
 static double min_window_distinct_fraction(const string& s, int64_t window) {
     if (window <= 0 || (int64_t)s.size() <= window) return -1.0;
     const int K = 31;
-    const uint64_t SAMPLE_MASK = 0xF;   // the same ~1/16 subsample as kmer_distinct_fraction
     const int64_t MIN_SAMPLED = 100;
-    vector<pair<int64_t, uint64_t>> sampled;   // (start position, hash) of each sampled k-mer, in order
-    uint64_t fwd = 0, rev = 0, mask = (1ULL << (2 * K)) - 1;
-    int valid = 0;
-    for (size_t i = 0; i < s.size(); ++i) {
-        int c;
-        switch (s[i]) {
-            case 'A': case 'a': c = 0; break;
-            case 'C': case 'c': c = 1; break;
-            case 'G': case 'g': c = 2; break;
-            case 'T': case 't': c = 3; break;
-            default: c = -1;
-        }
-        if (c < 0) { valid = 0; fwd = rev = 0; continue; }
-        fwd = ((fwd << 2) | (uint64_t)c) & mask;
-        rev = (rev >> 2) | ((uint64_t)(3 - c) << (2 * (K - 1)));
-        if (++valid >= K) {
-            uint64_t h = hash64(min(fwd, rev));
-            if ((h & SAMPLE_MASK) == 0) sampled.push_back(make_pair((int64_t)i + 1 - K, h));
-        }
-    }
+    vector<pair<int64_t, uint64_t>> sampled = sampled_kmer_positions(s);
     double lowest = -1.0;
     int64_t step = max((int64_t)1, window / 2);
     size_t first = 0;
@@ -1696,7 +1757,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                unordered_set<path_handle_t>* threaded_tgt_paths,
                                                                const ErrorRegions* error_regions,
                                                                bool patch_gap,
-                                                               int64_t max_graft_pieces) {
+                                                               int64_t max_graft_pieces,
+                                                               const NoPatch* no_patch) {
 
     size_t records_at_entry = g_patch_records.size();   // this call's report rows start here
 
@@ -1846,10 +1908,29 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                 at_front ? extended_intervals.begin() : extended_intervals.begin() + tk + 1,
                 at_front ? extended_intervals.begin() + tk : extended_intervals.end());
             step_handle_t junction = at_front ? get<1>(tip.back()) : get<0>(tip.front());
-            int64_t added = (int64_t)intervals_to_sequence(graph, tip).size()
-                - (int64_t)graph->get_length(graph->get_handle_of_step(junction));
+            string tip_seq = intervals_to_sequence(graph, tip);
+            int64_t added = (int64_t)tip_seq.size() - (int64_t)graph->get_length(graph->get_handle_of_step(junction));
+            // the target's own end the graft would replace
+            string tail;
+            if (replaced > 0) {
+                int64_t off = 0;
+                graph->for_each_step_in_path(P, [&](step_handle_t st) {
+                    int64_t l = graph->get_length(graph->get_handle_of_step(st));
+                    int64_t a = max(off, t_start), b = min(off + l, t_end);
+                    if (a < b) tail += graph->get_sequence(graph->get_handle_of_step(st)).substr(a - off, b - a);
+                    off += l;
+                    return off < t_end;
+                });
+            }
+            double np_added = no_patch_fraction(tip_seq, no_patch), np_replaced = no_patch_fraction(tail, no_patch);
+            double np = max(np_added, np_replaced);
             string why;
-            if (!patch_gap) {
+            if (np >= 0 && np >= no_patch->fraction) {
+                ostringstream ws; ws << fixed << setprecision(1) << (np_replaced > np_added ? "replaces" : "adds")
+                                     << " sequence that shares " << 100.0 * np
+                                     << "% of its k-mers with the no-patch sequences (rDNA, --no-patch-fasta)";
+                why = ws.str();
+            } else if (!patch_gap) {
                 // a tip graft is gap filling: --patch-types without gap excludes it, as excise does interior ones
                 why = "excluded by --patch-types (gap filling is off)";
             } else if (max_graft_pieces > 0 && (int64_t)tip.size() > max_graft_pieces) {
@@ -1864,15 +1945,6 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                     " beyond it";
             } else if (replaced > 0) {
                 // the target's own end it would replace (<= -M bp): does it carry a telomere?
-                string tail;
-                int64_t off = 0;
-                graph->for_each_step_in_path(P, [&](step_handle_t st) {
-                    int64_t l = graph->get_length(graph->get_handle_of_step(st));
-                    int64_t a = max(off, t_start), b = min(off + l, t_end);
-                    if (a < b) tail += graph->get_sequence(graph->get_handle_of_step(st)).substr(a - off, b - a);
-                    off += l;
-                    return off < t_end;
-                });
                 if (seq_has_telomere(tail, 0, (int64_t)tail.size(), true, !target_start_side, telo_threshold)) {
                     why = "would take off the telomere at the target's end";
                 }
@@ -2335,7 +2407,7 @@ static double flank_fraction(const PathHandleGraph* g, step_handle_t start, bool
 bool record_scaffolds(const PathHandleGraph* graph,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                       const string& target_sample, double min_flank, int64_t flank_window,
-                      string& bridge_detail, int64_t max_graft_pieces) {
+                      string& bridge_detail, int64_t max_graft_pieces, const NoPatch* no_patch) {
     bool bad = false;
     unordered_set<path_handle_t> seen;   // target contigs already recorded (so [A|B|A] splices give one row)
     int prev_tgt = -1;       // index of the most recent target-sample interval
@@ -2374,6 +2446,18 @@ bool record_scaffolds(const PathHandleGraph* graph,
                             " pieces of donor sequence, over --max-graft-pieces " + to_string(max_graft_pieces);
                         bridge_detail = "contig " + pr.target + " scaffolded to " + graph->get_path_name(p) + ": " + pr.reason;
                         bad = true;
+                    } else if (no_patch && !no_patch->kmers.empty()) {
+                        // a bridge of sequence --no-patch-fasta names, as for an interior graft
+                        vector<tuple<step_handle_t, step_handle_t, bool>> bridge(intervals.begin() + foreign_start, intervals.begin() + i);
+                        double np = no_patch_fraction(intervals_to_sequence(graph, bridge), no_patch);
+                        if (np >= 0 && np >= no_patch->fraction) {
+                            ostringstream rs; rs << fixed << setprecision(1) << "foreign bridge shares " << 100.0 * np
+                                                 << "% of its k-mers with the no-patch sequences (rDNA, --no-patch-fasta)";
+                            pr.accepted = false;
+                            pr.reason = rs.str();
+                            bridge_detail = "contig " + pr.target + " scaffolded to " + graph->get_path_name(p) + ": " + pr.reason;
+                            bad = true;
+                        }
                     }
                 } else {   // adjacent target-to-target scaffold (no foreign bridge)
                     pr.donor = graph->get_path_name(p); pr.donor_bp = path_bp(graph, p);
@@ -2406,7 +2490,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 bool patch_gap,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN,
                                 int64_t max_size_change, double min_complexity, int64_t complexity_window,
-                                int64_t complexity_min_bp, int64_t max_graft_pieces, int64_t max_swap_size_change) {
+                                int64_t complexity_min_bp, int64_t max_graft_pieces, int64_t max_swap_size_change,
+                                const NoPatch* no_patch) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -2538,9 +2623,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // piece, and that neither test above can vouch for: each piece is anchored where it switches
             int64_t n_pieces = j - i - 1;
             bool chimeric = max_graft_pieces > 0 && n_pieces > max_graft_pieces;
-            bool unverifiable = !bad && (too_big || swap_too_big || low_cx || chimeric);
-            if (unverifiable) bad = true;
-            // a donor run that spells exactly the target sequence it replaces changes nothing.  in a graph
+            // a donor run that spells exactly the target sequence it replaces changes nothing (judged before the
+            // guards below, which would otherwise count a no-op as a rejected patch).  in a graph
             // built from unmasked assemblies, a donor that agrees with the target across an --error-bed
             // interval threads the target's own nodes there: drop it, so the report counts only patches
             // that change the assembly
@@ -2555,7 +2639,13 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                          [&](char a, char b) { return toupper(a) == comp(b); })
                  : equal(removed.begin(), removed.end(), inserted.begin(),
                          [](char a, char b) { return toupper(a) == toupper(b); }));
-            if (same_seq) bad = true;
+            // no-patch sequence (the rDNA unit, --no-patch-fasta): high-copy sequence whose k-mers any copy shares,
+            // so k-mer recovery passes whichever copy is swapped in
+            double np_removed = no_patch_fraction(removed, no_patch), np_inserted = no_patch_fraction(inserted, no_patch);
+            bool no_patch_hit = (np_removed >= 0 && np_removed >= no_patch->fraction) ||
+                                (np_inserted >= 0 && np_inserted >= no_patch->fraction);
+            bool unverifiable = !bad && !same_seq && (no_patch_hit || too_big || swap_too_big || low_cx || chimeric);
+            if (unverifiable || same_seq) bad = true;
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
             // from the top after every excision, so only the final settled pass's kept grafts should be
@@ -2573,6 +2663,9 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 ostringstream rs; rs << fixed << setprecision(1);
                 if (!patch_gap)    rs << "gap-fill excluded by --patch-types";
                 else if (same_seq) rs << "donor sequence is identical to the target's: nothing to patch";
+                else if (unverifiable && no_patch_hit) rs << "the " << (np_removed >= np_inserted ? "replaced" : "inserted")
+                                      << " sequence shares " << 100.0 * max(np_removed, np_inserted)
+                                      << "% of its k-mers with the no-patch sequences (rDNA, --no-patch-fasta) (unverifiable)";
                 else if (unverifiable && chimeric) rs << "spliced from " << n_pieces << " pieces of donor sequence, over --max-graft-pieces "
                                       << max_graft_pieces << " (no donor has it in one piece) (unverifiable)";
                 else if (unverifiable && too_big)  rs << "changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change

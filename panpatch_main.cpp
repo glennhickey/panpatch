@@ -19,6 +19,7 @@
 #include "bdsg/hash_graph.hpp"
 #include "bdsg/overlays/overlay_helper.hpp"
 #include "panpatch.hpp"
+#include "rdna.hpp"
 
 //#define debug
 
@@ -108,6 +109,15 @@ void help(char** argv) {
        << "        --max-swap-size-change N  Excise a swap (a graft over sequence with no N gap, or an insertion) that" << endl
        << "                                 makes its contig more than N bp longer or shorter: a copy-number change k-mer" << endl
        << "                                 recovery cannot check.  Gap fills are held to --max-graft-size-change only.  0 disables [10000]" << endl
+       << "        --no-patch-fasta FILE    More sequences no graft may replace or put in, besides the built-in rDNA" << endl
+       << "                                 unit.  A graft whose replaced or inserted sequence, as a whole or in any 10kb" << endl
+       << "                                 window, shares >= --no-patch-kmer-fraction of its (distinct, sampled) k-mers" << endl
+       << "                                 with them is not made: an interior graft is excised, a tip graft dropped (the" << endl
+       << "                                 target keeps its own end), and a scaffold bridge's scaffold reverted.  Telomere" << endl
+       << "                                 grafts are not checked" << endl
+       << "        --no-patch-kmer-fraction F  [0.3]" << endl
+       << "        --patch-rdna             Let grafts take rDNA: the human rDNA unit (KY962518.1, built in) is otherwise" << endl
+       << "                                 a no-patch sequence, its near-identical copies being impossible to verify" << endl
        << "        --max-graft-pieces N     Excise a graft (interior, tip or scaffold bridge) spliced from more than N" << endl
        << "                                 pieces of donor sequence: two donor contigs, or one on both strands or out of" << endl
        << "                                 its order, which no donor has in one piece.  0 disables [1]" << endl
@@ -147,6 +157,9 @@ int main(int argc, char** argv) {
     int64_t graft_complexity_min_bp = 2000;
     int64_t max_graft_pieces = 1;
     int64_t max_swap_size_change = 10000;
+    string no_patch_fasta;
+    double no_patch_kmer_fraction = 0.3;
+    bool patch_rdna = false;
     optind = 1;
     while (true) {
 
@@ -179,6 +192,9 @@ int main(int argc, char** argv) {
             {"graft-complexity-min-bp", required_argument, 0, 1015},
             {"max-graft-pieces", required_argument, 0, 1016},
             {"max-swap-size-change", required_argument, 0, 1017},
+            {"no-patch-fasta", required_argument, 0, 1018},
+            {"no-patch-kmer-fraction", required_argument, 0, 1019},
+            {"patch-rdna", no_argument, 0, 1020},
             {0, 0, 0, 0}
         };
 
@@ -299,6 +315,15 @@ int main(int argc, char** argv) {
         case 1017:
             max_swap_size_change = strtoll(optarg, nullptr, 10);
             break;
+        case 1018:
+            no_patch_fasta = optarg;
+            break;
+        case 1019:
+            no_patch_kmer_fraction = atof(optarg);
+            break;
+        case 1020:
+            patch_rdna = true;
+            break;
         case 1007:
             out_bed_filename = optarg;
             break;
@@ -358,6 +383,31 @@ int main(int argc, char** argv) {
     if (graft_complexity_min_bp < 0) { cerr << "[panpatch] error: --graft-complexity-min-bp must be >= 0" << endl; return 1; }
     if (max_graft_pieces < 0) { cerr << "[panpatch] error: --max-graft-pieces must be >= 0" << endl; return 1; }
     if (max_swap_size_change < 0) { cerr << "[panpatch] error: --max-swap-size-change must be >= 0" << endl; return 1; }
+    if (!(no_patch_kmer_fraction > 0 && no_patch_kmer_fraction <= 1)) { cerr << "[panpatch] error: --no-patch-kmer-fraction must be in (0,1]" << endl; return 1; }
+    NoPatch no_patch;
+    no_patch.fraction = no_patch_kmer_fraction;
+    if (!patch_rdna) {
+        add_no_patch_sequence(RDNA_UNIT_KY962518_1, no_patch);
+    }
+    if (!no_patch_fasta.empty()) {
+        NoPatch more;
+        int64_t n = load_no_patch_fasta(no_patch_fasta, more);
+        if (n < 0) {
+            cerr << "[panpatch] error: cannot open --no-patch-fasta " << no_patch_fasta << endl;
+            return 1;
+        }
+        if (more.kmers.empty()) {
+            cerr << "[panpatch] error: no sequence (FASTA record of at least 31 bases) in --no-patch-fasta " << no_patch_fasta << endl;
+            return 1;
+        }
+        no_patch.kmers.insert(more.kmers.begin(), more.kmers.end());
+    }
+    if (progress && !no_patch.kmers.empty()) {
+        cerr << "[panpatch]: " << no_patch.kmers.size() << " sampled k-mers of no-patch sequence ("
+             << (patch_rdna ? "" : "the rDNA unit") << (!patch_rdna && !no_patch_fasta.empty() ? ", " : "")
+             << no_patch_fasta << ")" << endl;
+    }
+    const NoPatch* no_patch_p = no_patch.kmers.empty() ? nullptr : &no_patch;
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
     if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
     // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
@@ -599,7 +649,7 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
             patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, progress, require_telomeres,
-            &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces);
+            &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces, no_patch_p);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -609,7 +659,7 @@ int main(int argc, char** argv) {
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, patch_gap, excised_nonN,
                                    max_graft_size_change, min_graft_complexity, graft_complexity_window,
-                                   graft_complexity_min_bp, max_graft_pieces, max_swap_size_change);
+                                   graft_complexity_min_bp, max_graft_pieces, max_swap_size_change, no_patch_p);
 
         // final consistency guard: a patch that would write any sequence twice or out of order (see
         // patch_reuses_sequence) reverts the contig, whatever else passed
@@ -621,7 +671,7 @@ int main(int argc, char** argv) {
         // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.
         string bridge_detail;
         bool bad_bridge = record_scaffolds(graph, patched_intervals, sample_names[0], min_flank, flank_window, bridge_detail,
-                                           max_graft_pieces);
+                                           max_graft_pieces, no_patch_p);
 
         // Check telomere validation.  -T requires a telomere at both ends (and no internal one); telomere
         // patching alone (on by default) only rejects an internal-telomere scaffold misjoin (missing ends are kept).

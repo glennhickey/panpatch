@@ -120,6 +120,9 @@ Patch checks (see [Why a patch is rejected](#why-a-patch-is-rejected)):
 | `--graft-complexity-window N` | window (bp) in which `--min-graft-complexity` is also measured, so a satellite array inside a larger graft is not diluted (0: whole graft only) | 10000 |
 | `--graft-complexity-min-bp N` | apply `--min-graft-complexity` only when at least this many non-N bp are replaced or inserted | 2000 |
 | `--max-swap-size-change N` | excise a swap (a graft over sequence with no `N` gap, or an insertion) that changes its contig's length by more than N; gap fills are held to `--max-graft-size-change` only (0 disables) | 10000 |
+| `--no-patch-fasta FILE` | more sequences no graft may replace or put in, besides the built-in rDNA unit (see below) | |
+| `--no-patch-kmer-fraction F` | the share of a graft's k-mers (over all of it, or in any 10 kb window) in the no-patch sequences at which it is not made | 0.3 |
+| `--patch-rdna` | let grafts take rDNA (the built-in human rDNA unit is otherwise a no-patch sequence) | off |
 | `--max-graft-pieces N` | excise a graft (interior, tip, or scaffold bridge) spliced from more than N pieces of donor sequence (0 disables) | 1 |
 
 ## The report
@@ -184,7 +187,8 @@ Where the target cannot reach one of its ends (an `N` gap or a flagged region ne
 - it may replace at most `--max-telomere-patch` bp of the target's end;
 - it may add at most `--max-subtelomere-graft` bp more than it replaces;
 - it may not take off a telomere the target has;
-- it must be one piece of donor sequence (`--max-graft-pieces`).
+- it must be one piece of donor sequence (`--max-graft-pieces`);
+- neither the donor sequence it adds nor the target end it replaces may be rDNA, or other no-patch sequence.
 
 One that fails is dropped and the target keeps its own end. The donor's end is taken only up to its first `N` or `--error-bed` interval, and no telomere graft is made on top of it. Tip grafts are gap filling: they are `gap-fill` rows in the report, and `--patch-types telomere` leaves them out.
 
@@ -224,9 +228,10 @@ An interior graft, a donor run between two pieces of the same target contig, is 
 - **A misjoin by locus** — it replaces less than that (an N-gap fill, say) and its donor shares < `--min-flank` % of the target's flank, within `--flank-window`, on either side.
 - **Unverifiable by size** — it changes the contig's length by more than `--max-graft-size-change` (a satellite array or rDNA gap swapped for the donor's).
 - **Swap changing the length** — a graft over sequence with no `N` gap (or a pure insertion) that changes the contig's length by more than `--max-swap-size-change`: a copy-number change in an array or a tandem duplication, which k-mer recovery cannot check. An `N` gap's length is only a placeholder, so gap fills are not held to it.
+- **rDNA, or other no-patch sequence** — the replaced or inserted sequence, over all of it or in any 10 kb window, shares at least `--no-patch-kmer-fraction` of its distinct (sampled) k-mers with the no-patch sequences: the human rDNA unit (GenBank KY962518.1, built into panpatch; `--patch-rdna` turns it off) and any `--no-patch-fasta`. rDNA units are near-identical, so any copy shares their k-mers and k-mer recovery passes whichever copy is swapped in, and a unit (about 45 kb) is too long for the windowed complexity test to see it repeat. The windows keep a unit inside a longer graft from being diluted by the sequence around it. Tip grafts are held to it on both sides, and a scaffold bridge that fails it reverts the scaffold. Telomere grafts are not checked: within their limits (`-M`, `--max-subtelomere-graft`) one cannot reach from a telomere to the rDNA array. On the HPRC pilot, with error BEDs that leave satellites in, a prototype of this test (over whole grafts) caught all 77 rDNA swaps at 30%, and only one other swap among 659.
 - **Spliced from several donor pieces** — the graft is more than `--max-graft-pieces` pieces of donor sequence: pieces of two donor contigs, or of one contig on both strands or out of its order. Each piece is anchored where it switches, so the tests above can pass, but the graft spells sequence that no donor has in one piece. On the HPRC pilot such grafts were the largest length changes in a recipe's swaps (+44 kb, +27 kb, −19 kb, +13 kb), in pericentromeric segmental duplications. A scaffold bridge of several pieces reverts the scaffold.
 - **Unverifiable by content** — it replaces or inserts ≥ `--graft-complexity-min-bp` of low-complexity sequence: a distinct k-mer fraction < `--min-graft-complexity` over all of it, or in any `--graft-complexity-window`, so an array inside a larger graft is caught. Any tandem array of the same satellite family shares its k-mers, so k-mer recovery cannot tell a faithful copy from a different one.
-- **Identical** — the donor spells exactly the sequence it replaces: `nothing to patch`.
+- **Identical** — the donor spells exactly the sequence it replaces: `nothing to patch`. This is judged before the size, no-patch, piece and complexity tests, so a no-op is not counted as a rejected patch.
 - **Not asked for** — gap filling is turned off by `--patch-types`.
 
 At a contig end:
