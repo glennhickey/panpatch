@@ -90,9 +90,11 @@ BedRegions parse_bed_file(const string& bed_filename);
 // target_sample it is dropped, however far in it runs, leaving the end to telomere patching.  on a donor it is
 // kept, but left out of telomere_regions (if given) for a graft that runs to that end: telomere patching takes
 // only a donor's telomere-capped end, and little ahead of the telomere.  a donor interval that runs from end to
-// end (the whole contig is flagged) is kept for every patch
+// end (the whole contig is flagged) is kept for every patch.  a target interval longer than max_target_len bp
+// (0: none is) is dropped too: a QC call that long says only that something is wrong somewhere in it
 ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed, int64_t end_slop,
-                                const string& target_sample, TelomereErrorRegions* telomere_regions = nullptr);
+                                int64_t max_target_len, const string& target_sample,
+                                TelomereErrorRegions* telomere_regions = nullptr);
 
 // true if this step's node overlaps an error interval of the step's own path
 bool step_in_error(const PathHandleGraph* graph, const step_handle_t& step, const ErrorRegions& error_regions);

@@ -69,7 +69,7 @@ static int64_t step_offset(const PathHandleGraph* graph, const step_handle_t& st
 }
 
 ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed, int64_t end_slop,
-                                const string& target_sample, TelomereErrorRegions* telomere_regions) {
+                                int64_t max_target_len, const string& target_sample, TelomereErrorRegions* telomere_regions) {
     ErrorRegions regions;
     if (telomere_regions) { telomere_regions->to_start.clear(); telomere_regions->to_end.clear(); }
     if (error_bed.empty()) return regions;
@@ -112,6 +112,10 @@ ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& 
             bool at_start = end_slop > 0 && iv.first <= end_slop;
             bool at_end = end_slop > 0 && whole && iv.second >= len - end_slop;
             if ((at_start || at_end) && target) continue;
+            // so is a target interval longer than max_target_len: a QC call that long only says that something is
+            // wrong somewhere in it, and a swap that size cannot be verified (a donor of the same haplotype passes
+            // every test while it changes bases scattered over megabases)
+            if (target && max_target_len > 0 && iv.second - iv.first > max_target_len) continue;
             int64_t s = max((int64_t)0, iv.first - offset), e = min(len, iv.second - offset);
             if (s >= e) continue;
             ivs.push_back(make_pair(s, e));

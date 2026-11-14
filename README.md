@@ -95,6 +95,7 @@ What to patch:
 | `-T, --require-telomeres` | require a telomere at both ends, else revert (see [Telomeres](#telomeres)); cannot be combined with a `--patch-types` that leaves out `telomere` | off |
 | `--error-bed FILE` | assembly-error intervals on any input assembly, contigs named `SAMPLE#HAP#CONTIG` (see [Error regions](#error-regions)) | |
 | `--error-bed-end-slop N` | an `--error-bed` interval within N bp of either end of its contig is a contig-end flag: ignored on the target, and on a donor by a telomere graft from that end (see [Error regions](#error-regions); 0 keeps them all) | 1000 |
+| `--error-bed-max-len N` | ignore a target `--error-bed` interval longer than N bp, after joining intervals that touch or overlap; donor intervals are kept however long (0 keeps them all) | 1000000 |
 | `-b, --exclude-bed FILE` | target regions to leave untouched (see [Excluding regions](#excluding-regions)) | |
 | `-w, --window N` | window size (bp) for the identity used to match donor haplotypes to the target's | 1000 |
 
@@ -205,6 +206,7 @@ The graph must be built from the assemblies as they are, not with the flagged re
   - On the target, a contig-end flag is ignored, however far in it runs: kept, it would make the end a [tip graft](#tip-grafts). The end is left to [telomere patching](#telomeres) and its limits instead.
   - On a donor, a contig-end flag is ignored only by a telomere graft from that end, which takes just the donor's telomere and at most `--max-subtelomere-graft` ahead of it. Every other patch respects it. A donor flagged from end to end stays flagged, and with `--max-subtelomere-graft 0` (no limit) telomere grafts respect every donor flag.
   - Where the graph holds only a piece of a contig, only the contig's start can count as an end. `--error-bed-end-slop 0` keeps every interval.
+- **Long intervals**: a target interval longer than `--error-bed-max-len` (1 Mb), after joining, is ignored. A QC call that long only says that something is wrong somewhere in it, and replacing all of it cannot be verified: a donor of the same haplotype passes every test while it changes bases scattered over megabases. On the HPRC pilot, one error-class interval in the QC consensus ran 34.9 Mb (HG00350 hap1 chr5). Only 8 kb at its edge was flagged by two tools; the rest was one tool's misjoin call. A donor of the same haplotype then replaced 23.4 Mb of it, differing at 145 bases and in no structural way. A donor's intervals are kept, however long.
 - **On the target**, a flagged region is replaced where a donor can thread across it, and kept where none can. The target takes over again at the last node it shares with the donor, so the swap ends with the flagged region.
 - **On a donor**, flagged sequence never goes into a patch: not in a gap fill or scaffold bridge, and not in a telomere or tip graft (except for a contig-end flag, which a telomere graft from that end ignores).
 - A flag is on a path, not a node: where the target's flagged sequence is aligned to a donor's unflagged copy, the donor's can be used.

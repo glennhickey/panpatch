@@ -949,6 +949,21 @@ rg_case('rg_near_identical_34', rg_n, rg_w, '-r frag -s frag -s donor --min-swap
 rg_n[7] = ''.join({'A': 'C', 'C': 'G', 'G': 'T', 'T': 'A'}.get(c, c) if i % 90 == 45 else c for i, c in enumerate(rg_n[3]))
 rg_case('rg_swap_change', rg_n, [('frag', 1, 'ctg', rg_fwd([1, 2, 3, 4, 5])), ('donor', 1, 'ctg', rg_fwd([1, 2, 7, 4, 5]))],
         '-r frag -s frag -s donor', 'frag#1#ctg\t20000\t30000\n', {'ctg_hap_1': '+1 +2 +7 +4 +5'})
+# --error-bed-max-len: a target interval longer than it is ignored, as a QC call that long only says that something is
+# wrong somewhere in it.  That swap's 10kb flag goes with a limit of 9999 (also when split over two lines, which are
+# joined first) and stays with 10000.  A donor's flag is kept however long: a 10kb one over the donor's 7 still
+# blocks the swap for a 4kb flag on frag's 3, which goes in without it
+rg_w = [('frag', 1, 'ctg', rg_fwd([1, 2, 3, 4, 5])), ('donor', 1, 'ctg', rg_fwd([1, 2, 7, 4, 5]))]
+rg_case('rg_long_flag', rg_n, rg_w, '-r frag -s frag -s donor --error-bed-max-len 9999', 'frag#1#ctg\t20000\t30000\n',
+        {'frag#1#ctg#0': '+1 +2 +3 +4 +5'})
+rg_case('rg_long_flag_split', rg_n, rg_w, '-r frag -s frag -s donor --error-bed-max-len 9999',
+        'frag#1#ctg\t20000\t25000\nfrag#1#ctg\t25000\t30000\n', {'frag#1#ctg#0': '+1 +2 +3 +4 +5'})
+rg_case('rg_long_flag_10000', rg_n, rg_w, '-r frag -s frag -s donor --error-bed-max-len 10000', 'frag#1#ctg\t20000\t30000\n',
+        {'ctg_hap_1': '+1 +2 +7 +4 +5'})
+rg_case('rg_long_flag_donor', rg_n, rg_w, '-r frag -s frag -s donor --error-bed-max-len 5000',
+        'frag#1#ctg\t22000\t26000\ndonor#1#ctg\t20000\t30000\n', {'frag#1#ctg#0': '+1 +2 +3 +4 +5'})
+rg_case('rg_long_flag_donor_off', rg_n, rg_w, '-r frag -s frag -s donor --error-bed-max-len 5000', 'frag#1#ctg\t22000\t26000\n',
+        {'ctg_hap_1': '+1 +2 +7 +4 +5'})
 # ... and on a target stored antisense to the reference (rg_same_reverse's), whose replaced sequence is compared with
 # the reverse complement of the donor's
 rg_n = rg_K({k: 600 + k for k in range(1, 9)}, 10000); rg_n[9] = rg_snp(rg_n[4])

@@ -91,6 +91,10 @@ void help(char** argv) {
        << "                                 flag (nearly every end has one: read coverage falls off there).  On the target it" << endl
        << "                                 is ignored, however far in it runs; on a donor, only a telomere graft from that" << endl
        << "                                 end ignores it.  0 keeps them all [1000]" << endl
+       << "        --error-bed-max-len N    Ignore a target --error-bed interval longer than N bp (intervals that touch or" << endl
+       << "                                 overlap are joined first): a QC call that long only says that something is" << endl
+       << "                                 wrong somewhere in it, and a swap that size cannot be verified.  Donor" << endl
+       << "                                 intervals are kept, however long.  0 keeps them all [1000000]" << endl
        << "        --min-cover FLOAT        Revert a patch shorter than this fraction of the target contigs it is made from [0.95]" << endl
        << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by the" << endl
        << "                                 -T validation/patch and the always-on discarded-telomere guard) [0.8]" << endl
@@ -167,6 +171,7 @@ int main(int argc, char** argv) {
     int64_t max_swap_size_change = 10000;
     int64_t min_swap_change = 100;
     int64_t error_bed_end_slop = 1000;
+    int64_t error_bed_max_len = 1000000;
     string no_patch_fasta;
     double no_patch_kmer_fraction = 0.3;
     bool patch_rdna = false;
@@ -204,6 +209,7 @@ int main(int argc, char** argv) {
             {"max-swap-size-change", required_argument, 0, 1017},
             {"min-swap-change", required_argument, 0, 1022},
             {"error-bed-end-slop", required_argument, 0, 1021},
+            {"error-bed-max-len", required_argument, 0, 1023},
             {"no-patch-fasta", required_argument, 0, 1018},
             {"no-patch-kmer-fraction", required_argument, 0, 1019},
             {"patch-rdna", no_argument, 0, 1020},
@@ -327,6 +333,9 @@ int main(int argc, char** argv) {
         case 1021:
             error_bed_end_slop = strtoll(optarg, nullptr, 10);
             break;
+        case 1023:
+            error_bed_max_len = strtoll(optarg, nullptr, 10);
+            break;
         case 1017:
             max_swap_size_change = strtoll(optarg, nullptr, 10);
             break;
@@ -401,6 +410,7 @@ int main(int argc, char** argv) {
     if (graft_complexity_min_bp < 0) { cerr << "[panpatch] error: --graft-complexity-min-bp must be >= 0" << endl; return 1; }
     if (max_graft_pieces < 0) { cerr << "[panpatch] error: --max-graft-pieces must be >= 0" << endl; return 1; }
     if (error_bed_end_slop < 0) { cerr << "[panpatch] error: --error-bed-end-slop must be >= 0" << endl; return 1; }
+    if (error_bed_max_len < 0) { cerr << "[panpatch] error: --error-bed-max-len must be >= 0" << endl; return 1; }
     if (max_swap_size_change < 0) { cerr << "[panpatch] error: --max-swap-size-change must be >= 0" << endl; return 1; }
     if (min_swap_change < 0) { cerr << "[panpatch] error: --min-swap-change must be >= 0" << endl; return 1; }
     if (!(no_patch_kmer_fraction > 0 && no_patch_kmer_fraction <= 1)) { cerr << "[panpatch] error: --no-patch-kmer-fraction must be in (0,1]" << endl; return 1; }
@@ -580,8 +590,8 @@ int main(int argc, char** argv) {
     // contig-end flag at the end a graft runs to).  with no --max-subtelomere-graft limit, nothing bounds how
     // much of a flagged donor end a graft would take, so telomere patching then respects them all too
     TelomereErrorRegions telomere_error_regions;
-    ErrorRegions error_regions = error_bed_to_paths(graph, error_bed, error_bed_end_slop, sample_names.front(),
-                                                    &telomere_error_regions);
+    ErrorRegions error_regions = error_bed_to_paths(graph, error_bed, error_bed_end_slop, error_bed_max_len,
+                                                    sample_names.front(), &telomere_error_regions);
     const TelomereErrorRegions* telomere_error_regions_p = max_subtelomere_graft > 0 ? &telomere_error_regions : nullptr;
     if (progress && !error_bed.empty()) {
         int64_t n = 0, bp = 0;
