@@ -94,6 +94,7 @@ What to patch:
 | `--patch-types LIST` | which of `{gap,telomere}` to attempt, comma-separated (scaffolding is always attempted) | `gap,telomere` |
 | `-T, --require-telomeres` | require a telomere at both ends, else revert (see [Telomeres](#telomeres)); cannot be combined with a `--patch-types` that leaves out `telomere` | off |
 | `--error-bed FILE` | assembly-error intervals on any input assembly, contigs named `SAMPLE#HAP#CONTIG` (see [Error regions](#error-regions)) | |
+| `--error-bed-end-slop N` | an `--error-bed` interval within N bp of either end of its contig is a contig-end flag: ignored on the target, and on a donor by a telomere graft from that end (see [Error regions](#error-regions); 0 keeps them all) | 1000 |
 | `-b, --exclude-bed FILE` | target regions to leave untouched (see [Excluding regions](#excluding-regions)) | |
 | `-w, --window N` | window size (bp) for the identity used to match donor haplotypes to the target's | 1000 |
 
@@ -170,7 +171,7 @@ Telomere grafts are kept small, because a telomere is missing from an assembly f
 
 - `-M/--max-telomere-patch` caps how much target sequence a graft may replace. If the nearest usable handoff is further in, the end is left as it is.
 - `--max-subtelomere-graft` caps how much donor sequence a graft may carry ahead of the donor's telomere array. A donor over the cap is skipped for the next one.
-- A donor whose run to its telomere contains an `N` or one of its own `--error-bed` intervals is skipped in the same way.
+- A donor whose run to its telomere contains an `N` or one of its own `--error-bed` intervals (other than a [contig-end flag](#error-regions) at that end) is skipped in the same way.
 
 A telomere graft therefore repairs or supplies the array (typically by trimming a short capless tail off the target and taking the donor's telomere), and does not bring in a subtelomere the target lacks. A donor skipped for one of these reasons is reported as a rejected row if no other donor completes the end.
 
@@ -199,8 +200,12 @@ One that fails is dropped and the target keeps its own end. The donor's end is t
 The graph must be built from the assemblies as they are, not with the flagged regions masked to `N`. A donor that agrees with a flagged stretch of the target then shares its nodes, and a patch differs from the target only where the donor does.
 
 - **Contig names** are those of the graph: `SAMPLE#HAP#CONTIG` (`HAP` is 0 for a haploid sample), or a full path name. Coordinates are on the whole contig; where the graph holds only a subrange of it, they are shifted to match. A sample that is in no input graph gets a warning.
+- **Contig ends**: an interval within `--error-bed-end-slop` (1 kb) of either end of its contig is a contig-end flag. Intervals that touch or overlap are joined first, so a flag split over several lines counts as one. Nearly every contig end has such a flag, mostly because read coverage falls off there, and it often runs far in.
+  - On the target, a contig-end flag is ignored, however far in it runs: kept, it would make the end a [tip graft](#tip-grafts). The end is left to [telomere patching](#telomeres) and its limits instead.
+  - On a donor, a contig-end flag is ignored only by a telomere graft from that end, which takes just the donor's telomere and at most `--max-subtelomere-graft` ahead of it. Every other patch respects it. A donor flagged from end to end stays flagged, and with `--max-subtelomere-graft 0` (no limit) telomere grafts respect every donor flag.
+  - Where the graph holds only a piece of a contig, only the contig's start can count as an end. `--error-bed-end-slop 0` keeps every interval.
 - **On the target**, a flagged region is replaced where a donor can thread across it, and kept where none can. The target takes over again at the last node it shares with the donor, so the swap ends with the flagged region.
-- **On a donor**, flagged sequence never goes into a patch: not in a gap fill or scaffold bridge, and not in a telomere or tip graft.
+- **On a donor**, flagged sequence never goes into a patch: not in a gap fill or scaffold bridge, and not in a telomere or tip graft (except for a contig-end flag, which a telomere graft from that end ignores).
 - A flag is on a path, not a node: where the target's flagged sequence is aligned to a donor's unflagged copy, the donor's can be used.
 - A donor that spells exactly the sequence it would replace is reported as rejected, `nothing to patch`.
 - A replacement is checked like any other graft (see [Why a patch is rejected](#why-a-patch-is-rejected)), and one that runs off the end of the target is a [tip graft](#tip-grafts).
@@ -220,7 +225,7 @@ panpatch errs on the side of leaving the target as it is. A patch that fails a c
 
 **A patch dropped on its own**
 
-A donor's `N`s and `--error-bed` intervals are never used: a donor is not threaded across them, and only the target is, keeping its own gap or flagged sequence where no donor can replace it.
+A donor's `N`s and `--error-bed` intervals are never used (except for a [contig-end flag](#error-regions) in a telomere graft from that end): a donor is not threaded across them, and only the target is, keeping its own gap or flagged sequence where no donor can replace it.
 
 An interior graft, a donor run between two pieces of the same target contig, is excised and the target's own sequence restored if it is:
 
@@ -237,7 +242,7 @@ An interior graft, a donor run between two pieces of the same target contig, is 
 At a contig end:
 
 - **Tip graft** — one over its [limits](#tip-grafts) is dropped, and the target keeps its own end.
-- **Telomere graft** — one that would replace more than `--max-telomere-patch` of the target, carry more than `--max-subtelomere-graft` ahead of the donor's telomere, or take in a donor's `N`s or flagged sequence is not made (see [Telomeres](#telomeres)). Where both ends' grafts would cross on a short contig, neither is made.
+- **Telomere graft** — one that would replace more than `--max-telomere-patch` of the target, carry more than `--max-subtelomere-graft` ahead of the donor's telomere, or take in a donor's `N`s or flagged sequence (other than a contig-end flag at that end) is not made (see [Telomeres](#telomeres)). Where both ends' grafts would cross on a short contig, neither is made.
 
 **The whole contig reverts**
 

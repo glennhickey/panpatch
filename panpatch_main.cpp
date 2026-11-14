@@ -84,8 +84,13 @@ void help(char** argv) {
        << "        --error-bed FILE         BED of assembly-error intervals on any input assembly, contigs named as the graph" << endl
        << "                                 names its paths (SAMPLE#HAP#CONTIG; HAP 0 for a haploid sample).  The target's" << endl
        << "                                 are replaced by donor sequence where a donor can thread across them (and kept" << endl
-       << "                                 where none can); a donor's never go into a patch.  The assemblies are aligned" << endl
-       << "                                 unmasked, so a patch differs from the target only where the donor does" << endl
+       << "                                 where none can); a donor's never go into a patch (contig ends aside: see below)." << endl
+       << "                                 The assemblies are aligned unmasked, so a patch differs from the target only" << endl
+       << "                                 where the donor does" << endl
+       << "        --error-bed-end-slop N   An --error-bed interval within N bp of either end of its contig is a contig-end" << endl
+       << "                                 flag (nearly every end has one: read coverage falls off there).  On the target it" << endl
+       << "                                 is ignored, however far in it runs; on a donor, only a telomere graft from that" << endl
+       << "                                 end ignores it.  0 keeps them all [1000]" << endl
        << "        --min-cover FLOAT        Revert a patch shorter than this fraction of the target contigs it is made from [0.95]" << endl
        << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by the" << endl
        << "                                 -T validation/patch and the always-on discarded-telomere guard) [0.8]" << endl
@@ -157,6 +162,7 @@ int main(int argc, char** argv) {
     int64_t graft_complexity_min_bp = 2000;
     int64_t max_graft_pieces = 1;
     int64_t max_swap_size_change = 10000;
+    int64_t error_bed_end_slop = 1000;
     string no_patch_fasta;
     double no_patch_kmer_fraction = 0.3;
     bool patch_rdna = false;
@@ -192,6 +198,7 @@ int main(int argc, char** argv) {
             {"graft-complexity-min-bp", required_argument, 0, 1015},
             {"max-graft-pieces", required_argument, 0, 1016},
             {"max-swap-size-change", required_argument, 0, 1017},
+            {"error-bed-end-slop", required_argument, 0, 1021},
             {"no-patch-fasta", required_argument, 0, 1018},
             {"no-patch-kmer-fraction", required_argument, 0, 1019},
             {"patch-rdna", no_argument, 0, 1020},
@@ -312,6 +319,9 @@ int main(int argc, char** argv) {
         case 1016:
             max_graft_pieces = strtoll(optarg, nullptr, 10);
             break;
+        case 1021:
+            error_bed_end_slop = strtoll(optarg, nullptr, 10);
+            break;
         case 1017:
             max_swap_size_change = strtoll(optarg, nullptr, 10);
             break;
@@ -382,6 +392,7 @@ int main(int argc, char** argv) {
     if (graft_complexity_window < 0) { cerr << "[panpatch] error: --graft-complexity-window must be >= 0" << endl; return 1; }
     if (graft_complexity_min_bp < 0) { cerr << "[panpatch] error: --graft-complexity-min-bp must be >= 0" << endl; return 1; }
     if (max_graft_pieces < 0) { cerr << "[panpatch] error: --max-graft-pieces must be >= 0" << endl; return 1; }
+    if (error_bed_end_slop < 0) { cerr << "[panpatch] error: --error-bed-end-slop must be >= 0" << endl; return 1; }
     if (max_swap_size_change < 0) { cerr << "[panpatch] error: --max-swap-size-change must be >= 0" << endl; return 1; }
     if (!(no_patch_kmer_fraction > 0 && no_patch_kmer_fraction <= 1)) { cerr << "[panpatch] error: --no-patch-kmer-fraction must be in (0,1]" << endl; return 1; }
     NoPatch no_patch;
@@ -556,8 +567,13 @@ int main(int argc, char** argv) {
         continue;
     }
     path_handle_t ref_path = ref_paths.front();
-    // the --error-bed intervals on this graph's paths
-    ErrorRegions error_regions = error_bed_to_paths(graph, error_bed);
+    // the --error-bed intervals on this graph's paths, and those telomere patching respects (less a donor's
+    // contig-end flag at the end a graft runs to).  with no --max-subtelomere-graft limit, nothing bounds how
+    // much of a flagged donor end a graft would take, so telomere patching then respects them all too
+    TelomereErrorRegions telomere_error_regions;
+    ErrorRegions error_regions = error_bed_to_paths(graph, error_bed, error_bed_end_slop, sample_names.front(),
+                                                    &telomere_error_regions);
+    const TelomereErrorRegions* telomere_error_regions_p = max_subtelomere_graft > 0 ? &telomere_error_regions : nullptr;
     if (progress && !error_bed.empty()) {
         int64_t n = 0, bp = 0;
         for (const auto& er : error_regions) for (const auto& iv : er.second) { ++n; bp += iv.second - iv.first; }
@@ -649,7 +665,7 @@ int main(int argc, char** argv) {
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
             patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, progress, require_telomeres,
-            &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces, no_patch_p);
+            &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces, no_patch_p, telomere_error_regions_p);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.

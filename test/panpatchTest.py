@@ -664,21 +664,23 @@ def rg_rc(s):
     return s[::-1].translate(str.maketrans('ACGTN', 'TGCAN'))
 
 def rg_case(base, nodes, walks, args, errors, expect, reasons=()):
-    """walks: [(sample, hap, contig, ['+1', '-2', ...])]; expect: {output record: 'signed node ids'}"""
+    """walks: [(sample, hap, contig, ['+1', '-2', ...][, start])], start making the walk the subrange of its contig
+    from there; expect: {output record: 'signed node ids'}"""
     global fail_count
+    walks = [tuple(w) + (0,) * (5 - len(w)) for w in walks]
     pw = lambda w: [(int(x[1:]), x[0] == '-') for x in w]
     with open(base + '.gfa', 'w') as f:
         f.write('H\tVN:Z:1.1\n')
-        for n in sorted(set(n for _, _, _, w in walks for n, _ in pw(w))):
+        for n in sorted(set(n for _, _, _, w, _ in walks for n, _ in pw(w))):
             f.write('S\t{}\t{}\n'.format(n, nodes[n]))
         edges = set()
-        for _, _, _, w in walks:
+        for _, _, _, w, _ in walks:
             for (a, ar), (b, br) in zip(pw(w), pw(w)[1:]):
                 edges.add((a, '-' if ar else '+', b, '-' if br else '+'))
         for e in sorted(edges):
             f.write('L\t{}\t{}\t{}\t{}\t0M\n'.format(*e))
-        for sample, hap, contig, w in walks:
-            f.write('W\t{}\t{}\t{}\t0\t{}\t{}\n'.format(sample, hap, contig, sum(len(nodes[n]) for n, _ in pw(w)),
+        for sample, hap, contig, w, start in walks:
+            f.write('W\t{}\t{}\t{}\t{}\t{}\t{}\n'.format(sample, hap, contig, start, start + sum(len(nodes[n]) for n, _ in pw(w)),
                                                       ''.join(('<' if r else '>') + str(n) for n, r in pw(w))))
     if errors:
         with open(base + '.errors.bed', 'w') as f:
@@ -742,10 +744,11 @@ rg_case('rg_stray_copy', rg_n, [('frag', 1, 'ctg', rg_fwd([0, 1, 2, 3, 4, 5, 10,
 rg_n = rg_K({k: 400 + k for k in range(6)}, 10000); rg_n[9] = 'N' * 1000
 rg_case('rg_backtrack', rg_n, [('frag', 1, 'ctg', rg_fwd([0, 1, 2, 3, 9, 4, 5])), ('donor', 1, 'ctg', rg_fwd([3, 1, 2, 4, 5]))],
         '-r frag -s frag -s donor', None, {'frag#1#ctg#0': '+0 +1 +2 +3 +9 +4 +5'})
-# tip graft: frag's last 5kb flagged and the donor running 300kb past frag's end: the whole tail was appended
+# tip graft: frag's last 5kb flagged and the donor running 300kb past frag's end: the whole tail was appended.
+# (a flag at a contig end is ignored by default: --error-bed-end-slop 0 keeps it)
 rg_n = rg_K({1: 501, 2: 502, 3: 503}, 10000); rg_n.update(rg_K({4: 504, 5: 505, 6: 506}, 100000)); rg_n[0] = rg_rnd(500, 200000)
 rg_case('rg_tip_tail', rg_n, [('frag', 1, 'ctg', rg_fwd([0, 1, 2, 3])), ('donor', 1, 'ctg', rg_fwd(range(7)))],
-        '-r frag -s frag -s donor', 'frag#1#ctg\t225000\t230000\n', {'frag#1#ctg#0': '+0 +1 +2 +3'},
+        '-r frag -s frag -s donor --error-bed-end-slop 0', 'frag#1#ctg\t225000\t230000\n', {'frag#1#ctg#0': '+0 +1 +2 +3'},
         ['tip graft adds 310000bp of donor sequence for 10000bp'])
 # an identical donor across a flagged region of a target stored antisense to the reference: compared strand
 # against strand, it passed as a change (and the contig came out reverse-complemented)
@@ -755,11 +758,89 @@ rg_case('rg_same_reverse', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 9))), ('frag'
         '-r x -s frag -s donor', 'frag#1#ctg\t30000\t50000\n', {'frag#1#ctg#0': '-8 -7 -6 -5 -4 -3 -2 -1'},
         ["donor sequence is identical to the target's: nothing to patch"])
 # a target contig (ctgB) flagged end to end, covered by the donor: it was written twice, once as the donor's
-# copy in the patched record and once as itself
+# copy in the patched record and once as itself (with --error-bed-end-slop 0, which keeps a contig-end flag)
 rg_n = rg_K({k: 700 + k for k in range(1, 9)}, 10000)
-rg_case('rg_flagged_contig', rg_n, [('x', 0, 'chrX', rg_fwd([1, 2, 3, 5, 6, 7, 8])), ('frag', 1, 'ctgA', rg_fwd([1, 2, 3, 5])),
-                                    ('frag', 1, 'ctgB', rg_fwd([6, 7, 8])), ('donor', 1, 'ctg', rg_fwd([1, 2, 3, 5, 6, 7, 8]))],
-        '-r x -s frag -s donor', 'frag#1#ctgB\t0\t30000\n', {'frag#1#ctgA#0': '+1 +2 +3 +5', 'frag#1#ctgB#0': '+6 +7 +8'})
+rg_w = [('x', 0, 'chrX', rg_fwd([1, 2, 3, 5, 6, 7, 8])), ('frag', 1, 'ctgA', rg_fwd([1, 2, 3, 5])),
+        ('frag', 1, 'ctgB', rg_fwd([6, 7, 8])), ('donor', 1, 'ctg', rg_fwd([1, 2, 3, 5, 6, 7, 8]))]
+rg_case('rg_flagged_contig', rg_n, rg_w, '-r x -s frag -s donor --error-bed-end-slop 0', 'frag#1#ctgB\t0\t30000\n',
+        {'frag#1#ctgA#0': '+1 +2 +3 +5', 'frag#1#ctgB#0': '+6 +7 +8'})
+# ... by default that flag touches both of ctgB's ends, so it is ignored, and ctgA and ctgB are scaffolded as
+# they would be without it.  So is a flag that ends 1kb from ctgB's end, while one ending 1001bp from it is kept
+rg_case('rg_flagged_contig_ends', rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#ctgB\t0\t30000\n',
+        {'chrX_hap_1': '+1 +2 +3 +5 +6 +7 +8'})
+rg_case('rg_flagged_contig_slop', rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#ctgB\t5000\t29000\n',
+        {'chrX_hap_1': '+1 +2 +3 +5 +6 +7 +8'})
+rg_case('rg_flagged_contig_inside', rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#ctgB\t5000\t28999\n',
+        {'frag#1#ctgA#0': '+1 +2 +3 +5', 'frag#1#ctgB#0': '+6 +7 +8'})
+# ... and likewise at ctgB's start: a flag from 1kb is ignored, one from 1001bp kept.  A flag split over two lines
+# that join up from ctgB's start was judged line by line, and its second half kept
+rg_case('rg_flagged_contig_start', rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#ctgB\t1000\t28999\n',
+        {'chrX_hap_1': '+1 +2 +3 +5 +6 +7 +8'})
+rg_case('rg_flagged_contig_start_inside', rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#ctgB\t1001\t28999\n',
+        {'frag#1#ctgA#0': '+1 +2 +3 +5', 'frag#1#ctgB#0': '+6 +7 +8'})
+rg_case('rg_flagged_contig_split', rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#ctgB\t0\t15000\nfrag#1#ctgB\t15000\t28999\n',
+        {'chrX_hap_1': '+1 +2 +3 +5 +6 +7 +8'})
+# a donor's contig-end flag is ignored by telomere patching only.  frag's flagged 9 would be swapped for the donor's 4
+# (30-40kb into the 70kb donor): a flag from 30kb to the donor's end (or from its start to 40kb) covers 4, and
+# dropping that flag whole let the swap through.  One from 50kb does not cover it.
+# (9 is 4 with a substitution every 1000bp, as a swap must recover most of the replaced sequence's k-mers)
+rg_n = rg_K({k: 1700 + k for k in range(1, 8)}, 10000)
+rg_n[9] = ''.join('ACGT'[('ACGT'.index(c) + 1) % 4] if i % 1000 == 500 else c for i, c in enumerate(rg_n[4]))
+rg_w = [('x', 0, 'chrX', rg_fwd(range(1, 8))), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 9, 5, 6, 7])),
+        ('donor', 1, 'ctg', rg_fwd(range(1, 8)))]
+for rg_base, rg_flag, rg_want in [('rg_donor_end_deep', '30000\t70000', '+1 +2 +3 +9 +5 +6 +7'),
+                                  ('rg_donor_start_deep', '0\t40000', '+1 +2 +3 +9 +5 +6 +7'),
+                                  ('rg_donor_end_outer', '50000\t70000', '+1 +2 +3 +4 +5 +6 +7')]:
+    rg_case(rg_base, rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#ctg\t30000\t40000\ndonor#1#ctg\t' + rg_flag + '\n',
+            {'frag#1#ctg#0' if '9' in rg_want else 'chrX_hap_1': rg_want})
+# ... nor is one whose end is a break in the donor's assembly (no telomere): a donor running 1-5 only, flagged from
+# 30kb to its end, had its outer 22kb ignored, and the swap took its 4 from there
+rg_case('rg_donor_end_break', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 8))), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 9, 5, 6, 7])),
+                                     ('donor', 1, 'ctg', rg_fwd(range(1, 6)))],
+        '-r x -s frag -s donor', 'frag#1#ctg\t30000\t40000\ndonor#1#ctg\t30000\t50000\n', {'frag#1#ctg#0': '+1 +2 +3 +9 +5 +6 +7'})
+# ... while a telomere graft from the end of a donor flagged from 30kb to its end (63.5kb) goes in: it takes the
+# donor's last 13.5kb (from its node 3 on).  It is blocked with --error-bed-end-slop 0, which keeps the whole flag
+rg_n = {1: 'CCCTAA' * 334, 2: rg_rnd(1802, 10000), 3: rg_rnd(1803, 10000), 4: rg_rnd(1804, 1500), 5: 'TTAGGG' * 335,
+        6: rg_rnd(1806, 3000), 7: rg_rnd(1807, 40000)}
+rg_w = [('x', 0, 'chrX', rg_fwd([1, 2, 3, 4, 5])), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 6])), ('donor', 1, 'ctg', rg_fwd([7, 2, 3, 4, 5]))]
+rg_case('rg_donor_end_telomere', rg_n, rg_w, '-r x -s frag -s donor', 'donor#1#ctg\t30000\t63510\n',
+        {'chrX_hap_1': '+1 +2 +3 +4 +5'})
+rg_case('rg_donor_end_telomere_kept', rg_n, rg_w, '-r x -s frag -s donor --error-bed-end-slop 0', 'donor#1#ctg\t30000\t63510\n',
+        {'frag#1#ctg#0': '+1 +2 +3 +6'})
+# ... but a flag that is not that end's is respected: one from the donor's start to 61kb (over the graft's 4), one
+# split over two lines that join up from end to end (each line was judged a one-end flag), or a whole flagged
+# contig.  So is the end's own with --max-subtelomere-graft 0, when nothing bounds how much of it a graft takes.
+# And where the donor is a piece of its contig, its far end is not known to be the contig's end
+for rg_base, rg_flag, rg_args in [('rg_donor_end_telomere_far', 'donor#1#ctg\t0\t61000\n', ''),
+                                  ('rg_donor_end_telomere_split', 'donor#1#ctg\t0\t30000\ndonor#1#ctg\t30000\t63510\n', ''),
+                                  ('rg_donor_end_telomere_whole', 'donor#1#ctg\t0\t63510\n', ''),
+                                  ('rg_donor_end_telomere_nolimit', 'donor#1#ctg\t30000\t63510\n', ' --max-subtelomere-graft 0')]:
+    rg_case(rg_base, rg_n, rg_w, '-r x -s frag -s donor' + rg_args, rg_flag, {'frag#1#ctg#0': '+1 +2 +3 +6'})
+rg_case('rg_donor_end_telomere_piece', rg_n, rg_w[:2] + [('donor', 1, 'ctg', rg_fwd([7, 2, 3, 4, 5]), 1000000)],
+        '-r x -s frag -s donor', 'donor#1#ctg\t1030000\t1063510\n', {'frag#1#ctg#0': '+1 +2 +3 +6'})
+# ... and the same for a donor stored the other way round, with its telomere at its path's start: a flag from that end
+# is ignored, one from the far end (2.5kb on) is not
+for rg_base, rg_flag, rg_want in [('rg_donor_end_telomere_rev', '0\t33510', {'chrX_hap_1': '+1 +2 +3 +4 +5'}),
+                                  ('rg_donor_end_telomere_rev_far', '2500\t63510', {'frag#1#ctg#0': '+1 +2 +3 +6'})]:
+    rg_case(rg_base, rg_n, rg_w[:2] + [('donor', 1, 'ctg', ['-5', '-4', '-3', '-2', '-7'])], '-r x -s frag -s donor',
+            'donor#1#ctg\t' + rg_flag + '\n', rg_want)
+# the same at a donor's start: frag's capless front (16) takes the donor's telomere (10) and the 1.5kb (11) ahead of
+# it.  A flag from the donor's start is ignored, one from its end (1.5kb on) is not.  Where the donor is a piece of
+# its contig starting 1Mb in (or 1001bp), a flag from the contig's start into it is not at its end; from 98bp (or
+# 1000bp) in, it is, unless it covers the whole piece
+rg_n = {10: 'CCCTAA' * 335, 11: rg_rnd(1811, 1500), 12: rg_rnd(1812, 10000), 13: rg_rnd(1813, 10000), 14: rg_rnd(1814, 40000),
+        15: 'TTAGGG' * 334, 16: rg_rnd(1816, 3000)}
+rg_w = [('x', 0, 'chrX', rg_fwd([10, 11, 12, 13, 15])), ('frag', 1, 'ctg', rg_fwd([16, 12, 13, 15]))]
+rg_d = rg_fwd([10, 11, 12, 13, 14])
+for rg_base, rg_start, rg_flag, rg_want in [('rg_donor_start_telomere', 0, '0\t20000', {'chrX_hap_1': '+10 +11 +12 +13 +15'}),
+                                            ('rg_donor_start_telomere_far', 0, '1500\t63510', {'frag#1#ctg#0': '+16 +12 +13 +15'}),
+                                            ('rg_donor_start_telomere_piece', 1000000, '0\t1020000', {'frag#1#ctg#0': '+16 +12 +13 +15'}),
+                                            ('rg_donor_start_telomere_near', 98, '0\t20098', {'chrX_hap_1': '+10 +11 +12 +13 +15'}),
+                                            ('rg_donor_start_telomere_1000', 1000, '0\t21000', {'chrX_hap_1': '+10 +11 +12 +13 +15'}),
+                                            ('rg_donor_start_telomere_1001', 1001, '0\t21001', {'frag#1#ctg#0': '+16 +12 +13 +15'}),
+                                            ('rg_donor_start_telomere_near_whole', 98, '0\t63608', {'frag#1#ctg#0': '+16 +12 +13 +15'})]:
+    rg_case(rg_base, rg_n, rg_w + [('donor', 1, 'ctg', rg_d, rg_start)], '-r x -s frag -s donor',
+            'donor#1#ctg\t' + rg_flag + '\n', rg_want)
 # frag carries its own copy of 5 6 at its start; after the donor bridges its gap, frag was taken up again at
 # that first copy and 60kb was written twice.  Now only the gap is filled
 rg_n = rg_K({k: 800 + k for k in range(1, 9)}, 10000); rg_n[9] = 'N' * 1000

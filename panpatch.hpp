@@ -22,6 +22,12 @@ using ExcludedRefRegions = vector<pair<int64_t, int64_t>>;
 // built, the flagged sequence is still aligned, so a donor that agrees with the target shares its nodes
 // and the patch differs from the target only where the donor does.
 using ErrorRegions = unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>;
+// the --error-bed intervals telomere patching respects, by the end of the donor path a graft runs to: each leaves
+// out a donor's contig-end flag at that end (see error_bed_to_paths)
+struct TelomereErrorRegions {
+    ErrorRegions to_start;   // a graft that runs to its donor path's start
+    ErrorRegions to_end;     // a graft that runs to its donor path's end
+};
 
 // Sequences no graft may replace or put in (the built-in rDNA unit, --no-patch-fasta), as (sampled, canonical) 31-mers:
 // a graft whose replaced or inserted sequence, as a whole or in any `window`-bp window, shares at least
@@ -78,8 +84,15 @@ BedRegions parse_bed_file(const string& bed_filename);
 
 // map --error-bed regions onto the paths of one graph.  a BED contig names a path as SAMPLE#HAP#CONTIG
 // (PanSN, as the graph names it: HAP is 0 for a haploid sample) or by its full path name; a path's
-// subrange, if it has one, shifts the coordinates.  intervals are clipped to the path
-ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed);
+// subrange, if it has one, shifts the coordinates.  intervals are merged and clipped to the path.
+// a contig-end flag -- a merged interval that starts within end_slop bp of its contig's start, or ends within
+// end_slop bp of its end (0: none is) -- is flagged mostly because read coverage falls off there.  on a path of
+// target_sample it is dropped, however far in it runs, leaving the end to telomere patching.  on a donor it is
+// kept, but left out of telomere_regions (if given) for a graft that runs to that end: telomere patching takes
+// only a donor's telomere-capped end, and little ahead of the telomere.  a donor interval that runs from end to
+// end (the whole contig is flagged) is kept for every patch
+ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed, int64_t end_slop,
+                                const string& target_sample, TelomereErrorRegions* telomere_regions = nullptr);
 
 // true if this step's node overlaps an error interval of the step's own path
 bool step_in_error(const PathHandleGraph* graph, const step_handle_t& step, const ErrorRegions& error_regions);
@@ -161,7 +174,10 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
                                                                       int64_t max_subtelomere=2000,
                                                                       bool verbose=false,
                                                                       bool report_failures=false,
-                                                                      const ErrorRegions* error_regions=nullptr);
+                                                                      const ErrorRegions* error_regions=nullptr,
+                                                                      // if given, the intervals a graft respects
+                                                                      // instead, by the end of the donor it runs to
+                                                                      const TelomereErrorRegions* telomere_regions=nullptr);
 
 // one row of the patch report: a candidate patch (telomere completion, gap-fill, or scaffold join),
 // with its similarity metrics and the accept/reject decision.  Accumulated in g_patch_records during a
@@ -242,7 +258,10 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const ErrorRegions* error_regions = nullptr,
                                                                bool patch_gap = true,
                                                                int64_t max_graft_pieces = 0,
-                                                               const NoPatch* no_patch = nullptr);
+                                                               const NoPatch* no_patch = nullptr,
+                                                               // the --error-bed intervals telomere patching respects
+                                                               // (error_regions if null)
+                                                               const TelomereErrorRegions* telomere_error_regions = nullptr);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery

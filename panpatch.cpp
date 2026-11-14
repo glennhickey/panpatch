@@ -68,9 +68,13 @@ static int64_t step_offset(const PathHandleGraph* graph, const step_handle_t& st
     return offset;
 }
 
-ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed) {
+ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed, int64_t end_slop,
+                                const string& target_sample, TelomereErrorRegions* telomere_regions) {
     ErrorRegions regions;
+    if (telomere_regions) { telomere_regions->to_start.clear(); telomere_regions->to_end.clear(); }
     if (error_bed.empty()) return regions;
+    vector<path_handle_t> tv = sample_paths(graph, target_sample);
+    unordered_set<path_handle_t> targets(tv.begin(), tv.end());
     graph->for_each_path_handle([&](path_handle_t p) {
         // the full path name, else that name without its subrange (a BED naming SAMPLE#HAP#CONTIG#0 for a
         // path SAMPLE#HAP#CONTIG#0[a-b]), else its PanSN sample#haplotype#locus (which leaves out the phase
@@ -89,20 +93,38 @@ ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& 
         }
         if (it == error_bed.end()) return;
         int64_t offset = 0;
-        if (graph->get_subrange(p) != PathMetadata::NO_SUBRANGE) offset = graph->get_subrange(p).first;
+        bool whole = graph->get_subrange(p) == PathMetadata::NO_SUBRANGE;
+        if (!whole) offset = graph->get_subrange(p).first;
         int64_t len = path_bp(graph, p);
-        vector<pair<int64_t, int64_t>> ivs;
-        for (const auto& iv : it->second) {
+        bool target = targets.count(p);
+        // merged in contig coordinates first, so that a flag split over several BED lines is judged as one
+        vector<pair<int64_t, int64_t>> merged(it->second.begin(), it->second.end());
+        sort(merged.begin(), merged.end());
+        size_t m = 0;
+        for (size_t i = 0; i < merged.size(); ++i) {
+            if (m > 0 && merged[i].first <= merged[m - 1].second) merged[m - 1].second = max(merged[m - 1].second, merged[i].second);
+            else merged[m++] = merged[i];
+        }
+        merged.resize(m);
+        vector<pair<int64_t, int64_t>> ivs, to_start, to_end;
+        for (const auto& iv : merged) {
+            // a contig-end flag (the far end is known only for a whole-contig path).  the target's is dropped
+            bool at_start = end_slop > 0 && iv.first <= end_slop;
+            bool at_end = end_slop > 0 && whole && iv.second >= len - end_slop;
+            if ((at_start || at_end) && target) continue;
             int64_t s = max((int64_t)0, iv.first - offset), e = min(len, iv.second - offset);
-            if (s < e) ivs.push_back(make_pair(s, e));
+            if (s >= e) continue;
+            ivs.push_back(make_pair(s, e));
+            // a donor's is left out only for a telomere graft that runs to that end (to the path's start only if
+            // that is the contig's), and not at all if it runs from end to end (on a piece of a contig, from the
+            // contig's start to the end of the piece)
+            bool piece_end = !whole && iv.second - offset >= len - end_slop;
+            if (!(at_start && !at_end && !piece_end && offset <= end_slop)) to_start.push_back(make_pair(s, e));
+            if (!(at_end && !at_start)) to_end.push_back(make_pair(s, e));
         }
-        if (ivs.empty()) return;
-        sort(ivs.begin(), ivs.end());
-        vector<pair<int64_t, int64_t>>& merged = regions[p];
-        for (const auto& iv : ivs) {
-            if (!merged.empty() && iv.first <= merged.back().second) merged.back().second = max(merged.back().second, iv.second);
-            else merged.push_back(iv);
-        }
+        if (!ivs.empty()) regions[p] = ivs;
+        if (telomere_regions && !to_start.empty()) telomere_regions->to_start[p] = to_start;
+        if (telomere_regions && !to_end.empty()) telomere_regions->to_end[p] = to_end;
     });
     return regions;
 }
@@ -1242,7 +1264,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         int64_t max_subtelomere,
         bool verbose,
         bool report_failures,
-        const ErrorRegions* error_regions) {
+        const ErrorRegions* error_regions,
+        const TelomereErrorRegions* telomere_regions) {
 
     static const int64_t OUTER = 20000;            // inspect this many bp at a contig tip for a telomere
     static const int64_t TIP_CHECK = 50000;        // validate_telomeres' (-T) window at a patched contig's tip
@@ -1481,14 +1504,18 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 // the target's and the donor's N runs were aligned, it is a shared N node
                 bool reached = false, any = false;
                 bool has_n = graph->get_sequence(graph->get_handle_of_step(s_F)).find_first_of("Nn") != string::npos;
-                bool flagged = !has_n && error_regions && step_in_error(graph, s_F, *error_regions);
+                // the flags this graft respects: all but a contig-end flag at the end of F it runs to
+                const ErrorRegions* f_errors = telomere_regions ? (f_forward ? &telomere_regions->to_end
+                                                                             : &telomere_regions->to_start)
+                                                                : error_regions;
+                bool flagged = !has_n && f_errors && step_in_error(graph, s_F, *f_errors);
                 while (!has_n && !flagged) {
                     bool at_end = f_forward ? (fs == graph->path_end(F)) : (fs == graph->path_front_end(F));
                     if (at_end) { reached = true; break; }
                     handle_t fh = graph->get_handle_of_step(fs);
                     string fseq = graph->get_sequence(f_forward ? fh : graph->flip(fh));
                     if (fseq.find_first_of("Nn") != string::npos) { has_n = true; break; }
-                    if (error_regions && step_in_error(graph, fs, *error_regions)) { flagged = true; break; }
+                    if (f_errors && step_in_error(graph, fs, *f_errors)) { flagged = true; break; }
                     if (within_cap) added_seq += fseq;
                     ext += fseq.size();
                     f_last = fs; any = true;
@@ -1758,7 +1785,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const ErrorRegions* error_regions,
                                                                bool patch_gap,
                                                                int64_t max_graft_pieces,
-                                                               const NoPatch* no_patch) {
+                                                               const NoPatch* no_patch,
+                                                               const TelomereErrorRegions* telomere_error_regions) {
 
     size_t records_at_entry = g_patch_records.size();   // this call's report rows start here
 
@@ -1976,7 +2004,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
         extended_intervals = extend_to_telomeres(graph, extended_intervals, sample_covers,
                                                  sample_names, telo_threshold, max_telomere_patch,
                                                  max_subtelomere_graft, verbose,
-                                                 report_telomere_failures, error_regions);
+                                                 report_telomere_failures, error_regions, telomere_error_regions);
         check_intervals(graph, extended_intervals);
     }
 
