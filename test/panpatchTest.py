@@ -783,7 +783,8 @@ rg_case('rg_flagged_contig_split', rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#
 # a donor's contig-end flag is ignored by telomere patching only.  frag's flagged 9 would be swapped for the donor's 4
 # (30-40kb into the 70kb donor): a flag from 30kb to the donor's end (or from its start to 40kb) covers 4, and
 # dropping that flag whole let the swap through.  One from 50kb does not cover it.
-# (9 is 4 with a substitution every 1000bp, as a swap must recover most of the replaced sequence's k-mers)
+# (9 is 4 with a substitution every 1000bp, as a swap must recover most of the replaced sequence's k-mers.  That
+# changes only 10 bases, so these cases set --min-swap-change 0, to judge the swap on the donor's flags and flanks)
 rg_n = rg_K({k: 1700 + k for k in range(1, 8)}, 10000)
 rg_n[9] = ''.join('ACGT'[('ACGT'.index(c) + 1) % 4] if i % 1000 == 500 else c for i, c in enumerate(rg_n[4]))
 rg_w = [('x', 0, 'chrX', rg_fwd(range(1, 8))), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 9, 5, 6, 7])),
@@ -791,18 +792,19 @@ rg_w = [('x', 0, 'chrX', rg_fwd(range(1, 8))), ('frag', 1, 'ctg', rg_fwd([1, 2, 
 for rg_base, rg_flag, rg_want in [('rg_donor_end_deep', '30000\t70000', '+1 +2 +3 +9 +5 +6 +7'),
                                   ('rg_donor_start_deep', '0\t40000', '+1 +2 +3 +9 +5 +6 +7'),
                                   ('rg_donor_end_outer', '50000\t70000', '+1 +2 +3 +4 +5 +6 +7')]:
-    rg_case(rg_base, rg_n, rg_w, '-r x -s frag -s donor', 'frag#1#ctg\t30000\t40000\ndonor#1#ctg\t' + rg_flag + '\n',
+    rg_case(rg_base, rg_n, rg_w, '-r x -s frag -s donor --min-swap-change 0', 'frag#1#ctg\t30000\t40000\ndonor#1#ctg\t' + rg_flag + '\n',
             {'frag#1#ctg#0' if '9' in rg_want else 'chrX_hap_1': rg_want})
 # ... nor is one whose end is a break in the donor's assembly (no telomere): a donor running 1-5 only, flagged from
 # 30kb to its end, had its outer 22kb ignored, and the swap took its 4 from there
 rg_case('rg_donor_end_break', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 8))), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 9, 5, 6, 7])),
                                      ('donor', 1, 'ctg', rg_fwd(range(1, 6)))],
-        '-r x -s frag -s donor', 'frag#1#ctg\t30000\t40000\ndonor#1#ctg\t30000\t50000\n', {'frag#1#ctg#0': '+1 +2 +3 +9 +5 +6 +7'})
+        '-r x -s frag -s donor --min-swap-change 0', 'frag#1#ctg\t30000\t40000\ndonor#1#ctg\t30000\t50000\n',
+        {'frag#1#ctg#0': '+1 +2 +3 +9 +5 +6 +7'})
 # a swap whose donor runs out just past it (here, at its end node 5) is anchored on that side only by the node it
 # shares there.  It was made on k-mer recovery alone, which judges its content but not where it sits
 rg_case('rg_flank_swap', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 8))), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 9, 5, 6, 7])),
                                 ('donor', 1, 'ctg', rg_fwd(range(1, 6)))],
-        '-r x -s frag -s donor', 'frag#1#ctg\t30000\t40000\n', {'frag#1#ctg#0': '+1 +2 +3 +9 +5 +6 +7'},
+        '-r x -s frag -s donor --min-swap-change 0', 'frag#1#ctg\t30000\t40000\n', {'frag#1#ctg#0': '+1 +2 +3 +9 +5 +6 +7'},
         ['flank anchoring 100.0%/0.0% < 50.0% (wrong-locus join)'])
 # ... while a telomere graft from the end of a donor flagged from 30kb to its end (63.5kb) goes in: it takes the
 # donor's last 13.5kb (from its node 3 on).  It is blocked with --error-bed-end-slop 0, which keeps the whole flag
@@ -918,7 +920,8 @@ rg_case('rg_swap_cap_default', eb_nodes, rg_ins, '-r frag -s frag -s donor', 'fr
         {'ctg_hap_1': '+10 +0 +1 +2 +7 +5 +6 +8 +9'})
 # --no-patch-fasta: frag's flagged 3 is swapped for the donor's copy (6: 3 with a SNP every 300bp, so k-mer
 # recovery passes) unless 3 is named in the no-patch FASTA, as an rDNA unit would be.  The FASTA has CRLF line
-# ends, which once broke its k-mers at every line
+# ends, which once broke its k-mers at every line.  (The swap changes only 33 bases, so these cases set
+# --min-swap-change 0)
 rg_snp = lambda seq: ''.join({'A': 'C', 'C': 'G', 'G': 'T', 'T': 'A'}.get(c, c) if i % 300 == 150 else c for i, c in enumerate(seq))
 rg_n = rg_K({1: 1701, 2: 1702, 3: 1703, 4: 1704, 5: 1705}, 10000)
 rg_n[6] = rg_snp(rg_n[3])
@@ -927,14 +930,32 @@ with open('rg_no_patch.fa', 'w', newline='') as f:
 with open('rg_no_patch_other.fa', 'w') as f:
     f.write('>other\n' + rg_rnd(1799, 10000) + '\n')
 rg_w = [('frag', 1, 'ctg', rg_fwd([1, 2, 3, 4, 5])), ('donor', 1, 'ctg', rg_fwd([1, 2, 6, 4, 5]))]
-rg_case('rg_no_patch', rg_n, rg_w, '-r frag -s frag -s donor --no-patch-fasta rg_no_patch.fa', 'frag#1#ctg\t20000\t30000\n',
+rg_case('rg_no_patch', rg_n, rg_w, '-r frag -s frag -s donor --min-swap-change 0 --no-patch-fasta rg_no_patch.fa', 'frag#1#ctg\t20000\t30000\n',
         {'frag#1#ctg#0': '+1 +2 +3 +4 +5'},
         ['the replaced sequence shares 100.0% of its k-mers with the no-patch sequences (rDNA, --no-patch-fasta) (unverifiable)'])
-rg_case('rg_no_patch_off', rg_n, rg_w, '-r frag -s frag -s donor', 'frag#1#ctg\t20000\t30000\n',
+rg_case('rg_no_patch_off', rg_n, rg_w, '-r frag -s frag -s donor --min-swap-change 0', 'frag#1#ctg\t20000\t30000\n',
         {'ctg_hap_1': '+1 +2 +6 +4 +5'})
 # ... and a FASTA of other sequence leaves the swap alone
-rg_case('rg_no_patch_other', rg_n, rg_w, '-r frag -s frag -s donor --no-patch-fasta rg_no_patch_other.fa', 'frag#1#ctg\t20000\t30000\n',
+rg_case('rg_no_patch_other', rg_n, rg_w, '-r frag -s frag -s donor --min-swap-change 0 --no-patch-fasta rg_no_patch_other.fa',
+        'frag#1#ctg\t20000\t30000\n', {'ctg_hap_1': '+1 +2 +6 +4 +5'})
+# --min-swap-change: by default that swap is not made, as it changes only 33 bases (edit distance).  A threshold of
+# 33 lets it through and 34 does not; a donor with a substitution every 90bp (111 of them) gets through by default
+rg_case('rg_near_identical', rg_n, rg_w, '-r frag -s frag -s donor', 'frag#1#ctg\t20000\t30000\n',
+        {'frag#1#ctg#0': '+1 +2 +3 +4 +5'}, ['near-identical swap: changes 33bp (edit distance) < --min-swap-change 100'])
+rg_case('rg_near_identical_33', rg_n, rg_w, '-r frag -s frag -s donor --min-swap-change 33', 'frag#1#ctg\t20000\t30000\n',
         {'ctg_hap_1': '+1 +2 +6 +4 +5'})
+rg_case('rg_near_identical_34', rg_n, rg_w, '-r frag -s frag -s donor --min-swap-change 34', 'frag#1#ctg\t20000\t30000\n',
+        {'frag#1#ctg#0': '+1 +2 +3 +4 +5'}, ['near-identical swap: changes 33bp (edit distance) < --min-swap-change 34'])
+rg_n[7] = ''.join({'A': 'C', 'C': 'G', 'G': 'T', 'T': 'A'}.get(c, c) if i % 90 == 45 else c for i, c in enumerate(rg_n[3]))
+rg_case('rg_swap_change', rg_n, [('frag', 1, 'ctg', rg_fwd([1, 2, 3, 4, 5])), ('donor', 1, 'ctg', rg_fwd([1, 2, 7, 4, 5]))],
+        '-r frag -s frag -s donor', 'frag#1#ctg\t20000\t30000\n', {'ctg_hap_1': '+1 +2 +7 +4 +5'})
+# ... and on a target stored antisense to the reference (rg_same_reverse's), whose replaced sequence is compared with
+# the reverse complement of the donor's
+rg_n = rg_K({k: 600 + k for k in range(1, 9)}, 10000); rg_n[9] = rg_snp(rg_n[4])
+rg_case('rg_near_identical_reverse', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 9))), ('frag', 1, 'ctg', ['-%d' % k for k in range(8, 0, -1)]),
+                                            ('donor', 1, 'ctg', rg_fwd([1, 2, 3, 9, 5, 6, 7, 8]))],
+        '-r x -s frag -s donor', 'frag#1#ctg\t40000\t50000\n', {'frag#1#ctg#0': '-8 -7 -6 -5 -4 -3 -2 -1'},
+        ['near-identical swap: changes 33bp (edit distance) < --min-swap-change 100'])
 # ... and a tip graft (tip_extension's, allowed by --max-subtelomere-graft 5000) is dropped too: one whose donor
 # sequence ends in no-patch sequence (8, in place of the donor's 6), and one whose target end is (frag's own 7,
 # past the gap; the donor's tip is the same with and without the FASTA)
@@ -954,16 +975,16 @@ rg_case('rg_no_patch_tip_end_off', te_nodes, rg_w, '-r frag -s frag -s donor --m
 del te_nodes[7], te_nodes[8]
 temp_files += ['rg_no_patch.fa', 'rg_no_patch_other.fa', 'rg_no_patch_tip.fa', 'rg_no_patch_tip_end.fa']
 # the built-in rDNA unit (rdna.hpp): frag's flagged 3 is 10kb of it, and the donor's 6 the same with a SNP every 300bp.
-# By default panpatch leaves it alone; with --patch-rdna the swap goes in
+# By default panpatch leaves it alone; with --patch-rdna the swap goes in (with --min-swap-change 0, as above)
 with open('../rdna.hpp') as f:
     rg_rdna = ''.join(re.findall(r'"([ACGTN]+)"', f.read()))
 rg_n = rg_K({1: 1801, 2: 1802, 4: 1804, 5: 1805}, 10000)
 rg_n[3] = rg_rdna[1000:11000]
 rg_n[6] = rg_snp(rg_n[3])
 rg_w = [('frag', 1, 'ctg', rg_fwd([1, 2, 3, 4, 5])), ('donor', 1, 'ctg', rg_fwd([1, 2, 6, 4, 5]))]
-rg_case('rg_rdna', rg_n, rg_w, '-r frag -s frag -s donor', 'frag#1#ctg\t20000\t30000\n',
+rg_case('rg_rdna', rg_n, rg_w, '-r frag -s frag -s donor --min-swap-change 0', 'frag#1#ctg\t20000\t30000\n',
         {'frag#1#ctg#0': '+1 +2 +3 +4 +5'}, ['the replaced sequence shares 100.0% of its k-mers with the no-patch sequences'])
-rg_case('rg_rdna_patch', rg_n, rg_w, '-r frag -s frag -s donor --patch-rdna', 'frag#1#ctg\t20000\t30000\n',
+rg_case('rg_rdna_patch', rg_n, rg_w, '-r frag -s frag -s donor --patch-rdna --min-swap-change 0', 'frag#1#ctg\t20000\t30000\n',
         {'ctg_hap_1': '+1 +2 +6 +4 +5'})
 # a donor that spells frag's rDNA exactly (7, a node of its own) is a no-op, reported as one, not as an rDNA rejection
 rg_n[7] = rg_n[3]

@@ -114,6 +114,9 @@ void help(char** argv) {
        << "        --max-swap-size-change N  Excise a swap (a graft over sequence with no N gap, or an insertion) that" << endl
        << "                                 makes its contig more than N bp longer or shorter: a copy-number change k-mer" << endl
        << "                                 recovery cannot check.  Gap fills are held to --max-graft-size-change only.  0 disables [10000]" << endl
+       << "        --min-swap-change N      Excise a swap whose donor sequence differs from the target sequence it replaces" << endl
+       << "                                 by fewer than N bases (edit distance).  A near-identical donor cannot be fixing" << endl
+       << "                                 a structural error, and only exchanges a few bases.  0 disables [100]" << endl
        << "        --no-patch-fasta FILE    More sequences no graft may replace or put in, besides the built-in rDNA" << endl
        << "                                 unit.  A graft whose replaced or inserted sequence, as a whole or in any 10kb" << endl
        << "                                 window, shares >= --no-patch-kmer-fraction of its (distinct, sampled) k-mers" << endl
@@ -162,6 +165,7 @@ int main(int argc, char** argv) {
     int64_t graft_complexity_min_bp = 2000;
     int64_t max_graft_pieces = 1;
     int64_t max_swap_size_change = 10000;
+    int64_t min_swap_change = 100;
     int64_t error_bed_end_slop = 1000;
     string no_patch_fasta;
     double no_patch_kmer_fraction = 0.3;
@@ -198,6 +202,7 @@ int main(int argc, char** argv) {
             {"graft-complexity-min-bp", required_argument, 0, 1015},
             {"max-graft-pieces", required_argument, 0, 1016},
             {"max-swap-size-change", required_argument, 0, 1017},
+            {"min-swap-change", required_argument, 0, 1022},
             {"error-bed-end-slop", required_argument, 0, 1021},
             {"no-patch-fasta", required_argument, 0, 1018},
             {"no-patch-kmer-fraction", required_argument, 0, 1019},
@@ -325,6 +330,9 @@ int main(int argc, char** argv) {
         case 1017:
             max_swap_size_change = strtoll(optarg, nullptr, 10);
             break;
+        case 1022:
+            min_swap_change = strtoll(optarg, nullptr, 10);
+            break;
         case 1018:
             no_patch_fasta = optarg;
             break;
@@ -394,6 +402,7 @@ int main(int argc, char** argv) {
     if (max_graft_pieces < 0) { cerr << "[panpatch] error: --max-graft-pieces must be >= 0" << endl; return 1; }
     if (error_bed_end_slop < 0) { cerr << "[panpatch] error: --error-bed-end-slop must be >= 0" << endl; return 1; }
     if (max_swap_size_change < 0) { cerr << "[panpatch] error: --max-swap-size-change must be >= 0" << endl; return 1; }
+    if (min_swap_change < 0) { cerr << "[panpatch] error: --min-swap-change must be >= 0" << endl; return 1; }
     if (!(no_patch_kmer_fraction > 0 && no_patch_kmer_fraction <= 1)) { cerr << "[panpatch] error: --no-patch-kmer-fraction must be in (0,1]" << endl; return 1; }
     NoPatch no_patch;
     no_patch.fraction = no_patch_kmer_fraction;
@@ -675,7 +684,8 @@ int main(int argc, char** argv) {
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, patch_gap, excised_nonN,
                                    max_graft_size_change, min_graft_complexity, graft_complexity_window,
-                                   graft_complexity_min_bp, max_graft_pieces, max_swap_size_change, no_patch_p);
+                                   graft_complexity_min_bp, max_graft_pieces, max_swap_size_change, min_swap_change,
+                                   no_patch_p);
 
         // final consistency guard: a patch that would write any sequence twice or out of order (see
         // patch_reuses_sequence) reverts the contig, whatever else passed

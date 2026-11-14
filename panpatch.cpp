@@ -2500,6 +2500,31 @@ bool record_scaffolds(const PathHandleGraph* graph,
     return bad;
 }
 
+// Edit distance (unit-cost substitutions, insertions and deletions; case-insensitive) between a and b, or cap if
+// it is cap or more.  Furthest-reaching points on each diagonal, O((|a| + |b|) * cap): fast for the near-identical
+// sequences it is meant to tell apart, however long they are
+static int64_t bounded_edit_distance(const string& a, const string& b, int64_t cap) {
+    const int64_t n = a.size(), m = b.size(), goal = m - n;
+    if (cap <= 0) return 0;
+    if (llabs(goal) >= cap) return cap;
+    const int64_t NEG = numeric_limits<int64_t>::min() / 4, off = cap + 1;
+    // furthest row i reached on diagonal k = j - i with d edits, for d - 1 (prev) and d (cur)
+    vector<int64_t> prev(2 * cap + 3, NEG), cur(2 * cap + 3, NEG);
+    for (int64_t d = 0; d < cap; ++d) {
+        for (int64_t k = -d; k <= d; ++k) {
+            // a substitution (along k), a deletion of a[i] (from k + 1) or an insertion of b[j] (from k - 1)
+            int64_t i = d == 0 ? 0 : max({prev[off + k] + 1, prev[off + k + 1] + 1, prev[off + k - 1]});
+            i = min({i, n, m - k});
+            if (i < max<int64_t>(0, -k)) { cur[off + k] = NEG; continue; }
+            while (i < n && i + k < m && toupper(a[i]) == toupper(b[i + k])) ++i;
+            cur[off + k] = i;
+            if (k == goal && i == n) return d;
+        }
+        swap(prev, cur);
+    }
+    return cap;
+}
+
 // Partial-patch cleanup (run before revert_bad_patch).  For each foreign interior graft of the shape
 // [C-piece | foreign run | same-C-piece], excise it -- drop the foreign run and merge the two flanking
 // C-pieces, splicing C's own sequence back in -- when it is a repeat-region misjoin by either test:
@@ -2519,7 +2544,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN,
                                 int64_t max_size_change, double min_complexity, int64_t complexity_window,
                                 int64_t complexity_min_bp, int64_t max_graft_pieces, int64_t max_swap_size_change,
-                                const NoPatch* no_patch) {
+                                int64_t min_swap_change, const NoPatch* no_patch) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -2671,13 +2696,31 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                          [&](char a, char b) { return toupper(a) == comp(b); })
                  : equal(removed.begin(), removed.end(), inserted.begin(),
                          [](char a, char b) { return toupper(a) == toupper(b); }));
+            // a swap whose donor differs from the target sequence it replaces at fewer than min_swap_change bases
+            // (edit distance) is not made either.  Read QC flags mostly structural errors (collapses, false
+            // duplications, misjoins), which a donor that agrees with the target almost everywhere cannot be
+            // fixing: it only exchanges a few bases.  On the HPRC pilot, at the bases such swaps changed, HiFi reads
+            // backed the target far more often than the donor, and some swaps copied in the other haplotype's
+            // allele.  Judged right after an identical donor, before the tests and guards, as it is nearly one
+            bool is_swap = nonN == (int64_t)removed.size();
+            int64_t swap_edits = -1;
+            if (min_swap_change > 0 && is_swap && !same_seq) {
+                if (get<2>(intervals[i])) {
+                    string rc(inserted.rbegin(), inserted.rend());
+                    for (char& c : rc) c = comp(c);
+                    swap_edits = bounded_edit_distance(removed, rc, min_swap_change);
+                } else {
+                    swap_edits = bounded_edit_distance(removed, inserted, min_swap_change);
+                }
+            }
+            bool near_identical = swap_edits >= 0 && swap_edits < min_swap_change;
             // no-patch sequence (the rDNA unit, --no-patch-fasta): high-copy sequence whose k-mers any copy shares,
             // so k-mer recovery passes whichever copy is swapped in
             double np_removed = no_patch_fraction(removed, no_patch), np_inserted = no_patch_fraction(inserted, no_patch);
             bool no_patch_hit = (np_removed >= 0 && np_removed >= no_patch->fraction) ||
                                 (np_inserted >= 0 && np_inserted >= no_patch->fraction);
-            bool unverifiable = !bad && !same_seq && (no_patch_hit || too_big || swap_too_big || low_cx || chimeric);
-            if (unverifiable || same_seq) bad = true;
+            bool unverifiable = !bad && !same_seq && !near_identical && (no_patch_hit || too_big || swap_too_big || low_cx || chimeric);
+            if (unverifiable || same_seq || near_identical) bad = true;
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
             // from the top after every excision, so only the final settled pass's kept grafts should be
@@ -2695,6 +2738,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 ostringstream rs; rs << fixed << setprecision(1);
                 if (!patch_gap)    rs << "gap-fill excluded by --patch-types";
                 else if (same_seq) rs << "donor sequence is identical to the target's: nothing to patch";
+                else if (near_identical) rs << "near-identical swap: changes " << swap_edits
+                                      << "bp (edit distance) < --min-swap-change " << min_swap_change;
                 else if (unverifiable && no_patch_hit) rs << "the " << (np_removed >= np_inserted ? "replaced" : "inserted")
                                       << " sequence shares " << 100.0 * max(np_removed, np_inserted)
                                       << "% of its k-mers with the no-patch sequences (rDNA, --no-patch-fasta) (unverifiable)";
@@ -2718,7 +2763,9 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 pr.reason = rs.str();
             }
             g_patch_records.push_back(pr);
-            if (!same_seq) excised_nonN[C] += nonN;   // so the revert backstop's threshold still sees this replaced bp
+            // so the revert backstop's threshold still sees this replaced bp (not for a donor that (nearly) spells
+            // the target: it was no misjoin)
+            if (!same_seq && !near_identical) excised_nonN[C] += nonN;
             // the patch visits piece i then piece j; merging them spans the whole region in the patch's
             // own direction -- (get<0> of i, get<1> of j) works for forward and reverse alike.
             tuple<step_handle_t, step_handle_t, bool> merged =
