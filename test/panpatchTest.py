@@ -798,6 +798,12 @@ for rg_base, rg_flag, rg_want in [('rg_donor_end_deep', '30000\t70000', '+1 +2 +
 rg_case('rg_donor_end_break', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 8))), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 9, 5, 6, 7])),
                                      ('donor', 1, 'ctg', rg_fwd(range(1, 6)))],
         '-r x -s frag -s donor', 'frag#1#ctg\t30000\t40000\ndonor#1#ctg\t30000\t50000\n', {'frag#1#ctg#0': '+1 +2 +3 +9 +5 +6 +7'})
+# a swap whose donor runs out just past it (here, at its end node 5) is anchored on that side only by the node it
+# shares there.  It was made on k-mer recovery alone, which judges its content but not where it sits
+rg_case('rg_flank_swap', rg_n, [('x', 0, 'chrX', rg_fwd(range(1, 8))), ('frag', 1, 'ctg', rg_fwd([1, 2, 3, 9, 5, 6, 7])),
+                                ('donor', 1, 'ctg', rg_fwd(range(1, 6)))],
+        '-r x -s frag -s donor', 'frag#1#ctg\t30000\t40000\n', {'frag#1#ctg#0': '+1 +2 +3 +9 +5 +6 +7'},
+        ['flank anchoring 100.0%/0.0% < 50.0% (wrong-locus join)'])
 # ... while a telomere graft from the end of a donor flagged from 30kb to its end (63.5kb) goes in: it takes the
 # donor's last 13.5kb (from its node 3 on).  It is blocked with --error-bed-end-slop 0, which keeps the whole flag
 rg_n = {1: 'CCCTAA' * 334, 2: rg_rnd(1802, 10000), 3: rg_rnd(1803, 10000), 4: rg_rnd(1804, 1500), 5: 'TTAGGG' * 335,

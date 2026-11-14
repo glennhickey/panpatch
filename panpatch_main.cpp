@@ -96,9 +96,9 @@ void help(char** argv) {
        << "                                 -T validation/patch and the always-on discarded-telomere guard) [0.8]" << endl
        << "        --graft-recovery FLOAT   Excise a foreign interior graft sharing less than this % of the replaced k-mers [50]" << endl
        << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
-       << "        --min-flank FLOAT        Excise a foreign interior graft replacing fewer than --graft-min-bp non-N bp (an" << endl
-       << "                                 N-gap fill), or revert a scaffold bridge, anchored to less than this % of the" << endl
-       << "                                 target flank on either side [50]" << endl
+       << "        --min-flank FLOAT        Excise a foreign interior graft, or revert a scaffold bridge, anchored to less than" << endl
+       << "                                 this % of the target flank on either side (its donor runs out or diverges just" << endl
+       << "                                 past it, or it is at the wrong locus) [50]" << endl
        << "        --flank-window N         Window (bp) each side of a graft over which flank anchoring is measured [500000]" << endl
        << "        --max-graft-size-change N  Excise a foreign interior graft that makes its contig more than N bp longer" << endl
        << "                                 or shorter: too large a change to verify (satellite arrays, rDNA gaps).  0 disables [100000]" << endl

@@ -2577,9 +2577,9 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 int64_t oa = max(p, lo), ob = min(p + l, hi); if (oa < ob) removed += graph->get_sequence(h).substr(oa - p, ob - oa); p += l; });
             int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
 
-            // Metrics for the report: k-mer recovery (CONTENT, when real sequence was replaced) AND flank
-            // anchoring (LOCUS, both sides) -- compute both so the table shows them.  The decision uses
-            // whichever is authoritative: k-mer for a non-N replacement, flank for a mostly-N gap fill.
+            // Metrics for the report and the decision: k-mer recovery (CONTENT, when real sequence was replaced)
+            // and flank anchoring (LOCUS, both sides).  Every graft must be anchored on both flanks; one that
+            // replaces real sequence must also recapitulate it.
             double rec = -1.0, fl = -1.0, fr = -1.0;
             vector<tuple<step_handle_t, step_handle_t, bool>> foreign(intervals.begin() + i + 1, intervals.begin() + j);
             string added = intervals_to_sequence(graph, foreign);
@@ -2600,7 +2600,11 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 unordered_set<nid_t> dR = path_node_set(graph, graph->get_path_handle_of_step(get<0>(intervals[j - 1])));
                 fr = flank_fraction(graph, get<0>(intervals[j]), !get<2>(intervals[j]), dR, flank_window);
             }
-            bool bad = (nonN >= min_replaced) ? (rec < min_recovery) : (fl < min_flank || fr < min_flank);
+            // (a swap whose donor runs out or diverges just past it is anchored on one side only, however well
+            // its content matches.  a contig's end is left to telomere and tip grafts, which have limits of their own)
+            bool low_recovery = rec >= 0 && rec < min_recovery;
+            bool low_flank = fl < min_flank || fr < min_flank;
+            bool bad = low_recovery || low_flank;
             if (!patch_gap) bad = true;   // gap patching disabled (--patch-types): excise every gap-fill graft, restoring the target's own (gapped) sequence
 
             // grafts that neither test can vouch for, excised to stay conservative: one that makes the
@@ -2651,8 +2655,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // piece, and that neither test above can vouch for: each piece is anchored where it switches
             int64_t n_pieces = j - i - 1;
             bool chimeric = max_graft_pieces > 0 && n_pieces > max_graft_pieces;
-            // a donor run that spells exactly the target sequence it replaces changes nothing (judged before the
-            // guards below, which would otherwise count a no-op as a rejected patch).  in a graph
+            // a donor run that spells exactly the target sequence it replaces changes nothing (judged first, so
+            // that neither the tests above nor the guards below count a no-op as a rejected patch).  in a graph
             // built from unmasked assemblies, a donor that agrees with the target across an --error-bed
             // interval threads the target's own nodes there: drop it, so the report counts only patches
             // that change the assembly
@@ -2661,7 +2665,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             auto comp = [](char c) {
                 switch (toupper(c)) { case 'A': return 'T'; case 'C': return 'G'; case 'G': return 'C'; case 'T': return 'A'; default: return (char)toupper(c); }
             };
-            bool same_seq = !bad && removed.size() == inserted.size() &&
+            bool same_seq = removed.size() == inserted.size() &&
                 (get<2>(intervals[i])
                  ? equal(removed.begin(), removed.end(), inserted.rbegin(),
                          [&](char a, char b) { return toupper(a) == comp(b); })
@@ -2709,7 +2713,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                     if (!whole) rs << " in a " << complexity_window << "bp window";
                     rs << " replaced/inserted < --min-graft-complexity " << min_complexity << ") (unverifiable)";
                 }
-                else if (rec >= 0) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
+                else if (low_recovery) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
                 else               rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
                 pr.reason = rs.str();
             }
