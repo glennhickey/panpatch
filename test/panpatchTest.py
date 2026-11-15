@@ -466,6 +466,11 @@ temp_files += ['tip_extension.gfa', 'tip_extension.vg', 'tip_extension.truth', '
 #                  fraction is well over 0.5 as a whole.  measured in 10kb windows too (the default) the array
 #                  still shows, and the graft is excised; with --graft-complexity-window 0 (the whole graft only)
 #                  it is kept
+#   graft_short_unit - as graft_satellite, with an 8kb array of a 13bp unit (19, 20; under --graft-min-bp, so judged
+#                  without k-mer recovery): it has only 13 distinct k-mers, and is seen because every k-mer is counted
+#   graft_fill_drops_real - donor's 1kb (16) replaces frag's 1kb N gap (2) and the 3kb of real sequence beside it (18),
+#                  dropping at least 2kb of it: over --max-swap-size-change 1000, as a swap would be; kept at the
+#                  default (graft_fill_drops_real_ok).  20kb either side (11, 12) keep the patch over --min-cover
 gv_rng = random.Random(17)
 gv_rnd = lambda n: ''.join(gv_rng.choice('ACGT') for _ in range(n))
 gv_unit = gv_rnd(171)
@@ -476,6 +481,10 @@ gv_snp = lambda s: ''.join({'A': 'C', 'C': 'G', 'G': 'T', 'T': 'A'}[c] if i % 30
 gv_nodes[13], gv_nodes[14] = gv_snp(gv_nodes[11]), gv_snp(gv_nodes[12])
 gv_nodes[15], gv_nodes[16] = 'N' * 5000, gv_rnd(1000)
 gv_nodes[18] = gv_rnd(3000)
+# a literal 13bp unit (drawn after the rest, so their sequences stay as they were): none of its 13 distinct 31-mers
+# falls in the 1/16 subsample by k-mer hash that the complexity measure used to take, so an array of it went unseen
+gv_short = 'CCGTAATGCCTTT'
+gv_nodes[19], gv_nodes[20] = (gv_short * 1000)[:8000], (gv_short * 1000)[:8200]
 gv_win_walks = {'frag' : [0, 1, 3, 11, 4, 5, 12, 9, 10], 'donor' : [0, 1, 3, 13, 8, 14, 9, 10]}
 gv_cases = {
     'graft_growth'    : ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '', (
@@ -514,6 +523,24 @@ gv_cases = {
                           'ctg\t1\tgap-fill\tfrag#1#ctg#0\t62100\tdonor#1#ctg#0\t62200\t12100\t100.0\t100.0\t100.0\trejected\tlow-complexity sequence (distinct k-mer fraction 0.01 replaced/inserted < --min-graft-complexity 0.50) (unverifiable)\t30000\t42100\n'
                           '#Unpatched (input contig) on ctg for frag#1:\n'
                           'frag#1#ctg#0\t0\t62100\t+\n'
+                          '\n')),
+    'graft_short_unit' : ({'frag' : [0, 1, 3, 19, 5, 9, 10], 'donor' : [0, 1, 3, 20, 9, 10]}, '', (
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t58100\tdonor#1#ctg#0\t58200\t8100\t.\t100.0\t100.0\trejected\tlow-complexity sequence (distinct k-mer fraction 0.00 replaced/inserted < --min-graft-complexity 0.50) (unverifiable)\t30000\t38100\n'
+                          '#Unpatched (input contig) on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t58100\t+\n'
+                          '\n')),
+    'graft_fill_drops_real' : ({'frag' : [11, 0, 1, 18, 2, 3, 9, 10, 12], 'donor' : [11, 0, 1, 16, 3, 9, 10, 12]},
+                               '--max-swap-size-change 1000', (
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t94000\tdonor#1#ctg#0\t91000\t4000\t.\t100.0\t100.0\trejected\tfills 1000bp of N gap and replaces 3000bp of sequence with 1000bp, dropping at least 2000bp of it, over --max-swap-size-change 1000 (unverifiable)\t40000\t44000\n'
+                          '#Unpatched (input contig) on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t94000\t+\n'
+                          '\n')),
+    'graft_fill_drops_real_ok' : ({'frag' : [11, 0, 1, 18, 2, 3, 9, 10, 12], 'donor' : [11, 0, 1, 16, 3, 9, 10, 12]}, '', (
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t94000\tdonor#1#ctg#0\t91000\t4000\t.\t100.0\t100.0\taccepted\t.\t40000\t44000\n'
+                          '#Patched assembly on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t30000\t+\n'
+                          'donor#1#ctg#0\t30000\t41000\t+\n'
+                          'frag#1#ctg#0\t44000\t94000\t+\n'
                           '\n')),
     'graft_satellite_window' : (gv_win_walks, '', (
                           'ctg\t1\tgap-fill\tfrag#1#ctg#0\t102100\tdonor#1#ctg#0\t102200\t52100\t89.6\t100.0\t100.0\trejected\tlow-complexity sequence (distinct k-mer fraction 0.02 in a 10000bp window replaced/inserted < --min-graft-complexity 0.50) (unverifiable)\t30000\t82100\n'

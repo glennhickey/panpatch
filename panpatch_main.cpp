@@ -79,7 +79,8 @@ void help(char** argv) {
        << "                                 none: a graft may only add sequence at the tip) [20000]" << endl
        << "        --max-subtelomere-graft N  Max bp of donor sequence a telomere patch may graft ahead of the donor's" << endl
        << "                                 telomere (a subtelomere the target lacks, which reads rarely vouch for), and a" << endl
-       << "                                 tip graft may add beyond the target bp it replaces.  0 disables [2000]" << endl
+       << "                                 tip graft may add beyond the target bp it replaces.  0: no limit, and a donor's" << endl
+       << "                                 contig-end --error-bed intervals then block its telomere patch like any other [2000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << "        --error-bed FILE         BED of assembly-error intervals on any input assembly, contigs named as the graph" << endl
        << "                                 names its paths (SAMPLE#HAP#CONTIG; HAP 0 for a haploid sample).  The target's" << endl
@@ -115,7 +116,7 @@ void help(char** argv) {
        << "                                 that copy is not counted against --max-graft-size-change; the N gap it fills is." << endl
        << "                                 0 disables [95]" << endl
        << "        --min-graft-complexity F  Excise a foreign interior graft that replaces or inserts >= --graft-complexity-min-bp of" << endl
-       << "                                 low-complexity sequence (distinct k-mer fraction < F over all of it, or in" << endl
+       << "                                 low-complexity sequence (distinct k-mer fraction, every k-mer counted, < F over all of it, or in" << endl
        << "                                 some --graft-complexity-window), which k-mer recovery cannot check (tandem" << endl
        << "                                 satellites).  0 disables [0.5]" << endl
        << "        --graft-complexity-window N  Also measure --min-graft-complexity in windows of N bp, so a satellite" << endl
@@ -125,7 +126,8 @@ void help(char** argv) {
        << "                                 replaced or inserted [2000]" << endl
        << "        --max-swap-size-change N  Excise a swap (a graft over sequence with no N gap, or an insertion) that" << endl
        << "                                 makes its contig more than N bp longer or shorter: a copy-number change k-mer" << endl
-       << "                                 recovery cannot check.  Gap fills are held to --max-graft-size-change only.  0 disables [10000]" << endl
+       << "                                 recovery cannot check.  A gap fill is held to it only on the real sequence it" << endl
+       << "                                 replaces beside its gap, which it may not fall short of by more than N.  0 disables [10000]" << endl
        << "        --min-swap-change N      Excise a swap whose donor sequence differs from the target sequence it replaces" << endl
        << "                                 by fewer than N bases (edit distance).  A near-identical donor cannot be fixing" << endl
        << "                                 a structural error, and only exchanges a few bases.  0 disables [100]" << endl

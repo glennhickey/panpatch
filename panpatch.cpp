@@ -1160,18 +1160,13 @@ double no_patch_fraction(const string& s, const NoPatch* no_patch) {
     return highest;
 }
 
-// fraction of the (sampled) canonical 31-mer positions in s that are distinct: near 1 for unique sequence,
-// near 0 for a tandem array (an alpha or HSat satellite repeats a few k-mers over and over), so a low value
-// means k-mer recovery cannot tell a faithful copy from any other array of the same family.  -1 if s has no
-// k-mers to sample
-static double kmer_distinct_fraction(const string& s) {
+// call f(start, code) for each canonical 31-mer of s (its 2-bit code, the lesser of the k-mer's and its reverse
+// complement's), skipping any k-mer that would span a base other than A/C/G/T
+template<typename F> static void for_each_canonical_kmer(const string& s, size_t from, size_t to, F f) {
     const int K = 31;
-    const uint64_t SAMPLE_MASK = 0xF;   // the same ~1/16 subsample as sample_kmers
-    unordered_set<uint64_t> seen;
-    int64_t total = 0;
     uint64_t fwd = 0, rev = 0, mask = (1ULL << (2 * K)) - 1;
     int valid = 0;
-    for (size_t i = 0; i < s.size(); ++i) {
+    for (size_t i = from; i < to; ++i) {
         int c;
         switch (s[i]) {
             case 'A': case 'a': c = 0; break;
@@ -1183,42 +1178,48 @@ static double kmer_distinct_fraction(const string& s) {
         if (c < 0) { valid = 0; fwd = rev = 0; continue; }
         fwd = ((fwd << 2) | (uint64_t)c) & mask;
         rev = (rev >> 2) | ((uint64_t)(3 - c) << (2 * (K - 1)));
-        if (++valid >= K) {
-            uint64_t h = hash64(min(fwd, rev));
-            if ((h & SAMPLE_MASK) == 0) { ++total; seen.insert(h); }
-        }
+        if (++valid >= K) f((int64_t)i + 1 - K, min(fwd, rev));
     }
-    return total ? (double)seen.size() / (double)total : -1.0;
 }
 
-// the lowest kmer_distinct_fraction over windows of `window` bp (overlapping by half) along s.  measured over
+// the fraction of the canonical 31-mers in s[from, to) that are distinct, counting every one: near 1 for unique
+// sequence, near 0 for a tandem array (an alpha or HSat satellite repeats a few k-mers over and over), so a low
+// value means k-mer recovery cannot tell a faithful copy from any other array of the same family.  Every k-mer is
+// counted, none sampled: an array with a short unit has only as many distinct k-mers as its unit is long, and a
+// subsample by k-mer hash (as sample_kmers takes) keeps all of a k-mer's copies or none, so it would see such an
+// array or miss it by chance (on the HPRC pilot, a 10 kb array of a 13 bp unit scored 0.61 with one hash and 0.22
+// with another).  -1 if there are fewer than min_kmers k-mers
+static double distinct_kmer_fraction(const string& s, size_t from, size_t to, int64_t min_kmers) {
+    vector<uint64_t> codes;
+    codes.reserve(to > from ? to - from : 0);
+    for_each_canonical_kmer(s, from, to, [&](int64_t, uint64_t code) { codes.push_back(code); });
+    if ((int64_t)codes.size() < max(min_kmers, (int64_t)1)) return -1.0;
+    int64_t total = codes.size();
+    sort(codes.begin(), codes.end());
+    return (double)(unique(codes.begin(), codes.end()) - codes.begin()) / (double)total;
+}
+
+// distinct_kmer_fraction over all of s.  -1 if s has no k-mers
+static double kmer_distinct_fraction(const string& s) {
+    return distinct_kmer_fraction(s, 0, s.size(), 1);
+}
+
+// the lowest distinct_kmer_fraction over windows of `window` bp (overlapping by half) along s.  measured over
 // a whole graft, a satellite array is diluted by the unique sequence around it (a 60 kb HSat1B array inside a
 // 100 kb swap leaves the graft's fraction near 0.6), so the array shows only in the windows that fall inside
 // it.  it does not replace the whole-sequence measure: a repeat whose copies lie further apart than half a
 // window (a tandem duplication with a long unit) shows over the whole graft but in no window.  -1 if window
-// is 0, s is no longer than one window, or no window has enough k-mers to judge (MIN_SAMPLED, ~1.6 kb of
-// sequence at the 1/16 subsample)
+// is 0, s is no longer than one window, or no window has enough k-mers to judge (MIN_KMERS, ~1.6 kb of sequence)
 static double min_window_distinct_fraction(const string& s, int64_t window) {
     if (window <= 0 || (int64_t)s.size() <= window) return -1.0;
-    const int K = 31;
-    const int64_t MIN_SAMPLED = 100;
-    vector<pair<int64_t, uint64_t>> sampled = sampled_kmer_positions(s);
+    const int64_t MIN_KMERS = 1600;
     double lowest = -1.0;
     int64_t step = max((int64_t)1, window / 2);
-    size_t first = 0;
     for (int64_t a = 0; a < (int64_t)s.size(); a += step) {
         // the last window is aligned to the end of s, so its tail is judged on a full window too
         int64_t start = min(a, (int64_t)s.size() - window);
-        while (first < sampled.size() && sampled[first].first < start) ++first;
-        unordered_set<uint64_t> seen;
-        int64_t total = 0;
-        for (size_t j = first; j < sampled.size() && sampled[j].first + K <= start + window; ++j) {
-            ++total; seen.insert(sampled[j].second);
-        }
-        if (total >= MIN_SAMPLED) {
-            double f = (double)seen.size() / (double)total;
-            if (lowest < 0 || f < lowest) lowest = f;
-        }
+        double f = distinct_kmer_fraction(s, start, start + window, MIN_KMERS);
+        if (f >= 0 && (lowest < 0 || f < lowest)) lowest = f;
         if (start + window >= (int64_t)s.size()) break;
     }
     return lowest;
@@ -2708,6 +2709,12 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // is a copy-number change (an array, a tandem duplication), which k-mer recovery cannot check.  an
             // N gap's length is only a placeholder, so a gap fill is not held to it
             bool swap_too_big = max_swap_size_change > 0 && !gap_fill && llabs(size_change) > max_swap_size_change;
+            // a gap fill that also replaces real sequence (a flagged interval beside an N gap) is held to it on the real
+            // part, as far as lengths show: a fill shorter than the real sequence it replaces drops at least the
+            // difference of it, a copy-number change as for a swap.  the gap hides how long the real part should be, so
+            // a longer fill says nothing.  what a dedup drops is a copy of sequence the contig keeps
+            int64_t real_shrink = nonN - (int64_t)inserted.size();
+            bool fill_drops_real = max_swap_size_change > 0 && gap_fill && !dedup && real_shrink > max_swap_size_change;
             // complexity of the replaced and inserted sequence, over the whole of each (cx_) and in its
             // lowest window (cxw_); either one low is enough
             double cx_removed = -1.0, cx_added = -1.0, cxw_removed = -1.0, cxw_added = -1.0;
@@ -2772,7 +2779,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             double np_removed = no_patch_fraction(removed, no_patch), np_inserted = no_patch_fraction(inserted, no_patch);
             bool no_patch_hit = (np_removed >= 0 && np_removed >= no_patch->fraction) ||
                                 (np_inserted >= 0 && np_inserted >= no_patch->fraction);
-            bool unverifiable = !bad && !same_seq && !near_identical && (no_patch_hit || too_big || swap_too_big || low_cx || chimeric);
+            bool unverifiable = !bad && !same_seq && !near_identical && (no_patch_hit || too_big || swap_too_big || fill_drops_real ||
+                                                                         low_cx || chimeric);
             if (unverifiable || same_seq || near_identical) bad = true;
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
@@ -2815,6 +2823,9 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                       << "bp, over --max-graft-size-change " << max_size_change << " (unverifiable)";
                 else if (unverifiable && swap_too_big) rs << "swap changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change
                                       << "bp, over --max-swap-size-change " << max_swap_size_change << " (unverifiable)";
+                else if (unverifiable && fill_drops_real) rs << "fills " << nN << "bp of N gap and replaces " << nonN
+                                      << "bp of sequence with " << inserted.size() << "bp, dropping at least " << real_shrink
+                                      << "bp of it, over --max-swap-size-change " << max_swap_size_change << " (unverifiable)";
                 else if (unverifiable) {
                     // the whole-sequence fraction when it is the low one, else the lowest window's
                     bool whole = low(cx_removed) || low(cx_added);
