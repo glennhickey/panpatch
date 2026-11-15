@@ -1224,16 +1224,19 @@ static double min_window_distinct_fraction(const string& s, int64_t window) {
     return lowest;
 }
 
-// percent of the distinct (sampled) k-mers in `removed` that also occur in `added`. a cheap,
-// strand-independent proxy for how much of the replaced target sequence the graft recapitulates.
-static double kmer_recovery(const string& removed, const string& added) {
+// percent of the distinct (sampled) k-mers in `removed` that also occur in `added` (or in any of `kept`). a
+// cheap, strand-independent proxy for how much of the replaced target sequence the graft recapitulates.
+static double kmer_recovery(const string& removed, const vector<const string*>& kept) {
     unordered_set<uint64_t> aset, rset;
-    sample_kmers(added, aset);
+    for (const string* s : kept) sample_kmers(*s, aset);
     sample_kmers(removed, rset);
     if (rset.empty()) return 0.0;
     int64_t found = 0;
     for (uint64_t h : rset) if (aset.count(h)) ++found;
     return 100.0 * (double)found / (double)rset.size();
+}
+static double kmer_recovery(const string& removed, const string& added) {
+    return kmer_recovery(removed, vector<const string*>{&added});
 }
 
 // Telomere / contig-end patching.
@@ -2100,6 +2103,7 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
                                         const string& target_sample,
                                         double min_recovery, int64_t min_replaced,
                                         const unordered_map<path_handle_t, int64_t>& excised_nonN,
+                                        const unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges,
                                         string& detail) {
     // step -> forward position index per contig used
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> path_index;
@@ -2130,6 +2134,14 @@ static bool interior_graft_low_recovery(const PathHandleGraph* graph,
         sort(r.begin(), r.end());
         vector<pair<int64_t, int64_t>> gaps;
         for (size_t i = 1; i < r.size(); ++i) { int64_t ga = r[i-1].second, gb = r[i].first; if (gb > ga) gaps.push_back(make_pair(ga, gb)); }
+        // a gap fill excise_bad_interior_grafts kept as a duplicate removed (--dedup-recovery) shares the k-mers
+        // it replaces with the target sequence beside it, not with its donor sequence: it is left out here
+        if (dedup_ranges && dedup_ranges->count(C)) {
+            const auto& dr = dedup_ranges->at(C);
+            gaps.erase(remove_if(gaps.begin(), gaps.end(), [&](const pair<int64_t, int64_t>& g) {
+                for (const auto& d : dr) if (g.first >= d.first && g.second <= d.second) return true;
+                return false; }), gaps.end());
+        }
         if (gaps.empty()) continue;
         // foreign intervals spliced between C's first and last appearance
         int lo = span[C].first, hi = span[C].second;
@@ -2548,7 +2560,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 unordered_map<path_handle_t, int64_t>& excised_nonN,
                                 int64_t max_size_change, double min_complexity, int64_t complexity_window,
                                 int64_t complexity_min_bp, int64_t max_graft_pieces, int64_t max_swap_size_change,
-                                int64_t min_swap_change, const NoPatch* no_patch) {
+                                int64_t min_swap_change, const NoPatch* no_patch, double min_dedup,
+                                unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -2558,10 +2571,12 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
         return m;
     };
     vector<PatchRecord> kept_this_call;   // kept grafts from the current pass (final pass survives)
+    vector<pair<path_handle_t, pair<int64_t, int64_t>>> dedup_this_call;   // and the target ranges of its kept dedups
     bool changed = true;
     while (changed) {
         changed = false;
         kept_this_call.clear();
+        dedup_this_call.clear();
         for (int i = 0; i + 1 < (int)intervals.size() && !changed; ++i) {
             path_handle_t C = graph->get_path_handle_of_step(get<0>(intervals[i]));
             if (graph->get_sample_name(C) != target_sample) continue;
@@ -2633,8 +2648,6 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // its content matches.  a contig's end is left to telomere and tip grafts, which have limits of their own)
             bool low_recovery = rec >= 0 && rec < min_recovery;
             bool low_flank = fl < min_flank || fr < min_flank;
-            bool bad = low_recovery || low_flank;
-            if (!patch_gap) bad = true;   // gap patching disabled (--patch-types): excise every gap-fill graft, restoring the target's own (gapped) sequence
 
             // grafts that neither test can vouch for, excised to stay conservative: one that makes the
             // contig much longer or shorter (a satellite array or rDNA gap swapped for the donor's), and one
@@ -2653,12 +2666,48 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 continue;
             }
             int64_t size_change = (int64_t)inserted.size() - (int64_t)removed.size();
-            bool too_big = max_size_change > 0 && llabs(size_change) > max_size_change;
+            // a gap fill: a graft over an N gap
+            bool gap_fill = nonN < (int64_t)removed.size();
+            // a gap fill that removes a duplicate.  where an assembly path's two pieces either side of a gap
+            // overlap, the sequence before the gap repeats after it, and the donor, spanning the gap, has it once:
+            // its fill removes one copy, so it shares few of the k-mers it replaces, which are in the copy kept
+            // beside it.  a fill that fails k-mer recovery passes it when min_dedup % of the k-mers it replaces are in
+            // the target's own sequence either side (the replaced length, at least DEDUP_MIN_CONTEXT, each way).  the
+            // copy an assembler makes of the same reads twice is all but exact, while a paralog nearby shares fewer
+            // (and the donor sequence is not counted: what it puts back is judged by k-mer recovery).  judged only
+            // on a fill that passes flank anchoring, which it must anyway
+            const int64_t DEDUP_MIN_CONTEXT = 50000;
+            double dup = -1.0;
+            if (gap_fill && min_dedup > 0 && low_recovery && !low_flank) {
+                int64_t F = max((int64_t)removed.size(), DEDUP_MIN_CONTEXT);
+                string left, right; int64_t q = 0;
+                graph->for_each_step_in_path(C, [&](step_handle_t s) {
+                    handle_t h = graph->get_handle_of_step(s); int64_t l = graph->get_length(h);
+                    int64_t la = max(q, lo - F), lb = min(q + l, lo), ra = max(q, hi), rb = min(q + l, hi + F);
+                    if (la < lb) left += graph->get_sequence(h).substr(la - q, lb - la);
+                    if (ra < rb) right += graph->get_sequence(h).substr(ra - q, rb - ra);
+                    q += l; });
+                dup = kmer_recovery(removed, vector<const string*>{&left, &right});
+            }
+            bool dedup = dup >= 0 && dup >= min_dedup;
+            if (dedup) low_recovery = false;
+            bool bad = low_recovery || low_flank;
+            if (!patch_gap) bad = true;   // gap patching disabled (--patch-types): excise every gap-fill graft, restoring the target's own (gapped) sequence
+            // a gap fill that replaces mostly N (no more real sequence than gap) is held to max_size_change only when it
+            // makes the contig shorter.  an N gap's length is only a placeholder, so a fill longer than it says nothing
+            // by its length; one that shortens the contig drops real sequence (an array the donor lacks), or the donor
+            // finds the gap shorter than its placeholder.  a fill that replaces mostly real sequence is held to it both
+            // ways, as any graft.  the real sequence a dedup removes is a copy of what the contig keeps, so it is not
+            // counted: the N gap it fills still is
+            int64_t nN = (int64_t)removed.size() - nonN;
+            int64_t shrink = (int64_t)removed.size() - (int64_t)inserted.size() - (dedup ? nonN : 0);
+            bool too_big = max_size_change > 0 && (gap_fill && nN >= nonN ? shrink > max_size_change
+                                                   : gap_fill && dedup ? shrink > max_size_change || size_change > max_size_change
+                                                   : llabs(size_change) > max_size_change);
             // a swap -- a graft over sequence with no N gap in it, or a pure insertion -- that changes the length
             // is a copy-number change (an array, a tandem duplication), which k-mer recovery cannot check.  an
-            // N gap's length is only a placeholder, so a gap fill is held to max_size_change alone
-            bool swap_too_big = max_swap_size_change > 0 && nonN == (int64_t)removed.size() &&
-                llabs(size_change) > max_swap_size_change;
+            // N gap's length is only a placeholder, so a gap fill is not held to it
+            bool swap_too_big = max_swap_size_change > 0 && !gap_fill && llabs(size_change) > max_swap_size_change;
             // complexity of the replaced and inserted sequence, over the whole of each (cx_) and in its
             // lowest window (cxw_); either one low is enough
             double cx_removed = -1.0, cx_added = -1.0, cxw_removed = -1.0, cxw_added = -1.0;
@@ -2737,7 +2786,17 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             pr.replaced_bp = removed.size(); pr.kmer = rec; pr.flankL = fl; pr.flankR = fr;
             pr.target_start = lo; pr.target_end = hi;   // the target region this graft replaced (fwd coords)
             pr.accepted = !bad;
-            if (!bad) { kept_this_call.push_back(pr); continue; }   // faithful (content) or anchored (locus) -- keep
+            // (a dedup's own k-mer recovery is reported as it is, and its reason says what passed it)
+            ostringstream dup_note; dup_note << fixed << setprecision(1);
+            if (dup >= 0) dup_note << dup << "% of the replaced k-mers in the target's own sequence either side ("
+                                   << (dedup ? ">=" : "<") << " --dedup-recovery " << min_dedup << ")";
+            if (!bad) {                                              // faithful (content) or anchored (locus) -- keep
+                if (dedup) {
+                    pr.reason = "removes a duplicate: " + dup_note.str();
+                    dedup_this_call.push_back(make_pair(C, make_pair(lo, hi)));
+                }
+                kept_this_call.push_back(pr); continue;
+            }
             {
                 ostringstream rs; rs << fixed << setprecision(1);
                 if (!patch_gap)    rs << "gap-fill excluded by --patch-types";
@@ -2749,6 +2808,9 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                       << "% of its k-mers with the no-patch sequences (rDNA, --no-patch-fasta) (unverifiable)";
                 else if (unverifiable && chimeric) rs << "spliced from " << n_pieces << " pieces of donor sequence, over --max-graft-pieces "
                                       << max_graft_pieces << " (no donor has it in one piece) (unverifiable)";
+                else if (unverifiable && too_big && dedup && shrink > max_size_change) rs << "removes a duplicate (" << dup_note.str() << "), but fills "
+                                      << (removed.size() - nonN) << "bp of N gap with " << inserted.size() << "bp, " << shrink
+                                      << "bp less, over --max-graft-size-change " << max_size_change << " (unverifiable)";
                 else if (unverifiable && too_big)  rs << "changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change
                                       << "bp, over --max-graft-size-change " << max_size_change << " (unverifiable)";
                 else if (unverifiable && swap_too_big) rs << "swap changes the contig's length by " << (size_change > 0 ? "+" : "") << size_change
@@ -2762,7 +2824,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                     if (!whole) rs << " in a " << complexity_window << "bp window";
                     rs << " replaced/inserted < --min-graft-complexity " << min_complexity << ") (unverifiable)";
                 }
-                else if (low_recovery) rs << "k-mer recovery " << rec << "% < " << min_recovery << "% (repeat-region misjoin)";
+                else if (low_recovery) rs << "k-mer recovery " << rec << "% < " << min_recovery << "%"
+                                      << (dup >= 0 ? "; " + dup_note.str() : string()) << " (repeat-region misjoin)";
                 else               rs << "flank anchoring " << fl << "%/" << fr << "% < " << min_flank << "% (wrong-locus join)";
                 pr.reason = rs.str();
             }
@@ -2781,6 +2844,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
     }
     // the final settled pass's kept grafts are the ones actually in the output
     for (auto& kp : kept_this_call) g_patch_records.push_back(kp);
+    if (dedup_ranges) for (auto& d : dedup_this_call) (*dedup_ranges)[d.first].push_back(d.second);
 }
 
 bool revert_bad_patch(const PathHandleGraph* graph,
@@ -2795,7 +2859,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       int64_t graft_min_bp,
                       double telo_threshold,
                       const unordered_map<path_handle_t, int64_t>& excised_nonN,
-                      string& revert_reason) {
+                      string& revert_reason,
+                      const unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges) {
 
     out_intervals.clear();
     
@@ -2846,7 +2911,7 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     // replaced -- a repeat-region misjoin where the donor came from a different locus
     // (thresholds controlled by --graft-recovery / --graft-min-bp)
     string graft_detail;
-    if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, excised_nonN, graft_detail)) {
+    if (interior_graft_low_recovery(graph, in_intervals, sample_names[0], graft_recovery, graft_min_bp, excised_nonN, dedup_ranges, graft_detail)) {
         revert_reason = graft_detail + " (repeat-region misjoin)";
         to_revert = true;
     }

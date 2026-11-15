@@ -105,7 +105,15 @@ void help(char** argv) {
        << "                                 past it, or it is at the wrong locus) [50]" << endl
        << "        --flank-window N         Window (bp) each side of a graft over which flank anchoring is measured [500000]" << endl
        << "        --max-graft-size-change N  Excise a foreign interior graft that makes its contig more than N bp longer" << endl
-       << "                                 or shorter: too large a change to verify (satellite arrays, rDNA gaps).  0 disables [100000]" << endl
+       << "                                 or shorter: too large a change to verify (satellite arrays, rDNA gaps).  A gap" << endl
+       << "                                 fill that replaces mostly N is held to it only when it makes the contig shorter," << endl
+       << "                                 an N gap's length being only a placeholder.  0 disables [100000]" << endl
+       << "        --dedup-recovery FLOAT   Keep a gap fill that fails --graft-recovery when at least this % of the k-mers" << endl
+       << "                                 it replaces are in the target's own sequence either side (the replaced length," << endl
+       << "                                 at least 50kb, each way).  It removes one copy of sequence the assembly has" << endl
+       << "                                 twice, either side of the gap (the two pieces of its path there overlap), and" << endl
+       << "                                 that copy is not counted against --max-graft-size-change; the N gap it fills is." << endl
+       << "                                 0 disables [95]" << endl
        << "        --min-graft-complexity F  Excise a foreign interior graft that replaces or inserts >= --graft-complexity-min-bp of" << endl
        << "                                 low-complexity sequence (distinct k-mer fraction < F over all of it, or in" << endl
        << "                                 some --graft-complexity-window), which k-mer recovery cannot check (tandem" << endl
@@ -164,6 +172,7 @@ int main(int argc, char** argv) {
     double min_flank = 50.0;
     int64_t flank_window = 500000;
     int64_t max_graft_size_change = 100000;
+    double dedup_recovery = 95.0;
     double min_graft_complexity = 0.5;
     int64_t graft_complexity_window = 10000;
     int64_t graft_complexity_min_bp = 2000;
@@ -200,6 +209,7 @@ int main(int argc, char** argv) {
             {"bed", required_argument, 0, 1007},
             {"telomere-report", required_argument, 0, 1009},
             {"max-graft-size-change", required_argument, 0, 1010},
+            {"dedup-recovery", required_argument, 0, 1024},
             {"max-subtelomere-graft", required_argument, 0, 1012},
             {"min-graft-complexity", required_argument, 0, 1011},
             {"error-bed", required_argument, 0, 1013},
@@ -315,6 +325,9 @@ int main(int argc, char** argv) {
         case 1010:
             max_graft_size_change = strtoll(optarg, nullptr, 10);
             break;
+        case 1024:
+            dedup_recovery = atof(optarg);
+            break;
         case 1012:
             max_subtelomere_graft = strtoll(optarg, nullptr, 10);
             break;
@@ -405,6 +418,7 @@ int main(int argc, char** argv) {
     if (graft_min_bp < 0) { cerr << "[panpatch] error: --graft-min-bp must be >= 0" << endl; return 1; }
     if (flank_window <= 0) { cerr << "[panpatch] error: --flank-window must be > 0" << endl; return 1; }
     if (max_graft_size_change < 0) { cerr << "[panpatch] error: --max-graft-size-change must be >= 0" << endl; return 1; }
+    if (dedup_recovery < 0 || dedup_recovery > 100) { cerr << "[panpatch] error: --dedup-recovery must be in [0,100]" << endl; return 1; }
     if (min_graft_complexity < 0 || min_graft_complexity > 1) { cerr << "[panpatch] error: --min-graft-complexity must be in [0,1]" << endl; return 1; }
     if (graft_complexity_window < 0) { cerr << "[panpatch] error: --graft-complexity-window must be >= 0" << endl; return 1; }
     if (graft_complexity_min_bp < 0) { cerr << "[panpatch] error: --graft-complexity-min-bp must be >= 0" << endl; return 1; }
@@ -691,11 +705,12 @@ int main(int argc, char** argv) {
         // excised_nonN carries the non-N bp removed per contig so revert_bad_patch's backstop threshold
         // still accounts for them.
         unordered_map<path_handle_t, int64_t> excised_nonN;
+        unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>> dedup_ranges;
         excise_bad_interior_grafts(graph, patched_intervals, sample_names[0], graft_recovery, graft_min_bp,
                                    min_flank, flank_window, patch_gap, excised_nonN,
                                    max_graft_size_change, min_graft_complexity, graft_complexity_window,
                                    graft_complexity_min_bp, max_graft_pieces, max_swap_size_change, min_swap_change,
-                                   no_patch_p);
+                                   no_patch_p, dedup_recovery, &dedup_ranges);
 
         // final consistency guard: a patch that would write any sequence twice or out of order (see
         // patch_reuses_sequence) reverts the contig, whatever else passed
@@ -728,7 +743,8 @@ int main(int argc, char** argv) {
         string revert_reason;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
                                          patched_intervals, input_intervals,
-                                         default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN, revert_reason);
+                                         default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN, revert_reason,
+                                         &dedup_ranges);
 
         // Also revert if the patch reuses sequence, telomere validation failed or a foreign-bridged scaffold
         // is a wrong-locus misjoin

@@ -382,7 +382,7 @@ with open('backstop_nfill.gfa', 'w') as f:
         f.write('W\t{}\t1\tctg\t0\t{}\t{}\n'.format(sample, sum(len(bs_nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
 with open('backstop_nfill.truth', 'w') as f:
     f.write(
-        'ctg\t1\tgap-fill\tfrag#1#ctg#0\t73100\tdonor#1#ctg#0\t73100\t12100\t0.0\t96.8\t100.0\trejected\tk-mer recovery 0.0% < 50.0% (repeat-region misjoin)\t41000\t53100\n'
+        'ctg\t1\tgap-fill\tfrag#1#ctg#0\t73100\tdonor#1#ctg#0\t73100\t12100\t0.0\t96.8\t100.0\trejected\tk-mer recovery 0.0% < 50.0%; 0.0% of the replaced k-mers in the target\'s own sequence either side (< --dedup-recovery 95.0) (repeat-region misjoin)\t41000\t53100\n'
         'ctg\t1\tgap-fill\tfrag#1#ctg#0\t73100\tdonor#1#ctg#0\t73100\t1000\t.\t100.0\t71.3\taccepted\t.\t20000\t21000\n'
         '#Patched assembly on ctg for frag#1:\n'
         'frag#1#ctg#0\t0\t10000\t+\n'
@@ -451,8 +451,13 @@ for te_args, te_expect in te_truth.items():
 temp_files += ['tip_extension.gfa', 'tip_extension.vg', 'tip_extension.truth', 'tip_extension.out']
 
 # Interior grafts that the content and locus tests cannot vouch for are excised (the rest of the patch kept):
-#   graft_growth - frag's 1kb N gap (2) is filled with 5kb of donor (7): accepted by default, but over
-#                  --max-graft-size-change 1000 the +4kb change is too large to verify
+#   graft_growth - frag's 1kb N gap (2) is filled with 5kb of donor (7): accepted, even at
+#                  --max-graft-size-change 1000 (graft_growth_cap): an N gap's length is only a placeholder, so a
+#                  gap fill is held to it only when it makes the contig shorter
+#   graft_shrink_cap - frag's 5kb N gap (15) is filled with 1kb of donor (16): over --max-graft-size-change 1000
+#                  the -4kb change is too large to verify
+#   graft_growth_real_cap - the donor's 5kb (7) replaces frag's 1kb N gap and 3kb of its own sequence (18): mostly
+#                  real sequence, so the fill is held to --max-graft-size-change both ways, and +1kb is over 500
 #   graft_satellite - frag's 12kb tandem array (4, a 171bp unit, then a short N run 5 that sends the threading
 #                  to donor) is replaced by donor's copy of the same array (8): k-mer recovery passes, as it
 #                  would for any array of the family, but the run is low-complexity and cannot be verified
@@ -469,6 +474,8 @@ gv_nodes = {0: gv_rnd(10000), 1: gv_rnd(10000), 2: 'N' * 1000, 3: gv_rnd(10000),
             11: gv_rnd(20000), 12: gv_rnd(20000)}
 gv_snp = lambda s: ''.join({'A': 'C', 'C': 'G', 'G': 'T', 'T': 'A'}[c] if i % 300 == 150 else c for i, c in enumerate(s))
 gv_nodes[13], gv_nodes[14] = gv_snp(gv_nodes[11]), gv_snp(gv_nodes[12])
+gv_nodes[15], gv_nodes[16] = 'N' * 5000, gv_rnd(1000)
+gv_nodes[18] = gv_rnd(3000)
 gv_win_walks = {'frag' : [0, 1, 3, 11, 4, 5, 12, 9, 10], 'donor' : [0, 1, 3, 13, 8, 14, 9, 10]}
 gv_cases = {
     'graft_growth'    : ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '', (
@@ -487,9 +494,21 @@ gv_cases = {
                           'frag#1#ctg#0\t21000\t51000\t+\n'
                           '\n')),
     'graft_growth_cap': ({'frag' : [0, 1, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '--max-graft-size-change 1000', (
-                          "ctg\t1\tgap-fill\tfrag#1#ctg#0\t51000\tdonor#1#ctg#0\t55000\t1000\t.\t100.0\t100.0\trejected\tchanges the contig's length by +4000bp, over --max-graft-size-change 1000 (unverifiable)\t20000\t21000\n"
+                          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t51000\tdonor#1#ctg#0\t55000\t1000\t.\t100.0\t100.0\taccepted\t.\t20000\t21000\n'
+                          '#Patched assembly on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t10000\t+\n'
+                          'donor#1#ctg#0\t10000\t25000\t+\n'
+                          'frag#1#ctg#0\t21000\t51000\t+\n'
+                          '\n')),
+    'graft_shrink_cap': ({'frag' : [0, 1, 15, 3, 9, 10], 'donor' : [0, 1, 16, 3, 9, 10]}, '--max-graft-size-change 1000', (
+                          "ctg\t1\tgap-fill\tfrag#1#ctg#0\t55000\tdonor#1#ctg#0\t51000\t5000\t.\t100.0\t100.0\trejected\tchanges the contig's length by -4000bp, over --max-graft-size-change 1000 (unverifiable)\t20000\t25000\n"
                           '#Unpatched (input contig) on ctg for frag#1:\n'
-                          'frag#1#ctg#0\t0\t51000\t+\n'
+                          'frag#1#ctg#0\t0\t55000\t+\n'
+                          '\n')),
+    'graft_growth_real_cap': ({'frag' : [0, 1, 18, 2, 3, 9, 10], 'donor' : [0, 1, 7, 3, 9, 10]}, '--max-graft-size-change 500', (
+                          "ctg\t1\tgap-fill\tfrag#1#ctg#0\t54000\tdonor#1#ctg#0\t55000\t4000\t.\t100.0\t100.0\trejected\tchanges the contig's length by +1000bp, over --max-graft-size-change 500 (unverifiable)\t20000\t24000\n"
+                          '#Unpatched (input contig) on ctg for frag#1:\n'
+                          'frag#1#ctg#0\t0\t54000\t+\n'
                           '\n')),
     'graft_satellite' : ({'frag' : [0, 1, 3, 4, 5, 9, 10], 'donor' : [0, 1, 3, 8, 9, 10]}, '', (
                           'ctg\t1\tgap-fill\tfrag#1#ctg#0\t62100\tdonor#1#ctg#0\t62200\t12100\t100.0\t100.0\t100.0\trejected\tlow-complexity sequence (distinct k-mer fraction 0.01 replaced/inserted < --min-graft-complexity 0.50) (unverifiable)\t30000\t42100\n'
@@ -918,6 +937,41 @@ rg_case('rg_swap_cap', eb_nodes, rg_ins, '-r frag -s frag -s donor --max-swap-si
         {'frag#1#ctg#0': '+10 +0 +1 +2 +5 +6 +8 +9'}, ['swap changes the contig\'s length by +2000bp, over --max-swap-size-change 1000 (unverifiable)'])
 rg_case('rg_swap_cap_default', eb_nodes, rg_ins, '-r frag -s frag -s donor', 'frag#1#ctg\t30000\t50000\n',
         {'ctg_hap_1': '+10 +0 +1 +2 +7 +5 +6 +8 +9'})
+# --dedup-recovery: frag's two path pieces either side of its N gap (3) overlap, so 12kb of sequence (2) is there
+# twice, the second copy (4) right after the gap, and the donor has it once.  The donor's fill of the gap removes
+# the second copy and puts nothing in: it shares none of the k-mers it replaces (k-mer recovery 0%), all of which
+# are in the copy kept just before the gap.  (0 and 8 are 150kb, so that the 13kb removed keeps the patch over
+# --min-cover)
+#   rg_dedup        - kept, as a duplicate removed, and the low k-mer recovery backstop leaves it out
+#   rg_dedup_off    - with --dedup-recovery 0 it fails k-mer recovery, and frag keeps its gap
+#   rg_dedup_cap    - at --max-graft-size-change 5000 its -13kb change is over the limit, but it is kept: the 12kb
+#                     copy it removes is not counted, and its 1kb N gap is within the limit
+#   rg_dedup_ngap   - the same with a 20kb N gap (9): the copy is still not counted, but the gap is, and at
+#                     --max-graft-size-change 5000 the fill is not made
+#   rg_dedup_extra  - the fill also removes 3kb (5) that frag has only once: 80% of the k-mers it replaces are
+#                     in frag's sequence either side, under 95, and it fails k-mer recovery
+#   rg_dedup_unique - what follows the gap (6) is no copy of what precedes it: an ordinary misjoin
+dd_n = {0: rg_rnd(701, 150000), 1: rg_rnd(702, 10000), 2: rg_rnd(703, 12000), 3: 'N' * 1000, 5: rg_rnd(705, 3000),
+        6: rg_rnd(706, 12000), 7: rg_rnd(707, 10000), 8: rg_rnd(708, 150000), 9: 'N' * 20000}
+dd_n[4] = dd_n[2]
+dd_donor = ('donor', 1, 'ctg', rg_fwd([0, 1, 2, 7, 8]))
+dd_frag = lambda ids: [('frag', 1, 'ctg', rg_fwd(ids)), dd_donor]
+rg_case('rg_dedup', dd_n, dd_frag([0, 1, 2, 3, 4, 7, 8]), '-r frag -s frag -s donor', None, {'ctg_hap_1': '+0 +1 +2 +7 +8'},
+        ['\taccepted\tremoves a duplicate: 100.0% of the replaced k-mers in the target\'s own sequence either side (>= --dedup-recovery 95.0)'])
+rg_case('rg_dedup_off', dd_n, dd_frag([0, 1, 2, 3, 4, 7, 8]), '-r frag -s frag -s donor --dedup-recovery 0', None,
+        {'frag#1#ctg#0': '+0 +1 +2 +3 +2 +7 +8'}, ['k-mer recovery 0.0% < 50.0% (repeat-region misjoin)'])
+rg_case('rg_dedup_cap', dd_n, dd_frag([0, 1, 2, 3, 4, 7, 8]), '-r frag -s frag -s donor --max-graft-size-change 5000', None,
+        {'ctg_hap_1': '+0 +1 +2 +7 +8'}, ['\taccepted\tremoves a duplicate: 100.0%'])
+rg_case('rg_dedup_ngap', dd_n, dd_frag([0, 1, 2, 9, 4, 7, 8]), '-r frag -s frag -s donor --max-graft-size-change 5000', None,
+        {'frag#1#ctg#0': '+0 +1 +2 +9 +2 +7 +8'},
+        ['removes a duplicate (100.0% of the replaced k-mers in the target\'s own sequence either side (>= --dedup-recovery 95.0)), '
+         'but fills 20000bp of N gap with 0bp, 20000bp less, over --max-graft-size-change 5000 (unverifiable)'])
+rg_case('rg_dedup_extra', dd_n, dd_frag([0, 1, 2, 3, 4, 5, 7, 8]), '-r frag -s frag -s donor', None,
+        {'frag#1#ctg#0': '+0 +1 +2 +3 +2 +5 +7 +8'},
+        ['k-mer recovery 0.0% < 50.0%; 80.', '% of the replaced k-mers in the target\'s own sequence either side (< --dedup-recovery 95.0) (repeat-region misjoin)'])
+rg_case('rg_dedup_unique', dd_n, dd_frag([0, 1, 2, 3, 6, 7, 8]), '-r frag -s frag -s donor', None,
+        {'frag#1#ctg#0': '+0 +1 +2 +3 +6 +7 +8'},
+        ['k-mer recovery 0.0% < 50.0%; 0.0% of the replaced k-mers in the target\'s own sequence'])
 # --no-patch-fasta: frag's flagged 3 is swapped for the donor's copy (6: 3 with a SNP every 300bp, so k-mer
 # recovery passes) unless 3 is named in the no-patch FASTA, as an rDNA unit would be.  The FASTA has CRLF line
 # ends, which once broke its k-mers at every line.  (The swap changes only 33 bases, so these cases set

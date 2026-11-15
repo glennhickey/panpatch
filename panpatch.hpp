@@ -284,7 +284,11 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 int64_t max_graft_pieces = 0,
                                 int64_t max_swap_size_change = 0,
                                 int64_t min_swap_change = 0,
-                                const NoPatch* no_patch = nullptr);
+                                const NoPatch* no_patch = nullptr,
+                                // keep a gap fill that removes a duplicate (--dedup-recovery; 0 disables), and
+                                // record the target range it replaced, per contig, for revert_bad_patch
+                                double min_dedup = 0.0,
+                                std::unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges = nullptr);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,
@@ -299,7 +303,10 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       int64_t graft_min_bp,
                       double telo_threshold,
                       const std::unordered_map<path_handle_t, int64_t>& excised_nonN,
-                      std::string& revert_reason);
+                      std::string& revert_reason,
+                      // gap fills excise_bad_interior_grafts kept as duplicates removed, which the
+                      // low k-mer recovery backstop leaves out
+                      const std::unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges = nullptr);
 
 // make sure all intervals have the correct orientation (and assert fail if not)
 void check_intervals(const PathHandleGraph* graph,
