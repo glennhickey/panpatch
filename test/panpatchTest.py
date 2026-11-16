@@ -450,6 +450,70 @@ for te_args, te_expect in te_truth.items():
     run('diff tip_extension.out tip_extension.truth')
 temp_files += ['tip_extension.gfa', 'tip_extension.vg', 'tip_extension.truth', 'tip_extension.out']
 
+# A graft at a contig end may not grow it by more than --max-subtelomere-graft beyond the bp it replaces, nor take off
+# more than --max-telomere-loss bp of telomere repeat (TTAGGG/CCCTAA runs) beyond what it brings in.  (On the HPRC
+# pilot, ONT reads ran past the new tip of every graft these block.)  frag's p end is capless:
+#   telo_growth   - frag starts at the subtelomere (24): donor's 3kb array (27) at its tip would grow the end by
+#                   3000bp, over the default 2000 (telo_growth_ok: at 3000 it is taken)
+#   telo_loss     - frag's tip is 2kb of junk (21) over its own 3kb array (22): donor's 1kb array (23) would replace
+#                   both, losing 1998bp of telomere repeat, over the default 1000 (telo_loss_ok: at 1998 it is taken)
+#   telo_loss_tip - the same at a tip graft: frag's N gap (33) keeps it from its q end, its 3kb array (38) under 2kb
+#                   of junk (39); donor bridges the gap (34) and ends in a 1kb array (40).  the tip graft is dropped,
+#                   and the telomere graft that is then tried at frag's own end too (telo_loss_tip_ok: the tip graft
+#                   is taken at 1998, and no telomere graft is made on top of it)
+tl_rng = random.Random(23)
+tl_rnd = lambda n: ''.join(tl_rng.choice('ACGT') for _ in range(n))
+tl_nodes = {21: tl_rnd(2000), 22: 'CCCTAA' * 500, 23: 'CCCTAA' * 167, 24: tl_rnd(3000), 25: tl_rnd(80000),
+            26: 'TTAGGG' * 334, 27: 'CCCTAA' * 500, 31: tl_rnd(80000), 32: tl_rnd(10000), 33: 'N' * 1000,
+            34: tl_rnd(2000), 35: tl_rnd(10000), 38: 'TTAGGG' * 500, 39: tl_rnd(2000), 40: 'TTAGGG' * 167}
+tl_growth = {'x' : [24, 25, 26], 'frag' : [24, 25, 26], 'donor' : [27, 24, 25, 26]}
+tl_loss = {'x' : [24, 25, 26], 'frag' : [21, 22, 24, 25, 26], 'donor' : [23, 24, 25, 26]}
+tl_tip = {'x' : [31, 32, 34, 35], 'frag' : [31, 32, 33, 35, 38, 39], 'donor' : [31, 32, 34, 35, 40]}
+tl_cases = {
+    'telo_growth'      : (tl_growth, '', (
+                          "chrX\t1\ttelomere\tfrag#1#ctg#0\t85004\tdonor#1#ctg#0\t88004\t0\t.\t.\t.\trejected\tdonor's graft adds 3000bp for 0bp of the target's end, more than --max-subtelomere-graft 2000 beyond it\t0\t0\n"
+                          '#Unpatched (input contig) on chrX for frag#1:\n'
+                          'frag#1#ctg#0\t0\t85004\t+\n'
+                          '\n')),
+    'telo_growth_ok'   : (tl_growth, '--max-subtelomere-graft 3000', (
+                          'chrX\t1\ttelomere\tfrag#1#ctg#0\t85004\tdonor#1#ctg#0\t88004\t0\t0.0\t.\t.\taccepted\t.\t0\t0\n'
+                          '#Patched assembly on chrX for frag#1:\n'
+                          'donor#1#ctg#0\t0\t3000\t+\n'
+                          'frag#1#ctg#0\t0\t85004\t+\n'
+                          '\n')),
+    'telo_loss'        : (tl_loss, '', (
+                          "chrX\t1\ttelomere\tfrag#1#ctg#0\t90004\tdonor#1#ctg#0\t86006\t5000\t.\t.\t.\trejected\tdonor's graft takes off 3000bp of telomere repeat and brings in 1002bp, a loss of 1998bp over --max-telomere-loss 1000\t0\t5000\n"
+                          '#Unpatched (input contig) on chrX for frag#1:\n'
+                          'frag#1#ctg#0\t0\t90004\t+\n'
+                          '\n')),
+    'telo_loss_ok'     : (tl_loss, '--max-telomere-loss 1998', (
+                          'chrX\t1\ttelomere\tfrag#1#ctg#0\t90004\tdonor#1#ctg#0\t86006\t5000\t1.6\t.\t.\taccepted\t.\t0\t5000\n'
+                          '#Patched assembly on chrX for frag#1:\n'
+                          'donor#1#ctg#0\t0\t1002\t+\n'
+                          'frag#1#ctg#0\t5000\t90004\t+\n'
+                          '\n')),
+    'telo_loss_tip'    : (tl_tip, '', (
+                          'chrX\t1\tgap-fill\tfrag#1#ctg#0\t106000\tdonor#1#ctg#0\t103002\t16000\t.\t.\t.\trejected\ttip graft takes off 3000bp of telomere repeat and brings in 1002bp, a loss of 1998bp over --max-telomere-loss 1000; the target keeps its own end\t90000\t106000\n'
+                          "chrX\t1\ttelomere\tfrag#1#ctg#0\t106000\tdonor#1#ctg#0\t103002\t5000\t.\t.\t.\trejected\tdonor's graft takes off 3000bp of telomere repeat and brings in 1002bp, a loss of 1998bp over --max-telomere-loss 1000\t101000\t106000\n"
+                          '#Unpatched (input contig) on chrX for frag#1:\n'
+                          'frag#1#ctg#0\t0\t106000\t+\n'
+                          '\n')),
+    'telo_loss_tip_ok' : (tl_tip, '--max-telomere-loss 1998', (
+                          'chrX\t1\tgap-fill\tfrag#1#ctg#0\t106000\tdonor#1#ctg#0\t103002\t16000\t.\t.\t.\taccepted\t.\t90000\t106000\n'
+                          '#Patched assembly on chrX for frag#1:\n'
+                          'frag#1#ctg#0\t0\t80000\t+\n'
+                          'donor#1#ctg#0\t80000\t103002\t+\n'
+                          '\n')),
+}
+for base, (walks, args, truth) in tl_cases.items():
+    n_gfa(base + '.gfa', tl_nodes, walks)
+    with open(base + '.truth', 'w') as f:
+        f.write(truth)
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    run('panpatch {0}.vg -r x -s frag -s donor {1} --bed {0}.int 2>/dev/null | grep -v "^chrom" | {2} > {0}.rep ; cat {0}.rep {0}.int > {0}.out'.format(base, args, telo_filter))
+    run('diff {0}.out {0}.truth'.format(base))
+    temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
+
 # Interior grafts that the content and locus tests cannot vouch for are excised (the rest of the patch kept):
 #   graft_growth - frag's 1kb N gap (2) is filled with 5kb of donor (7): accepted, even at
 #                  --max-graft-size-change 1000 (graft_growth_cap): an N gap's length is only a placeholder, so a

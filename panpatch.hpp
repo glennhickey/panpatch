@@ -165,8 +165,10 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHan
 // for each terminal end lacking a telomere, walk inward from the tip to the nearest node also
 // visited by a foreign cover, and if that cover runs outward to a real telomere and the patched
 // end would pass the -T telomere check, splice it on (replacing the target's capless tail beyond
-// the shared handoff node).  a handoff replacing more than max_handoff bp of target, or grafting more
-// than max_subtelomere bp of donor sequence ahead of the donor's telomere (0: no limit), is not taken.
+// the shared handoff node).  a handoff replacing more than max_handoff bp of target, grafting more
+// than max_subtelomere bp of donor sequence ahead of the donor's telomere or beyond the target bp it
+// replaces (0: no limit), or taking off more than max_telomere_loss bp more telomere repeat than it
+// brings in, is not taken.
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const PathHandleGraph* graph,
                                                                       const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                                                       const unordered_map<string, vector<path_handle_t>>& sample_covers,
@@ -174,6 +176,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
                                                                       double telo_threshold=0.8,
                                                                       int64_t max_handoff=20000,
                                                                       int64_t max_subtelomere=2000,
+                                                                      int64_t max_telomere_loss=1000,
                                                                       bool verbose=false,
                                                                       bool report_failures=false,
                                                                       const ErrorRegions* error_regions=nullptr,
@@ -254,6 +257,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                double telo_threshold = 0.8,
                                                                int64_t max_telomere_patch = 20000,
                                                                int64_t max_subtelomere_graft = 2000,
+                                                               int64_t max_telomere_loss = 1000,
                                                                bool verbose = false,
                                                                bool report_telomere_failures = false,
                                                                unordered_set<path_handle_t>* threaded_tgt_paths = nullptr,

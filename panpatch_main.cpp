@@ -79,8 +79,12 @@ void help(char** argv) {
        << "                                 none: a graft may only add sequence at the tip) [20000]" << endl
        << "        --max-subtelomere-graft N  Max bp of donor sequence a telomere patch may graft ahead of the donor's" << endl
        << "                                 telomere (a subtelomere the target lacks, which reads rarely vouch for), and a" << endl
-       << "                                 tip graft may add beyond the target bp it replaces.  0: no limit, and a donor's" << endl
-       << "                                 contig-end --error-bed intervals then block its telomere patch like any other [2000]" << endl
+       << "                                 telomere patch or tip graft may add beyond the target bp it replaces.  0: no limit," << endl
+       << "                                 and a donor's contig-end --error-bed intervals then block its telomere patch like" << endl
+       << "                                 any other [2000]" << endl
+       << "        --max-telomere-loss N    Max bp of telomere repeat (TTAGGG/CCCTAA runs) a telomere patch or tip graft may" << endl
+       << "                                 take off the target's end beyond what it brings in: a capless tip can be junk" << endl
+       << "                                 over a longer array than the donor's [1000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << "        --error-bed FILE         BED of assembly-error intervals on any input assembly, contigs named as the graph" << endl
        << "                                 names its paths (SAMPLE#HAP#CONTIG; HAP 0 for a haploid sample).  The target's" << endl
@@ -167,6 +171,7 @@ int main(int argc, char** argv) {
     bool patch_telomere = true;
     int64_t max_telomere_patch = 20000;
     int64_t max_subtelomere_graft = 2000;
+    int64_t max_telomere_loss = 1000;
     double fail_threshold = 0.95;
     double telo_threshold = 0.8;
     double graft_recovery = 50.0;
@@ -213,6 +218,7 @@ int main(int argc, char** argv) {
             {"max-graft-size-change", required_argument, 0, 1010},
             {"dedup-recovery", required_argument, 0, 1024},
             {"max-subtelomere-graft", required_argument, 0, 1012},
+            {"max-telomere-loss", required_argument, 0, 1025},
             {"min-graft-complexity", required_argument, 0, 1011},
             {"error-bed", required_argument, 0, 1013},
             {"graft-complexity-window", required_argument, 0, 1014},
@@ -332,6 +338,9 @@ int main(int argc, char** argv) {
             break;
         case 1012:
             max_subtelomere_graft = strtoll(optarg, nullptr, 10);
+            break;
+        case 1025:
+            max_telomere_loss = strtoll(optarg, nullptr, 10);
             break;
         case 1011:
             min_graft_complexity = atof(optarg);
@@ -456,6 +465,7 @@ int main(int argc, char** argv) {
     const NoPatch* no_patch_p = no_patch.kmers.empty() ? nullptr : &no_patch;
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
     if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
+    if (max_telomere_loss < 0) { cerr << "[panpatch] error: --max-telomere-loss must be >= 0" << endl; return 1; }
     // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
     vector<string> graph_filenames;
     while (optind < argc) graph_filenames.push_back(argv[optind++]);
@@ -699,7 +709,8 @@ int main(int argc, char** argv) {
         unordered_set<path_handle_t> threaded_tgt_paths;
         vector<tuple<step_handle_t, step_handle_t, bool>> patched_intervals = greedy_patch(
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
-            patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, progress, require_telomeres,
+            patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, max_telomere_loss, progress,
+            require_telomeres,
             &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces, no_patch_p, telomere_error_regions_p);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
