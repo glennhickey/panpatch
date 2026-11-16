@@ -104,8 +104,8 @@ Contig ends (see [Telomeres](#telomeres)):
 | option | description | default |
 |---|---|---|
 | `-M, --max-telomere-patch N` | max bp of target sequence a telomere graft or a tip graft may replace at a contig end (0: none, so a graft may only add sequence at the tip) | 20000 |
-| `--max-subtelomere-graft N` | max bp of donor sequence a telomere graft may carry ahead of the donor's telomere, and a telomere or tip graft may add beyond the bp it replaces (0: no limit, and a donor's contig-end `--error-bed` intervals then block its telomere graft like any other) | 2000 |
-| `--max-telomere-loss N` | max bp of telomere repeat (runs of `TTAGGG` or `CCCTAA`) a telomere or tip graft may take off the target's end beyond what it brings in | 1000 |
+| `--max-subtelomere-graft N` | max bp of donor sequence a telomere graft may carry ahead of the donor's telomere, and max bp a telomere or tip graft may add to the end beyond the bp it replaces (0: no limit, and a donor's contig-end `--error-bed` intervals then block its telomere graft like any other) | 2000 |
+| `--max-telomere-loss N` | max bp of telomere repeat (runs of `TTAGGG` or `CCCTAA`) a telomere or tip graft may take off the target's end beyond what it brings in (0: no net loss) | 1000 |
 | `--telomere-threshold F` | min telomere hexamer density to call a telomere | 0.8 |
 | `--telomere-report FILE` | standalone: print the per-contig telomere status (`#Contig` lines) of a finished FASTA and exit | |
 
@@ -118,7 +118,7 @@ Patch checks (see [Why a patch is rejected](#why-a-patch-is-rejected)):
 | `--graft-min-bp N` | apply `--graft-recovery` only when at least this many non-N bp are replaced; a smaller graft (e.g. an N-gap fill) is judged without it, by flank anchoring and the size, complexity, no-patch and piece checks | 10000 |
 | `--min-flank F` | reject an interior graft, or a donor bridge between two target contigs, whose donor shares less than this % of the target's flank on either side | 50 |
 | `--flank-window N` | window (bp) each side over which flank anchoring is measured | 500000 |
-| `--max-graft-size-change N` | reject an interior graft that makes its contig more than N bp longer or shorter; a gap fill that replaces mostly `N` only when it makes it shorter (0 disables) | 100000 |
+| `--max-graft-size-change N` | reject an interior graft that makes its contig more than N bp longer or shorter; a gap fill that replaces mostly `N` only when it makes it shorter. A swap is held to the tighter `--max-swap-size-change`, so at the defaults this limits gap fills (0 disables) | 100000 |
 | `--dedup-recovery F` | keep a gap fill that fails `--graft-recovery` when at least this % of the k-mers it replaces are in the target's own sequence either side: it removes one copy of sequence the target has on both sides of the gap, a copy `--max-graft-size-change` does not count (0 disables) | 95 |
 | `--min-graft-complexity F` | reject an interior graft that replaces or inserts sequence whose distinct k-mer fraction (every k-mer counted) is below F, over all of it or in any `--graft-complexity-window` (0 disables) | 0.5 |
 | `--graft-complexity-window N` | window (bp) in which `--min-graft-complexity` is also measured, so a satellite array inside a larger graft is not diluted (0: whole graft only) | 10000 |
@@ -173,12 +173,13 @@ Telomere completion is **on by default**; `--patch-types gap` turns it off (and 
 
 Telomere grafts are kept small, because a telomere is missing from an assembly for a reason: reads represent it poorly, so neither the assembler nor read-based QC can vouch for much sequence at a contig end.
 
-- `-M/--max-telomere-patch` caps how much target sequence a graft may replace. If the nearest usable handoff is further in, the end is left as it is.
-- `--max-subtelomere-graft` caps how much donor sequence a graft may carry ahead of the donor's telomere array, and how much longer it may make the end than it was. A donor over the cap is skipped for the next one.
-- `--max-telomere-loss` caps how much more telomere repeat a graft may take off the target's end than it brings in: a capless tip can be junk over a longer array than the donor's. A donor over the cap is skipped in the same way.
-- A donor whose run to its telomere contains an `N` or one of its own `--error-bed` intervals (other than a [contig-end flag](#error-regions) at that end) is skipped in the same way.
+- `-M/--max-telomere-patch` caps how much target sequence a graft may replace.
+- `--max-subtelomere-graft` caps how much donor sequence a graft may carry ahead of the donor's telomere array. It also caps how much longer the graft may make the end than it was, telomere included: where the target has nothing to replace, a graft adds at most this much.
+- `--max-telomere-loss` caps how much more telomere repeat (runs of `TTAGGG` or `CCCTAA`) a graft may take off the target's end than it brings in: a capless tip can be junk over a longer array than the donor's. 0 allows no net loss. The repeat is counted the same way on both sides, as runs of two or more perfect units, so an array degraded by variant repeats counts for less than its length.
 
-A telomere graft therefore repairs or supplies the array (typically by trimming a short capless tail off the target and taking the donor's telomere), and does not bring in a subtelomere the target lacks, or leave a much shorter array than the target had. A donor skipped for one of these reasons is reported as a rejected row if no other donor completes the end.
+A donor whose graft is over the subtelomere cap, or whose run to its telomere contains an `N` or one of its own `--error-bed` intervals (other than a [contig-end flag](#error-regions) at that end), is skipped for the next one; such a donor is reported as a rejected row if no other donor completes the end. Over the other limits the end is left as it is, and the graft is reported as a rejected row: if the nearest usable handoff is further in than `-M`, or its graft would make the end too much longer or lose too much telomere repeat. Those two say that the target's end and the nearest donor's disagree, and a further donor under the growth cap could simply be one with a shorter array.
+
+A telomere graft therefore repairs the array, typically by trimming a short capless tail off the target and taking the donor's telomere. It does not bring in a subtelomere the target lacks, add more than `--max-subtelomere-graft` where the target ends without a telomere, or leave a much shorter array than the target had.
 
 The limits on growth and on telomere loss come from the HPRC pilot, where ONT reads (which, unlike HiFi reads, reach into telomere arrays) were realigned to each patched end. Where a graft grew an end by 4.5 kb, the reads ran on 12 kb past the target's end, through a segment the donor lacks, before reaching their telomere. Where grafts left a target's array 2.6 to 8.8 kb shorter, the reads' telomeres were at least as long as the array the target had, and ran past the new tip.
 

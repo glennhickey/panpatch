@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <cerrno>
+#include <cmath>
 #include <unistd.h>
 #include <getopt.h>
 #include <omp.h>
@@ -57,6 +59,29 @@ static void print_patch_row(ostream& o, const PatchRecord& pr) {
 
 static const size_t fasta_width = 80;
 
+// a numeric option's value must be the whole argument: strtoll / atof would read "2kb" as 2 and "abc" as 0, and for
+// several options 0 turns a guard off
+static int64_t int_arg(const char* name, const char* s) {
+    char* end = nullptr;
+    errno = 0;
+    long long v = strtoll(s, &end, 10);
+    if (end == s || *end != '\0' || errno == ERANGE) {
+        cerr << "[panpatch] error: " << name << " must be an integer, not '" << s << "'" << endl;
+        exit(1);
+    }
+    return v;
+}
+static double num_arg(const char* name, const char* s) {
+    char* end = nullptr;
+    errno = 0;
+    double v = strtod(s, &end);
+    if (end == s || *end != '\0' || errno == ERANGE || !std::isfinite(v)) {
+        cerr << "[panpatch] error: " << name << " must be a number, not '" << s << "'" << endl;
+        exit(1);
+    }
+    return v;
+}
+
 void help(char** argv) {
   cerr << "usage: " << argv[0] << " [options] <graph> [graph2 ...]" << endl
        << "Patch an assembly toward telomere-to-telomere chromosomes with the other assemblies in a pangenome graph" << endl
@@ -73,18 +98,20 @@ void help(char** argv) {
        << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
        << "        --patch-types LIST       Which of {gap,telomere} to attempt, comma-separated [default: both]; scaffolding is always attempted" << endl
-       << "    -T, --require-telomeres      Require a telomere at both ends (revert a contig that isn't); implies telomere patching" << endl
-       << "    -M, --max-telomere-patch N   Max bp of target sequence a telomere patch, or a tip graft (a donor carrying" << endl
+       << "    -T, --require-telomeres      Require a telomere at both ends (revert a contig that isn't); not with a" << endl
+       << "                                 --patch-types that leaves out telomere" << endl
+       << "    -M, --max-telomere-patch N   Max bp of target sequence a telomere graft, or a tip graft (a donor carrying" << endl
        << "                                 the patch past the target's outermost piece), may replace at a contig end (0:" << endl
        << "                                 none: a graft may only add sequence at the tip) [20000]" << endl
-       << "        --max-subtelomere-graft N  Max bp of donor sequence a telomere patch may graft ahead of the donor's" << endl
-       << "                                 telomere (a subtelomere the target lacks, which reads rarely vouch for), and a" << endl
-       << "                                 telomere patch or tip graft may add beyond the target bp it replaces.  0: no limit," << endl
-       << "                                 and a donor's contig-end --error-bed intervals then block its telomere patch like" << endl
+       << "        --max-subtelomere-graft N  Max bp of donor sequence a telomere graft may carry ahead of the donor's" << endl
+       << "                                 telomere (a subtelomere the target lacks, which reads rarely vouch for), and max" << endl
+       << "                                 bp a telomere or tip graft may add to the end beyond the target bp it replaces" << endl
+       << "                                 (so where there is nothing to replace, at most this much array).  0: no limit," << endl
+       << "                                 and a donor's contig-end --error-bed intervals then block its telomere graft like" << endl
        << "                                 any other [2000]" << endl
-       << "        --max-telomere-loss N    Max bp of telomere repeat (TTAGGG/CCCTAA runs) a telomere patch or tip graft may" << endl
+       << "        --max-telomere-loss N    Max bp of telomere repeat (runs of TTAGGG or CCCTAA) a telomere or tip graft may" << endl
        << "                                 take off the target's end beyond what it brings in: a capless tip can be junk" << endl
-       << "                                 over a longer array than the donor's [1000]" << endl
+       << "                                 over a longer array than the donor's.  0: no net loss [1000]" << endl
        << "    -b, --exclude-bed FILE       BED file of target regions to exclude from patching" << endl
        << "        --error-bed FILE         BED of assembly-error intervals on any input assembly, contigs named as the graph" << endl
        << "                                 names its paths (SAMPLE#HAP#CONTIG; HAP 0 for a haploid sample).  The target's" << endl
@@ -101,8 +128,8 @@ void help(char** argv) {
        << "                                 wrong somewhere in it, and a swap that size cannot be verified.  Donor" << endl
        << "                                 intervals are kept, however long.  0 keeps them all [1000000]" << endl
        << "        --min-cover FLOAT        Revert a patch shorter than this fraction of the target contigs it is made from [0.95]" << endl
-       << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by the" << endl
-       << "                                 -T validation/patch and the always-on discarded-telomere guard) [0.8]" << endl
+       << "        --telomere-threshold F   Min telomere hexamer density to call a telomere end (used by telomere" << endl
+       << "                                 patching, -T and the always-on discarded-telomere guard) [0.8]" << endl
        << "        --graft-recovery FLOAT   Excise a foreign interior graft sharing less than this % of the replaced k-mers [50]" << endl
        << "        --graft-min-bp N         Apply --graft-recovery only when at least this many non-N bp are replaced [10000]" << endl
        << "        --min-flank FLOAT        Excise a foreign interior graft, or revert a scaffold bridge, anchored to less than" << endl
@@ -112,7 +139,8 @@ void help(char** argv) {
        << "        --max-graft-size-change N  Excise a foreign interior graft that makes its contig more than N bp longer" << endl
        << "                                 or shorter: too large a change to verify (satellite arrays, rDNA gaps).  A gap" << endl
        << "                                 fill that replaces mostly N is held to it only when it makes the contig shorter," << endl
-       << "                                 an N gap's length being only a placeholder.  0 disables [100000]" << endl
+       << "                                 an N gap's length being only a placeholder.  A swap is held to the tighter" << endl
+       << "                                 --max-swap-size-change, so at the defaults this limits gap fills.  0 disables [100000]" << endl
        << "        --dedup-recovery FLOAT   Keep a gap fill that fails --graft-recovery when at least this % of the k-mers" << endl
        << "                                 it replaces are in the target's own sequence either side (the replaced length," << endl
        << "                                 at least 50kb, each way).  It removes one copy of sequence the assembly has" << endl
@@ -258,7 +286,7 @@ int main(int argc, char** argv) {
             out_fasta_filename = optarg;
             break;
         case 'w':
-            window_size = atoi(optarg);
+            window_size = int_arg("--window (-w)", optarg);
             if (window_size <= 0) {
                 cerr << "[panpatch] error: --window (-w) must be a positive integer" << endl;
                 return 1;
@@ -269,12 +297,12 @@ int main(int argc, char** argv) {
             break;
         case 't':
         {
-            int num_threads = stoi(optarg);
+            int64_t num_threads = int_arg("--threads (-t)", optarg);
             if (num_threads <= 0) {
                 cerr << "[panpatch] error: Thread count (-t) set to " << num_threads << ", must set to a positive integer." << endl;
                 exit(1);
             }
-            omp_set_num_threads(num_threads);
+            omp_set_num_threads((int)num_threads);
             break;
         }
         case 'T':
@@ -297,15 +325,8 @@ int main(int argc, char** argv) {
             break;
         }
         case 'M':
-        {
-            char* m_end = nullptr;
-            max_telomere_patch = strtol(optarg, &m_end, 10);
-            if (m_end == optarg || *m_end != '\0' || max_telomere_patch < 0) {
-                cerr << "[panpatch] error: --max-telomere-patch (-M) must be a non-negative integer" << endl;
-                return 1;
-            }
+            max_telomere_patch = int_arg("--max-telomere-patch (-M)", optarg);
             break;
-        }
         case 'b':
             exclude_bed_filename = optarg;
             break;
@@ -313,64 +334,64 @@ int main(int argc, char** argv) {
             error_bed_filename = optarg;
             break;
         case 1001:
-            fail_threshold = atof(optarg);
+            fail_threshold = num_arg("--min-cover", optarg);
             break;
         case 1002:
-            telo_threshold = atof(optarg);
+            telo_threshold = num_arg("--telomere-threshold", optarg);
             break;
         case 1003:
-            graft_recovery = atof(optarg);
+            graft_recovery = num_arg("--graft-recovery", optarg);
             break;
         case 1004:
-            graft_min_bp = strtoll(optarg, nullptr, 10);
+            graft_min_bp = int_arg("--graft-min-bp", optarg);
             break;
         case 1005:
-            min_flank = atof(optarg);
+            min_flank = num_arg("--min-flank", optarg);
             break;
         case 1006:
-            flank_window = strtoll(optarg, nullptr, 10);
+            flank_window = int_arg("--flank-window", optarg);
             break;
         case 1010:
-            max_graft_size_change = strtoll(optarg, nullptr, 10);
+            max_graft_size_change = int_arg("--max-graft-size-change", optarg);
             break;
         case 1024:
-            dedup_recovery = atof(optarg);
+            dedup_recovery = num_arg("--dedup-recovery", optarg);
             break;
         case 1012:
-            max_subtelomere_graft = strtoll(optarg, nullptr, 10);
+            max_subtelomere_graft = int_arg("--max-subtelomere-graft", optarg);
             break;
         case 1025:
-            max_telomere_loss = strtoll(optarg, nullptr, 10);
+            max_telomere_loss = int_arg("--max-telomere-loss", optarg);
             break;
         case 1011:
-            min_graft_complexity = atof(optarg);
+            min_graft_complexity = num_arg("--min-graft-complexity", optarg);
             break;
         case 1014:
-            graft_complexity_window = strtoll(optarg, nullptr, 10);
+            graft_complexity_window = int_arg("--graft-complexity-window", optarg);
             break;
         case 1015:
-            graft_complexity_min_bp = strtoll(optarg, nullptr, 10);
+            graft_complexity_min_bp = int_arg("--graft-complexity-min-bp", optarg);
             break;
         case 1016:
-            max_graft_pieces = strtoll(optarg, nullptr, 10);
+            max_graft_pieces = int_arg("--max-graft-pieces", optarg);
             break;
         case 1021:
-            error_bed_end_slop = strtoll(optarg, nullptr, 10);
+            error_bed_end_slop = int_arg("--error-bed-end-slop", optarg);
             break;
         case 1023:
-            error_bed_max_len = strtoll(optarg, nullptr, 10);
+            error_bed_max_len = int_arg("--error-bed-max-len", optarg);
             break;
         case 1017:
-            max_swap_size_change = strtoll(optarg, nullptr, 10);
+            max_swap_size_change = int_arg("--max-swap-size-change", optarg);
             break;
         case 1022:
-            min_swap_change = strtoll(optarg, nullptr, 10);
+            min_swap_change = int_arg("--min-swap-change", optarg);
             break;
         case 1018:
             no_patch_fasta = optarg;
             break;
         case 1019:
-            no_patch_kmer_fraction = atof(optarg);
+            no_patch_kmer_fraction = num_arg("--no-patch-kmer-fraction", optarg);
             break;
         case 1020:
             patch_rdna = true;
@@ -438,6 +459,9 @@ int main(int argc, char** argv) {
     if (error_bed_max_len < 0) { cerr << "[panpatch] error: --error-bed-max-len must be >= 0" << endl; return 1; }
     if (max_swap_size_change < 0) { cerr << "[panpatch] error: --max-swap-size-change must be >= 0" << endl; return 1; }
     if (min_swap_change < 0) { cerr << "[panpatch] error: --min-swap-change must be >= 0" << endl; return 1; }
+    if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch (-M) must be >= 0" << endl; return 1; }
+    if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
+    if (max_telomere_loss < 0) { cerr << "[panpatch] error: --max-telomere-loss must be >= 0" << endl; return 1; }
     if (!(no_patch_kmer_fraction > 0 && no_patch_kmer_fraction <= 1)) { cerr << "[panpatch] error: --no-patch-kmer-fraction must be in (0,1]" << endl; return 1; }
     NoPatch no_patch;
     no_patch.fraction = no_patch_kmer_fraction;
@@ -463,9 +487,6 @@ int main(int argc, char** argv) {
              << no_patch_fasta << ")" << endl;
     }
     const NoPatch* no_patch_p = no_patch.kmers.empty() ? nullptr : &no_patch;
-    if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch must be >= 0" << endl; return 1; }
-    if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
-    if (max_telomere_loss < 0) { cerr << "[panpatch] error: --max-telomere-loss must be >= 0" << endl; return 1; }
     // one or more input graphs, processed in lexicographic order (report/BED/FASTA are concatenated)
     vector<string> graph_filenames;
     while (optind < argc) graph_filenames.push_back(argv[optind++]);

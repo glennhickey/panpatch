@@ -1279,9 +1279,11 @@ static double kmer_recovery(const string& removed, const string& added) {
 // poorly, so read-based QC can rarely vouch for what is grafted at a contig end.  A handoff may
 // replace at most max_handoff bp of target (-M), and graft at most max_subtelomere bp of donor
 // sequence ahead of the donor's telomere, or beyond the target bp it replaces (--max-subtelomere-graft):
-// a telomere patch repairs or supplies the telomere array, and does not bring in a subtelomere the target
-// lacks.  Nor may it take off more than max_telomere_loss bp more telomere repeat than it brings in
-// (--max-telomere-loss): a capless tip can be junk over a longer array than the donor's.
+// a telomere patch repairs the telomere array, and does not bring in a subtelomere the target lacks.  Nor may
+// it take off more than max_telomere_loss bp more telomere repeat than it brings in (--max-telomere-loss): a
+// capless tip can be junk over a longer array than the donor's.  A donor over the subtelomere cap (or with an
+// N or a flag on its run out) is skipped for the next one; a handoff over -M, the growth cap or the loss cap
+// leaves the end as it is.
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         const PathHandleGraph* graph,
         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
@@ -1448,17 +1450,15 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         unordered_set<path_handle_t> n_tainted_fwd, n_tainted_rev;
         PatchRecord n_reject;
         bool have_n_reject = false;
-        // covers (by direction) whose graft is over one of its limits: more than max_subtelomere bp of
-        // sequence ahead of their telomere, or beyond the target bp it replaces, or more than
-        // max_telomere_loss bp more telomere repeat taken off the target than it brings in.  further in, the
-        // same cover's graft only grows on its subtelomeric side, and otherwise by about what it replaces, so
-        // it too is skipped at every later handoff, and the first one is reported if nothing completes the end
-        unordered_set<path_handle_t> limit_tainted_fwd, limit_tainted_rev;
-        PatchRecord limit_reject;
-        bool have_limit_reject = false;
+        // covers (by direction) whose graft would carry more than max_subtelomere bp of sequence ahead of
+        // their telomere.  further in, the same cover's graft only grows on that (subtelomeric) side, so it
+        // too is skipped at every later handoff, and the first one is reported if nothing completes the end
+        unordered_set<path_handle_t> sub_tainted_fwd, sub_tainted_rev;
+        PatchRecord sub_reject;
+        bool have_sub_reject = false;
         auto report_skipped = [&]() {
             if (have_n_reject) g_patch_records.push_back(n_reject);
-            if (have_limit_reject) g_patch_records.push_back(limit_reject);
+            if (have_sub_reject) g_patch_records.push_back(sub_reject);
         };
         // a rejected handoff to F that would replace the target's outermost `walked` bp
         auto rejected_handoff = [&](const path_handle_t& F, int64_t walked, const string& reason) {
@@ -1518,8 +1518,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 // its run out to that end must be free of N's (see n_tainted_* above)
                 unordered_set<path_handle_t>& n_tainted = f_forward ? n_tainted_fwd : n_tainted_rev;
                 if (n_tainted.count(F)) continue;
-                unordered_set<path_handle_t>& limit_tainted = f_forward ? limit_tainted_fwd : limit_tainted_rev;
-                if (limit_tainted.count(F)) continue;
+                unordered_set<path_handle_t>& sub_tainted = f_forward ? sub_tainted_fwd : sub_tainted_rev;
+                if (sub_tainted.count(F)) continue;
 
                 // `walked` is the length of the target's capless tail this handoff would replace.
                 bool within_cap = (walked <= max_handoff);
@@ -1589,32 +1589,45 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
 
                 // the graft must be the donor's telomere array, not a subtelomere the target lacks: added_seq
                 // is read outward, so the donor's telomere is at its end, and what precedes the telomeric run
-                // found there is subtelomere (all of it, for a graft too short to hold a run).  nor may it make
-                // the end longer by more than that: what it adds beyond the target bp it replaces is sequence the
-                // target lacks, which reads can contradict (on the HPRC pilot, ONT reads ran 12kb past a target's
-                // end, through a segment the donor lacks, before their telomere)
-                string over;
+                // found there is subtelomere (all of it, for a graft too short to hold a run)
                 if (max_subtelomere > 0) {
                     int64_t run_start = find_telomere_boundary(added_seq, 0, (int64_t)added_seq.size(), false);
                     int64_t sub_bp = run_start < 0 ? (int64_t)added_seq.size() : run_start;
                     if (sub_bp > max_subtelomere) {
-                        over = "donor's graft carries " + std::to_string(sub_bp) + "bp ahead of its telomere, over "
-                            "--max-subtelomere-graft " + std::to_string(max_subtelomere);
-                    } else if ((int64_t)added_seq.size() - walked > max_subtelomere) {
-                        over = "donor's graft adds " + std::to_string(added_seq.size()) + "bp for " + std::to_string(walked) +
-                            "bp of the target's end, more than --max-subtelomere-graft " + std::to_string(max_subtelomere) +
-                            " beyond it";
+                        sub_tainted.insert(F);
+                        if (!have_sub_reject) {
+                            sub_reject = rejected_handoff(F, walked, "donor's graft carries " + std::to_string(sub_bp) +
+                                                          "bp ahead of its telomere, over --max-subtelomere-graft " +
+                                                          std::to_string(max_subtelomere));
+                            have_sub_reject = true;
+                        }
+                        if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
+                                          << " handoff to " << graph->get_path_name(F) << " at " << walked
+                                          << "bp in would graft " << sub_bp << "bp of subtelomere; skipping that cover" << endl;
+                        continue;
                     }
                 }
+
                 // the target's tail it replaces (tip .. just inside the handoff node), node by node from the tip
                 vector<string> tail_nodes;
                 for (step_handle_t s = tip_step; s != s_i; s = inward(s)) {
                     tail_nodes.push_back(graph->get_sequence(asm_handle(s)));
                 }
-                // nor may it take off much more telomere repeat than it brings in: a capless tip can be junk over a
-                // longer array than the donor's (on the HPRC pilot, grafts that cut a target's array 2.6-8.8kb
-                // shorter left ONT reads, whose telomeres were at least as long as the target's, running past the new tip)
-                if (over.empty()) {
+                // nor may the graft make the end more than max_subtelomere bp longer than it was: what it adds beyond
+                // the target bp it replaces is sequence the target lacks (on the HPRC pilot, ONT reads ran 12kb past a
+                // target's end, through a segment the donor lacks, before their telomere).  nor may it take off more
+                // than max_telomere_loss bp more telomere repeat than it brings in: a capless tip can be junk over a
+                // longer array than the donor's (on the pilot, grafts that cut a target's array 2.6-8.8kb shorter left
+                // ONT reads, whose telomeres were at least as long as the target's, running past the new tip).  either
+                // way the target's end and the nearest donor's disagree, so the end is left as it is, as for a handoff
+                // over -M, rather than passed to the next donor (under the growth cap, that could simply be a donor
+                // with a shorter array)
+                string over;
+                if (max_subtelomere > 0 && (int64_t)added_seq.size() - walked > max_subtelomere) {
+                    over = "donor's graft adds " + std::to_string(added_seq.size()) + "bp for " + std::to_string(walked) +
+                        "bp of the target's end, more than --max-subtelomere-graft " + std::to_string(max_subtelomere) +
+                        " beyond it";
+                } else {
                     string tail;   // in assembly order, so a run across nodes counts whole
                     if (is_front) for (auto it = tail_nodes.begin(); it != tail_nodes.end(); ++it) tail += *it;
                     else          for (auto it = tail_nodes.rbegin(); it != tail_nodes.rend(); ++it) tail += *it;
@@ -1622,19 +1635,16 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                     if (cut - brought > max_telomere_loss) {
                         over = "donor's graft takes off " + std::to_string(cut) + "bp of telomere repeat and brings in " +
                             std::to_string(brought) + "bp, a loss of " + std::to_string(cut - brought) +
-                            "bp over --max-telomere-loss " + std::to_string(max_telomere_loss);
+                            "bp, over --max-telomere-loss " + std::to_string(max_telomere_loss);
                     }
                 }
                 if (!over.empty()) {
-                    limit_tainted.insert(F);
-                    if (!have_limit_reject) {
-                        limit_reject = rejected_handoff(F, walked, over);
-                        have_limit_reject = true;
-                    }
                     if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
                                       << " handoff to " << graph->get_path_name(F) << " at " << walked
-                                      << "bp in: " << over << "; skipping that cover" << endl;
-                    continue;
+                                      << "bp in: " << over << "; leaving the end as it is" << endl;
+                    g_patch_records.push_back(rejected_handoff(F, walked, over));
+                    report_skipped();
+                    return false;
                 }
 
                 // the replaced tail for the recovery stat
@@ -1670,7 +1680,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         // missing telomere is why a contig reverts) records why -- which ends were left as-is, and
         // whether it's a simple gap (no telomere anywhere, no donor) or a telomere present but
         // buried/degraded at the tip.  when telomere patching is just the default (not required), this
-        // is a non-event, so stay quiet.  (a cover skipped for N's or over a graft limit is always
+        // is a non-event, so stay quiet.  (a cover skipped for N's or for its subtelomere is always
         // reported: it is a donor that would have completed the end.)
         report_skipped();
         if (report_failures) {
@@ -2042,7 +2052,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                 int64_t brought = telomere_repeat_bp(at_front ? tip_seq.substr(0, tip_seq.size() - jlen) : tip_seq.substr(jlen));
                 if (cut - brought > max_telomere_loss) {
                     why = "takes off " + to_string(cut) + "bp of telomere repeat and brings in " + to_string(brought) +
-                        "bp, a loss of " + to_string(cut - brought) + "bp over --max-telomere-loss " +
+                        "bp, a loss of " + to_string(cut - brought) + "bp, over --max-telomere-loss " +
                         to_string(max_telomere_loss);
                 }
             }
