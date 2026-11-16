@@ -3147,6 +3147,16 @@ void print_contig_telomere_line(const string& name, const string& sequence, doub
     bool has_left  = seq_has_telomere(sequence, 0, tip_check_len, true, false, threshold, &left_max_density);
     bool has_right = seq_has_telomere(sequence, max((int64_t)0, seq_len - tip_check_len), seq_len, true, true, threshold, &right_max_density);
 
+    // the N gaps left in the sequence (maximal runs of N: an N is a gap wherever panpatch meets one), so
+    // a reader can tell a telomere-to-telomere contig (a telomere at both ends and no gap) from a capped one
+    int64_t gaps = 0;
+    bool in_gap = false;
+    for (char c : sequence) {
+        bool n = c == 'N' || c == 'n';
+        gaps += n && !in_gap;
+        in_gap = n;
+    }
+
     // Log all contigs with telomere information
     cout << "#Contig " << name
          << " len=" << seq_len << "bp"
@@ -3154,6 +3164,7 @@ void print_contig_telomere_line(const string& name, const string& sequence, doub
          << "(" << fixed << setprecision(3) << left_max_density << ")"
          << " right=" << (has_right ? "YES" : "NO")
          << "(" << fixed << setprecision(3) << right_max_density << ")"
+         << " gaps=" << gaps
          << endl;
 }
 

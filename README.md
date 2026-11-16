@@ -148,13 +148,13 @@ chr14  1    gap-fill  haplotype1-0000004  101799395  CM090131.1  101948476  1972
 - An `N` gap that is still in a patched contig, with no other row about it, gets a rejected `gap-fill` row of its own (`no donor could be threaded across this gap; kept as it is`, with the gap's place). A contig with gaps and no patch at all gets one row, `no patches from other assemblies were found; contig kept as it is`.
 - A value that does not apply is `.`.
 
-A contig that needs no patch has no row. After each haplotype's rows comes a `#Contig` line for every sequence written, with its length and whether each end has a telomere (and the hexamer density measured there):
+A contig that needs no patch has no row. After each haplotype's rows comes a `#Contig` line for every sequence written, with its length, whether each end has a telomere (and the hexamer density measured there), and how many `N` gaps (runs of `N`) it still holds:
 
 ```
-#Contig NAME len=<N>bp left=YES|NO(<density>) right=YES|NO(<density>)
+#Contig NAME len=<N>bp left=YES|NO(<density>) right=YES|NO(<density>) gaps=<count>
 ```
 
-These numbers let you scrutinise borderline calls and retune the checks.
+These numbers let you scrutinise borderline calls and retune the checks. A sequence is telomere-to-telomere only with a telomere at both ends and `gaps=0`.
 
 The `--bed` file lists, in order, the contig intervals (path, start, end, strand) that make up each output sequence:
 

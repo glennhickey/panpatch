@@ -695,8 +695,18 @@ run('diff telorep.graph.txt telorep.fasta.txt')
 run("awk '/^>/ {print; next} {print tolower($0)}' telorep.hap1.fa > telorep.lower.fa")
 run('panpatch --telomere-report telorep.lower.fa > telorep.lower.txt')
 run('diff telorep.fasta.txt telorep.lower.txt')
-temp_files += ['telorep.vg', 'telorep.hap1.fa', 'telorep.lower.fa',
-               'telorep.graph.txt', 'telorep.fasta.txt', 'telorep.lower.txt']
+# N gaps: two runs of N put in the middle of the record (away from both telomeres) make it gaps=2, and
+# change nothing else on its line
+with open('telorep.hap1.fa') as f:
+    name, seq = f.readline(), ''.join(l.strip() for l in f)
+mid = len(seq) // 2
+with open('telorep.gap.fa', 'w') as f:
+    f.write(name + seq[:mid] + 'N' * 100 + seq[mid + 100:mid + 150] + 'n' + seq[mid + 151:] + '\n')
+run('panpatch --telomere-report telorep.gap.fa > telorep.gap.txt')
+run('grep -q " gaps=0$" telorep.fasta.txt')
+run('sed "s/ gaps=0$/ gaps=2/" telorep.fasta.txt | diff - telorep.gap.txt')
+temp_files += ['telorep.vg', 'telorep.hap1.fa', 'telorep.lower.fa', 'telorep.gap.fa',
+               'telorep.graph.txt', 'telorep.fasta.txt', 'telorep.lower.txt', 'telorep.gap.txt']
 
 # Regressions from a review of the threading, graft and telomere code (Nov 2026).  Each graph is built from
 # signed walks; the output FASTA is decoded back into signed node ids and compared with what should be
