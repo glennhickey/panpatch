@@ -179,6 +179,12 @@ void help(char** argv) {
        << "                                 would patch: one that short has too little sequence around the patch to be" << endl
        << "                                 placed with confidence, as with an unplaced piece of a region several" << endl
        << "                                 chromosomes share.  0 disables [0.2]" << endl
+       << "        --max-chance-anchor N    A patch joins its donor on a node the two share.  One on N bp or less of the" << endl
+       << "                                 target that the donor reaches N bp or more out of line with it is a chance match," << endl
+       << "                                 and the patch would drop the donor sequence between.  At an N gap the join is" << endl
+       << "                                 moved to the nearest node they share in line, so the fill keeps that sequence;" << endl
+       << "                                 a gap fill that cannot be joined so, and a swap (moving its join would replace" << endl
+       << "                                 target sequence outside its --error-bed interval), are not made.  0 disables [100]" << endl
        << "        --telomere-report FILE   Standalone: print per-contig telomere cap status (#Contig lines) for" << endl
        << "                                 a finished FASTA and exit. No graph or -r/-s needed. Use this to" << endl
        << "                                 measure an assembly that was post-processed after panpatch ran" << endl
@@ -218,6 +224,7 @@ int main(int argc, char** argv) {
     int64_t max_swap_size_change = 10000;
     int64_t min_swap_change = 100;
     double min_donor_fraction = 0.2;
+    int64_t max_chance_anchor = 100;
     int64_t error_bed_end_slop = 1000;
     int64_t error_bed_max_len = 1000000;
     string no_patch_fasta;
@@ -258,6 +265,7 @@ int main(int argc, char** argv) {
             {"max-swap-size-change", required_argument, 0, 1017},
             {"min-swap-change", required_argument, 0, 1022},
             {"min-donor-fraction", required_argument, 0, 1026},
+            {"max-chance-anchor", required_argument, 0, 1027},
             {"error-bed-end-slop", required_argument, 0, 1021},
             {"error-bed-max-len", required_argument, 0, 1023},
             {"no-patch-fasta", required_argument, 0, 1018},
@@ -390,6 +398,9 @@ int main(int argc, char** argv) {
             break;
         case 1026:
             min_donor_fraction = num_arg("--min-donor-fraction", optarg);
+            break;
+        case 1027:
+            max_chance_anchor = int_arg("--max-chance-anchor", optarg);
             break;
         case 1018:
             no_patch_fasta = optarg;
@@ -738,7 +749,7 @@ int main(int argc, char** argv) {
             patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, max_telomere_loss, progress,
             require_telomeres,
             &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces, no_patch_p, telomere_error_regions_p,
-            min_donor_fraction);
+            min_donor_fraction, max_chance_anchor);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -750,7 +761,7 @@ int main(int argc, char** argv) {
                                    min_flank, flank_window, patch_gap, excised_nonN,
                                    max_graft_size_change, min_graft_complexity, graft_complexity_window,
                                    graft_complexity_min_bp, max_graft_pieces, max_swap_size_change, min_swap_change,
-                                   no_patch_p, dedup_recovery, &dedup_ranges, min_donor_fraction);
+                                   no_patch_p, dedup_recovery, &dedup_ranges, min_donor_fraction, max_chance_anchor);
 
         // final consistency guard: a patch that would write any sequence twice or out of order (see
         // patch_reuses_sequence) reverts the contig, whatever else passed
