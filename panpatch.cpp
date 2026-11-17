@@ -1862,6 +1862,137 @@ string intervals_to_sequence(const PathHandleGraph* graph,
     return seq;
 }
 
+// A chance junction.  Where the threading takes up a donor from the target, or hands back to the target, it does so
+// on a node the two share.  At an N gap that node can be a chance match of a few bases instead of the bases' true
+// homolog: cactus aligns the target's last bases before the gap to bases of the donor's well past the sequence the
+// gap lacks (seen: 2bp, 9,985bp out of line).  The patch then takes the donor from the wrong place, and drops what
+// the donor has between the bases' true homolog and the chance match.  It shows walking out from the junction (back
+// along both paths from a take-up, on along both from a hand-back): to the nearest node the two share, the target
+// has only the few bases of the chance match, and the donor everything the patch would drop.
+//
+// The junction is a chance match when the target's side of it -- the junction node and the target's own sequence
+// out to that nearest shared node -- is at most max_chance bp, and the donor runs at least max_chance bp further to
+// the same node than the target does (or does not reach it within search_bp, or reaches it on the other strand).
+// repairable: the donor reaches it, so the junction can be moved there.  steps on the junction node: t (target),
+// d (donor); t_out_next / d_out_next: whether walking out from the junction is stepping next (else previous).
+struct JunctionCheck {
+    bool chance = false;
+    bool repairable = false;
+    step_handle_t t_in, d_in;            // the nearest node the two share, out from the junction
+    int64_t target_bp = 0;               // the target's side: the junction node and its own sequence out to t_in
+    int64_t donor_bp = 0;                // the donor's sequence between the junction node and d_in
+};
+static const int64_t CHANCE_SEARCH_BP = 100000;
+static JunctionCheck check_junction(const PathHandleGraph* graph, step_handle_t t, step_handle_t d,
+                                    bool t_out_next, bool d_out_next, int64_t max_chance, int64_t search_bp) {
+    JunctionCheck jc;
+    if (max_chance <= 0) return jc;
+    path_handle_t D = graph->get_path_handle_of_step(d);
+    auto out = [&](step_handle_t s, bool nxt, step_handle_t& to) {
+        if (nxt ? !graph->has_next_step(s) : !graph->has_previous_step(s)) return false;
+        to = nxt ? graph->get_next_step(s) : graph->get_previous_step(s);
+        return true;
+    };
+    // out along the target to the nearest node the donor also visits
+    int64_t tbp = graph->get_length(graph->get_handle_of_step(t));
+    step_handle_t s = t;
+    while (true) {
+        if (tbp > max_chance || !out(s, t_out_next, s)) return jc;     // a real junction, or the target ends
+        handle_t h = graph->get_handle_of_step(s);
+        bool shared = false;
+        graph->for_each_step_on_handle(h, [&](step_handle_t o) {
+            if (graph->get_path_handle_of_step(o) == D) { shared = true; return false; }
+            return true;
+        });
+        if (shared) break;
+        tbp += graph->get_length(h);
+    }
+    if (tbp > max_chance) return jc;
+    jc.t_in = s;
+    nid_t in_id = graph->get_id(graph->get_handle_of_step(s));
+    // out along the donor to that node
+    int64_t dbp = 0;
+    bool reached = false;
+    step_handle_t e = d;
+    while (dbp <= search_bp && out(e, d_out_next, e)) {
+        if (graph->get_id(graph->get_handle_of_step(e)) == in_id) { reached = true; break; }
+        dbp += graph->get_length(graph->get_handle_of_step(e));
+    }
+    jc.target_bp = tbp;
+    jc.donor_bp = dbp;
+    // the two must traverse the node the same way relative to each other as they do the junction node
+    bool same_strand = reached &&
+        ((graph->get_is_reverse(graph->get_handle_of_step(t)) != graph->get_is_reverse(graph->get_handle_of_step(d))) ==
+         (graph->get_is_reverse(graph->get_handle_of_step(s)) != graph->get_is_reverse(graph->get_handle_of_step(e))));
+    // in line: the donor gets there with less than max_chance bp more than the target's own sequence out there
+    int64_t target_own = tbp - (int64_t)graph->get_length(graph->get_handle_of_step(t));
+    if (same_strand && dbp - target_own < max_chance) return jc;
+    jc.chance = true;
+    jc.repairable = same_strand;
+    jc.d_in = e;
+    return jc;
+}
+
+// Move each chance junction (check_junction) at an N gap -- a donor taken up on the target's last node before the
+// gap, or the target taken up again on its first node after it -- to the nearest node the two share in line, so the
+// fill carries the donor's sequence the chance match would drop.  What the target gives up is its side of the chance
+// match: at most max_chance bp by its N gap, of which the fill has the donor's own copy.  Runs on the threading's
+// anchor-to-anchor intervals, before they are merged; returns how many junctions it moved.
+static int64_t repair_chance_gap_junctions(const PathHandleGraph* graph,
+                                           vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
+                                           const unordered_set<path_handle_t>& tgt_set, int64_t max_chance) {
+    if (max_chance <= 0) return 0;
+    int64_t moved = 0;
+    auto node_has_n = [&](step_handle_t s) {
+        return graph->get_sequence(graph->get_handle_of_step(s)).find_first_of("Nn") != string::npos;
+    };
+    auto path_of = [&](size_t k) { return graph->get_path_handle_of_step(get<0>(intervals[k])); };
+    for (size_t i = 0; i + 1 < intervals.size(); ++i) {
+        bool take_up = tgt_set.count(path_of(i)) && !tgt_set.count(path_of(i + 1));
+        bool hand_back = !tgt_set.count(path_of(i)) && tgt_set.count(path_of(i + 1));
+        if (!take_up && !hand_back) continue;
+        size_t ti = take_up ? i : i + 1, di = take_up ? i + 1 : i;
+        step_handle_t t = take_up ? get<1>(intervals[ti]) : get<0>(intervals[ti]);
+        step_handle_t d = take_up ? get<0>(intervals[di]) : get<1>(intervals[di]);
+        bool trev = get<2>(intervals[ti]), drev = get<2>(intervals[di]);
+        if (graph->get_id(graph->get_handle_of_step(t)) != graph->get_id(graph->get_handle_of_step(d))) continue;
+        // an N gap edge: the target's next step on (past a take-up) or back (before a hand-back) is in an N gap
+        bool gap_side_next = take_up ? !trev : trev;
+        if (gap_side_next ? !graph->has_next_step(t) : !graph->has_previous_step(t)) continue;
+        if (!node_has_n(gap_side_next ? graph->get_next_step(t) : graph->get_previous_step(t))) continue;
+        // out from the junction: back along both from a take-up, on along both from a hand-back
+        bool t_out_next = take_up ? trev : !trev, d_out_next = take_up ? drev : !drev;
+        JunctionCheck jc = check_junction(graph, t, d, t_out_next, d_out_next, max_chance, CHANCE_SEARCH_BP);
+        if (!jc.chance || !jc.repairable) continue;
+        path_handle_t T = path_of(ti);
+        if (take_up) {
+            // the target interval starting on t_in: it, and any after it up to the junction, are the target's side
+            // of the chance match.  end the target on t_in and start the donor there
+            int64_t k = (int64_t)ti;
+            while (k >= 0 && path_of(k) == T && get<0>(intervals[k]) != jc.t_in) --k;
+            if (k < 0 || path_of(k) != T) continue;
+            get<1>(intervals[k]) = jc.t_in;
+            intervals.erase(intervals.begin() + k + 1, intervals.begin() + ti + 1);
+            get<0>(intervals[k + 1]) = jc.d_in;
+            i = k + 1;
+        } else {
+            // the target interval ending on t_in: start the target there, and run the donor on to it
+            size_t k = ti;
+            while (k < intervals.size() && path_of(k) == T && get<1>(intervals[k]) != jc.t_in) ++k;
+            if (k >= intervals.size() || path_of(k) != T) continue;
+            intervals.erase(intervals.begin() + ti, intervals.begin() + k);
+            intervals[ti] = make_tuple(jc.t_in, jc.t_in, trev);
+            get<1>(intervals[di]) = jc.d_in;
+            i = ti;
+        }
+        ++moved;
+        cerr << "[panpatch] " << graph->get_path_name(T) << ": " << (take_up ? "a donor was taken up" : "the target was taken up again")
+             << " at its N gap on a " << jc.target_bp << "bp chance match with " << graph->get_path_name(graph->get_path_handle_of_step(d))
+             << ", " << jc.donor_bp << "bp of the donor out of line; the junction is moved to the nearest node they share in line" << endl;
+    }
+    return moved;
+}
+
 vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleGraph* graph,
                                                                const path_handle_t& ref_path,
                                                                const vector<path_handle_t>& tgt_paths,
@@ -1881,7 +2012,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                int64_t max_graft_pieces,
                                                                const NoPatch* no_patch,
                                                                const TelomereErrorRegions* telomere_error_regions,
-                                                               double min_donor_fraction) {
+                                                               double min_donor_fraction,
+                                                               int64_t max_chance_anchor) {
 
     size_t records_at_entry = g_patch_records.size();   // this call's report rows start here
 
@@ -1953,6 +2085,13 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                                            other_paths,
                                                                                            excluded_regions,
                                                                                            error_regions);
+
+    // a donor taken up at an N gap on a chance match out of line with it: start (or end) it where they share a node
+    // in line instead, before the intervals are merged
+    {
+        unordered_set<path_handle_t> tgt_set(tgt_paths.begin(), tgt_paths.end());
+        repair_chance_gap_junctions(graph, patched_intervals, tgt_set, max_chance_anchor);
+    }
 
     // the target contigs the threading went through: a telomere graft or trim below can take one out of
     // the final intervals again, but it was still patched over, unlike a contig never threaded at all
@@ -2682,7 +2821,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 int64_t complexity_min_bp, int64_t max_graft_pieces, int64_t max_swap_size_change,
                                 int64_t min_swap_change, const NoPatch* no_patch, double min_dedup,
                                 unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges,
-                                double min_donor_fraction) {
+                                double min_donor_fraction,
+                                int64_t max_chance_anchor) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -2789,6 +2929,25 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             int64_t size_change = (int64_t)inserted.size() - (int64_t)removed.size();
             // a gap fill: a graft over an N gap
             bool gap_fill = nonN < (int64_t)removed.size();
+            // a junction on a chance match out of line with the donor (check_junction): the graft would drop what the
+            // donor has between the bases' true homolog and the chance match.  greedy_patch moved those at an N gap to
+            // where the two share a node in line (repair_chance_gap_junctions), so a gap fill with one here is one that
+            // could not be.  a swap's is not moved, as that would replace target sequence outside its flagged
+            // interval, and k-mer recovery and --max-swap-size-change can miss what it drops (less than the size
+            // limit, in a swap long enough to keep its recovery), so it is not made either
+            JunctionCheck jl, jr;
+            if (max_chance_anchor > 0) {
+                step_handle_t ti = get<1>(intervals[i]), di = get<0>(intervals[i + 1]);
+                if (graph->get_id(graph->get_handle_of_step(ti)) == graph->get_id(graph->get_handle_of_step(di)))
+                    jl = check_junction(graph, ti, di, get<2>(intervals[i]), get<2>(intervals[i + 1]), max_chance_anchor,
+                                        CHANCE_SEARCH_BP);
+                step_handle_t tj = get<0>(intervals[j]), dj = get<1>(intervals[j - 1]);
+                if (graph->get_id(graph->get_handle_of_step(tj)) == graph->get_id(graph->get_handle_of_step(dj)))
+                    jr = check_junction(graph, tj, dj, !get<2>(intervals[j]), !get<2>(intervals[j - 1]), max_chance_anchor,
+                                        CHANCE_SEARCH_BP);
+            }
+            bool chance_join = jl.chance || jr.chance;
+            const JunctionCheck& jc_bad = jl.chance ? jl : jr;
             // a gap fill that removes a duplicate.  where an assembly path's two pieces either side of a gap
             // overlap, the sequence before the gap repeats after it, and the donor, spanning the gap, has it once:
             // its fill removes one copy, so it shares few of the k-mers it replaces, which are in the copy kept
@@ -2906,7 +3065,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             bool no_patch_hit = (np_removed >= 0 && np_removed >= no_patch->fraction) ||
                                 (np_inserted >= 0 && np_inserted >= no_patch->fraction);
             bool unverifiable = !bad && !same_seq && !near_identical && (no_patch_hit || too_big || swap_too_big || fill_drops_real ||
-                                                                         low_cx || chimeric || short_graft);
+                                                                         low_cx || chimeric || short_graft || chance_join);
             if (unverifiable || same_seq || near_identical) bad = true;
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
@@ -2944,6 +3103,12 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                       << max_graft_pieces << " (no donor has it in one piece) (unverifiable)";
                 else if (unverifiable && short_graft) rs << "from a donor contig of " << graft_short
                                       << " (too short to place) (unverifiable)";
+                else if (unverifiable && chance_join) {
+                    rs << "joins its donor on a " << jc_bad.target_bp << "bp chance match (";
+                    if (jc_bad.repairable) rs << jc_bad.donor_bp << "bp of the donor out of line with it";
+                    else rs << "the donor not back in line with it within " << CHANCE_SEARCH_BP << "bp";
+                    rs << "; --max-chance-anchor " << max_chance_anchor << ") (unverifiable)";
+                }
                 else if (unverifiable && too_big && dedup && shrink > max_size_change) rs << "removes a duplicate (" << dup_note.str() << "), but fills "
                                       << (removed.size() - nonN) << "bp of N gap with " << inserted.size() << "bp, " << shrink
                                       << "bp less, over --max-graft-size-change " << max_size_change << " (unverifiable)";

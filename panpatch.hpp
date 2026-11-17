@@ -268,7 +268,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const TelomereErrorRegions* telomere_error_regions = nullptr,
                                                                // no tip or telomere graft from a donor path shorter
                                                                // than this fraction of the target contig (0: no limit)
-                                                               double min_donor_fraction = 0.0);
+                                                               double min_donor_fraction = 0.0,
+                                                               // a donor taken up (or handed back) at an N gap on a
+                                                               // chance match of at most this many bp, out of line
+                                                               // with it, joins where they share a node in line
+                                                               // instead (--max-chance-anchor; 0: off)
+                                                               int64_t max_chance_anchor = 0);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
@@ -296,7 +301,10 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 std::unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges = nullptr,
                                 // excise a graft from a donor path shorter than this fraction of the target
                                 // contig (0: no limit)
-                                double min_donor_fraction = 0.0);
+                                double min_donor_fraction = 0.0,
+                                // excise a graft (gap fill or swap) still joined to its donor on a chance match
+                                // of at most this many bp, out of line with it (--max-chance-anchor; 0: off)
+                                int64_t max_chance_anchor = 0);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,

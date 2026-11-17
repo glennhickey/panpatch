@@ -703,6 +703,102 @@ for base, (walks, args, truth) in gv_cases.items():
     run('diff {0}.out {0}.truth'.format(base))
     temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
 
+# --max-chance-anchor: a patch joins its donor on a node the two share, and at an N gap that node can be a chance match
+# of a few bases (as on the HPRC pilot: cactus aligned a target's last 2bp before its gap to the donor 9,985bp past
+# their true copy, and the fill dropped those 9,985bp).  Reference-free, nodes 10kb unless noted:
+#   cj_left  - frag  0 1 2 3 4 7 8, 3 a 2bp chance match before frag's N gap 4 (2 is 150bp, its true copy in the donor);
+#              donor 0 1 2 5 3 6 7 8, which reaches 3 only past 5 (9,985bp the gap lacks); 6 is the rest of the fill
+#              (5kb).  The join moves back to 2, so the fill keeps 5 (cj_left_off: the old join on 3 drops it)
+#   cj_right - the same at the far side of the gap: frag 0 1 2 4 9 7 8, 9 a 2bp chance match after the gap;
+#              donor 0 1 2 6 9 10 7 8 reaches 9 inside its fill, 7kb (10) short of frag's next node 7.  The join
+#              moves on to 7, so the fill keeps 10 (cj_right_off drops it)
+#   cj_far   - as cj_left, but what the donor has before 3 (13) is longer than the 100kb searched for the node they
+#              share in line: the join cannot be moved, and the fill is not made (cj_far_off: made, without 13)
+#   cj_swap  - frag 0 1 2 3 11 7 8 with 11 flagged (--error-bed), 3 a chance match at its edge; donor 0 1 2 5 3 12 7 8,
+#              12 being 11 with a SNP every 100bp (a swap the other tests pass).  A swap's join is not moved (that
+#              would replace frag's sequence outside its flagged interval), so the swap is not made (cj_swap_off: made)
+cj_rng = random.Random(19)
+cj_rnd = lambda n: ''.join(cj_rng.choice('ACGT') for _ in range(n))
+cj_nodes = {0: cj_rnd(10000), 1: cj_rnd(10000), 2: cj_rnd(150), 3: 'TA', 4: 'N' * 1000, 5: cj_rnd(9985), 6: cj_rnd(5000),
+            7: cj_rnd(10000), 8: cj_rnd(10000), 9: 'GC', 10: cj_rnd(7000), 11: cj_rnd(15000), 13: cj_rnd(101000)}
+cj_nodes[12] = ''.join({'A': 'C', 'C': 'G', 'G': 'T', 'T': 'A'}[c] if i % 100 == 50 else c for i, c in enumerate(cj_nodes[11]))
+cj_left = {'frag': [0, 1, 2, 3, 4, 7, 8], 'donor': [0, 1, 2, 5, 3, 6, 7, 8]}
+cj_right = {'frag': [0, 1, 2, 4, 9, 7, 8], 'donor': [0, 1, 2, 6, 9, 10, 7, 8]}
+cj_far = {'frag': [0, 1, 2, 3, 4, 7, 8], 'donor': [0, 1, 2, 13, 3, 6, 7, 8]}
+cj_swap = {'frag': [0, 1, 2, 3, 11, 7, 8], 'donor': [0, 1, 2, 5, 3, 12, 7, 8]}
+cj_cases = {
+    'cj_left'      : (cj_left, '', (
+                      'ctg\t1\tgap-fill\tfrag#1#ctg#0\t41152\tdonor#1#ctg#0\t55137\t1002\t.\t100.0\t100.0\taccepted\t.\t20150\t21152\n'
+                      '#Patched assembly on ctg for frag#1:\n'
+                      'frag#1#ctg#0\t0\t20000\t+\n'
+                      'donor#1#ctg#0\t20000\t35137\t+\n'
+                      'frag#1#ctg#0\t21152\t41152\t+\n'
+                      '\n')),
+    'cj_left_off'  : (cj_left, '--max-chance-anchor 0', (
+                      'ctg\t1\tgap-fill\tfrag#1#ctg#0\t41152\tdonor#1#ctg#0\t55137\t1000\t.\t100.0\t100.0\taccepted\t.\t20152\t21152\n'
+                      '#Patched assembly on ctg for frag#1:\n'
+                      'frag#1#ctg#0\t0\t20150\t+\n'
+                      'donor#1#ctg#0\t30135\t35137\t+\n'
+                      'frag#1#ctg#0\t21152\t41152\t+\n'
+                      '\n')),
+    'cj_right'     : (cj_right, '', (
+                      'ctg\t1\tgap-fill\tfrag#1#ctg#0\t41152\tdonor#1#ctg#0\t52152\t1002\t.\t100.0\t100.0\taccepted\t.\t20150\t21152\n'
+                      '#Patched assembly on ctg for frag#1:\n'
+                      'frag#1#ctg#0\t0\t20000\t+\n'
+                      'donor#1#ctg#0\t20000\t32152\t+\n'
+                      'frag#1#ctg#0\t21152\t41152\t+\n'
+                      '\n')),
+    'cj_right_off' : (cj_right, '--max-chance-anchor 0', (
+                      'ctg\t1\tgap-fill\tfrag#1#ctg#0\t41152\tdonor#1#ctg#0\t52152\t1000\t.\t100.0\t100.0\taccepted\t.\t20150\t21150\n'
+                      '#Patched assembly on ctg for frag#1:\n'
+                      'frag#1#ctg#0\t0\t20000\t+\n'
+                      'donor#1#ctg#0\t20000\t25150\t+\n'
+                      'frag#1#ctg#0\t21150\t41152\t+\n'
+                      '\n')),
+    'cj_far'       : (cj_far, '', (
+                      'ctg\t1\tgap-fill\tfrag#1#ctg#0\t41152\tdonor#1#ctg#0\t146152\t1000\t.\t100.0\t100.0\trejected\tjoins its donor on a 2bp chance match (the donor not back in line with it within 100000bp; --max-chance-anchor 100) (unverifiable)\t20152\t21152\n'
+                      '#Unpatched (input contig) on ctg for frag#1:\n'
+                      'frag#1#ctg#0\t0\t41152\t+\n'
+                      '\n')),
+    'cj_far_off'   : (cj_far, '--max-chance-anchor 0', (
+                      'ctg\t1\tgap-fill\tfrag#1#ctg#0\t41152\tdonor#1#ctg#0\t146152\t1000\t.\t100.0\t100.0\taccepted\t.\t20152\t21152\n'
+                      '#Patched assembly on ctg for frag#1:\n'
+                      'frag#1#ctg#0\t0\t20150\t+\n'
+                      'donor#1#ctg#0\t121150\t126152\t+\n'
+                      'frag#1#ctg#0\t21152\t41152\t+\n'
+                      '\n')),
+    'cj_swap'      : (cj_swap, '--error-bed cj_swap.errors.bed', (
+                      'ctg\t1\tgap-fill\tfrag#1#ctg#0\t55152\tdonor#1#ctg#0\t65137\t15000\t67.2\t100.0\t100.0\trejected\tjoins its donor on a 2bp chance match (9985bp of the donor out of line with it; --max-chance-anchor 100) (unverifiable)\t20152\t35152\n'
+                      '#Unpatched (input contig) on ctg for frag#1:\n'
+                      'frag#1#ctg#0\t0\t55152\t+\n'
+                      '\n')),
+    'cj_swap_off'  : (cj_swap, '--error-bed cj_swap.errors.bed --max-chance-anchor 0', (
+                      'ctg\t1\tgap-fill\tfrag#1#ctg#0\t55152\tdonor#1#ctg#0\t65137\t15000\t67.2\t100.0\t100.0\taccepted\t.\t20152\t35152\n'
+                      '#Patched assembly on ctg for frag#1:\n'
+                      'frag#1#ctg#0\t0\t20150\t+\n'
+                      'donor#1#ctg#0\t30135\t45137\t+\n'
+                      'frag#1#ctg#0\t35152\t55152\t+\n'
+                      '\n')),
+}
+with open('cj_swap.errors.bed', 'w') as f:
+    f.write('frag#1#ctg#0\t20152\t35152\n')
+temp_files += ['cj_swap.errors.bed']
+for base, (walks, args, truth) in cj_cases.items():
+    with open(base + '.gfa', 'w') as f:
+        f.write('H\tVN:Z:1.1\n')
+        for n in sorted(set(n for w in walks.values() for n in w)):
+            f.write('S\t{}\t{}\n'.format(n, cj_nodes[n]))
+        for a, b in sorted(set(e for w in walks.values() for e in zip(w, w[1:]))):
+            f.write('L\t{}\t+\t{}\t+\t0M\n'.format(a, b))
+        for sample, w in walks.items():
+            f.write('W\t{}\t1\tctg\t0\t{}\t{}\n'.format(sample, sum(len(cj_nodes[n]) for n in w), ''.join('>{}'.format(n) for n in w)))
+    with open(base + '.truth', 'w') as f:
+        f.write(truth)
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    run('panpatch {0}.vg -r frag -s frag -s donor {1} --bed {0}.int 2>/dev/null | grep -v "^chrom" | {2} > {0}.rep ; cat {0}.rep {0}.int > {0}.out'.format(base, args, telo_filter))
+    run('diff {0}.out {0}.truth'.format(base))
+    temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
+
 # --error-bed: assembly-error intervals block the steps of their own path, not the node, so where the target's
 # flagged sequence is aligned to a donor's clean copy, the donor can thread across it and the patch differs
 # from the target only where the donor does.  Reference-free, every node 10kb unless noted:
