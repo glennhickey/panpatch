@@ -105,6 +105,7 @@ Contig ends (see [Telomeres](#telomeres)):
 | `-M, --max-telomere-patch N` | max bp of target sequence a telomere graft or a tip graft may replace at a contig end (0: none, so a graft may only add sequence at the tip) | 20000 |
 | `--max-subtelomere-graft N` | max bp of donor sequence a telomere graft may carry ahead of the donor's telomere, and max bp a telomere or tip graft may add to the end beyond the bp it replaces (0: no limit, and a donor's contig-end `--error-bed` intervals then block its telomere graft like any other) | 2000 |
 | `--max-telomere-loss N` | max bp of telomere repeat (runs of `TTAGGG` or `CCCTAA`) a telomere or tip graft may take off the target's end beyond what it brings in (0: no net loss) | 1000 |
+| `--min-telomere-graft N` | min bp of donor sequence a telomere or tip graft must bring in: with less it only cuts the target's end back, which is the assembler's to fix, and the end is left as it is (0: no minimum) | 500 |
 | `--telomere-threshold F` | min telomere hexamer density to call a telomere | 0.8 |
 | `--telomere-report FILE` | standalone: print the per-contig telomere status (`#Contig` lines) of a finished FASTA and exit | |
 
@@ -177,12 +178,15 @@ Telomere grafts are kept small, because a telomere is missing from an assembly f
 - `-M/--max-telomere-patch` caps how much target sequence a graft may replace.
 - `--max-subtelomere-graft` caps how much donor sequence a graft may carry ahead of the donor's telomere array. It also caps how much longer the graft may make the end than it was, telomere included: where the target has nothing to replace, a graft adds at most this much.
 - `--max-telomere-loss` caps how much more telomere repeat (runs of `TTAGGG` or `CCCTAA`) a graft may take off the target's end than it brings in: a capless tip can be junk over a longer array than the donor's. 0 allows no net loss. The repeat is counted the same way on both sides, as runs of two or more perfect units, so an array degraded by variant repeats counts for less than its length.
+- `--min-telomere-graft` sets how much donor sequence a graft must bring in. Where the target has its own array under a capless tail, the nearest handoff is inside the two arrays, and the graft is the few bp from there to the donor's end: it only cuts the tail off. That is the assembler's to fix, and a handoff further in would only swap the donor's array for the target's, so the end is left as it is.
 
-A donor whose graft is over the subtelomere cap, or whose run to its telomere contains an `N` or one of its own `--error-bed` intervals (other than a [contig-end flag](#error-regions) at that end), is skipped for the next one; such a donor is reported as a rejected row if no other donor completes the end. Over the other limits the end is left as it is, and the graft is reported as a rejected row: if the nearest usable handoff is further in than `-M`, or its graft would make the end too much longer or lose too much telomere repeat. Those two say that the target's end and the nearest donor's disagree, and a further donor under the growth cap could simply be one with a shorter array.
+A donor whose graft is over the subtelomere cap, or whose run to its telomere contains an `N` or one of its own `--error-bed` intervals (other than a [contig-end flag](#error-regions) at that end), is skipped for the next one; such a donor is reported as a rejected row if no other donor completes the end. Over the other limits the end is left as it is, and the graft is reported as a rejected row: if the nearest usable handoff is further in than `-M`, or its graft would make the end too much longer, lose too much telomere repeat, or bring in less than `--min-telomere-graft`. The growth and loss limits say that the target's end and the nearest donor's disagree, and a further donor under the growth cap could simply be one with a shorter array.
 
-A telomere graft therefore repairs the array, typically by trimming a short capless tail off the target and taking the donor's telomere. It does not bring in a subtelomere the target lacks, add more than `--max-subtelomere-graft` where the target ends without a telomere, or leave a much shorter array than the target had.
+A telomere graft therefore brings in the donor's telomere array, in place of at most `-M` bp of the target's end. It does not bring in a subtelomere the target lacks, add more than `--max-subtelomere-graft` where the target ends without a telomere, leave a much shorter array than the target had, or only cut the target's end back to an array it already has.
 
 The limits on growth and on telomere loss come from the HPRC pilot, where ONT reads (which, unlike HiFi reads, reach into telomere arrays) were realigned to each patched end. Where a graft grew an end by 4.5 kb, the reads ran on 12 kb past the target's end, through a segment the donor lacks, before reaching their telomere. Where grafts left a target's array 2.6 to 8.8 kb shorter, the reads' telomeres were at least as long as the array the target had, and ran past the new tip.
+
+The minimum comes from the same pilot, with TTT assemblies as targets. 23 of its 26 telomere grafts brought in 2 to 221 bp, each cutting 0.2 to 2.4 kb of capless tail off an array the target already had. In two of them, the end left was a 0.5 to 0.6 kb telomeric fragment that no read reaches, past 1.7 to 2.7 kb of non-telomeric sequence beyond the array where the reads stop. The other three brought in 0.9 to 11 kb of the donor's array.
 
 A contig whose end can't be completed is **kept** as it is, with its other patches. `-T/--require-telomeres` makes this strict: each patched sequence must begin and end with a telomere (density ≥ `--telomere-threshold`), and one that doesn't reverts to its input. With `-T`, an end left uncapped is also reported, as having no donor that reaches a telomere or as a telomere that is present but buried or degraded.
 
@@ -197,6 +201,7 @@ Where the target cannot reach one of its ends (an `N` gap or a flagged region ne
 - it may replace at most `--max-telomere-patch` bp of the target's end;
 - it may add at most `--max-subtelomere-graft` bp more than it replaces;
 - it may not take off a telomere the target has, or more than `--max-telomere-loss` bp more telomere repeat than it brings in;
+- it must bring in at least `--min-telomere-graft` bp of donor sequence;
 - it must be one piece of donor sequence (`--max-graft-pieces`);
 - its donor may not be [too short to place](#why-a-patch-is-rejected) (`--min-donor-fraction`);
 - neither the donor sequence it adds nor the target end it replaces may be rDNA, or other no-patch sequence.
@@ -256,7 +261,7 @@ An interior graft, a donor run between two pieces of the same target contig, is 
 At a contig end:
 
 - **Tip graft** — one over its [limits](#tip-grafts) is dropped, and the target keeps its own end.
-- **Telomere graft** — one that would replace more than `--max-telomere-patch` of the target, carry more than `--max-subtelomere-graft` ahead of the donor's telomere or grow the end by more than that, take off more than `--max-telomere-loss` more telomere repeat than it brings in, or take in a donor's `N`s or flagged sequence (other than a contig-end flag at that end) is not made (see [Telomeres](#telomeres)). A donor too short to place (`--min-donor-fraction`) is passed over, as one with `N`s is, and the next donor tried. Where both ends' grafts would cross on a short contig, neither is made.
+- **Telomere graft** — one that would replace more than `--max-telomere-patch` of the target, carry more than `--max-subtelomere-graft` ahead of the donor's telomere or grow the end by more than that, take off more than `--max-telomere-loss` more telomere repeat than it brings in, bring in less than `--min-telomere-graft` of donor sequence (it would only cut the target's end back), or take in a donor's `N`s or flagged sequence (other than a contig-end flag at that end) is not made (see [Telomeres](#telomeres)). A donor too short to place (`--min-donor-fraction`) is passed over, as one with `N`s is, and the next donor tried. Where both ends' grafts would cross on a short contig, neither is made.
 
 **The whole contig reverts**
 

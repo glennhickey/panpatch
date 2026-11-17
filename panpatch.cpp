@@ -1283,9 +1283,11 @@ static double kmer_recovery(const string& removed, const string& added) {
 // sequence ahead of the donor's telomere, or beyond the target bp it replaces (--max-subtelomere-graft):
 // a telomere patch repairs the telomere array, and does not bring in a subtelomere the target lacks.  Nor may
 // it take off more than max_telomere_loss bp more telomere repeat than it brings in (--max-telomere-loss): a
-// capless tip can be junk over a longer array than the donor's.  A donor over the subtelomere cap (or with an
-// N or a flag on its run out) is skipped for the next one; a handoff over -M, the growth cap or the loss cap
-// leaves the end as it is.
+// capless tip can be junk over a longer array than the donor's.  And it must bring in at least min_graft bp of
+// donor sequence (--min-telomere-graft): a graft of a few bp, from a handoff inside the target's own array, only
+// cuts the target's end back to where the donor's ends, which is the assembler's to fix.  A donor over the
+// subtelomere cap (or with an N or a flag on its run out) is skipped for the next one; a handoff over -M, the
+// growth cap or the loss cap, or under the graft minimum, leaves the end as it is.
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         const PathHandleGraph* graph,
         const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
@@ -1299,7 +1301,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         bool report_failures,
         const ErrorRegions* error_regions,
         const TelomereErrorRegions* telomere_regions,
-        double min_donor_fraction) {
+        double min_donor_fraction,
+        int64_t min_graft) {
 
     static const int64_t OUTER = 20000;            // inspect this many bp at a contig tip for a telomere
     static const int64_t TIP_CHECK = 50000;        // validate_telomeres' (-T) window at a patched contig's tip
@@ -1663,6 +1666,16 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                             "bp, over --max-telomere-loss " + std::to_string(max_telomere_loss);
                     }
                 }
+                // nor may it bring in fewer than min_graft bp of donor sequence.  where the target has its own array
+                // under a capless tail, the nearest handoff is inside the two arrays, and the graft is the few bp from
+                // there to the donor's end: it only cuts the tail off (on the HPRC pilot, 23 of 26 telomere grafts did
+                // just that, bringing in 2-221bp; in two, the end left was a short telomeric fragment beyond the real
+                // array, which the reads do not reach).  that is the assembler's to fix, and a handoff further in would
+                // only swap the donor's array for the target's, so the end is left as it is
+                if (over.empty() && min_graft > 0 && (int64_t)added_seq.size() < min_graft) {
+                    over = "donor's graft adds " + std::to_string(added_seq.size()) + "bp for " + std::to_string(walked) +
+                        "bp of the target's end, under --min-telomere-graft " + std::to_string(min_graft);
+                }
                 if (!over.empty()) {
                     if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
                                       << " handoff to " << graph->get_path_name(F) << " at " << walked
@@ -2013,7 +2026,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const NoPatch* no_patch,
                                                                const TelomereErrorRegions* telomere_error_regions,
                                                                double min_donor_fraction,
-                                                               int64_t max_chance_anchor) {
+                                                               int64_t max_chance_anchor,
+                                                               int64_t min_telomere_graft) {
 
     size_t records_at_entry = g_patch_records.size();   // this call's report rows start here
 
@@ -2139,8 +2153,9 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     // own end or its first N or flagged step.  nothing anchors the far end of such a graft, so it is held to
     // the limits of a telomere graft: it may replace at most max_telomere_patch (-M) bp of the target's end,
     // may add at most max_subtelomere_graft bp more than it replaces, may not take off a telomere the target
-    // already has, nor max_telomere_loss bp more telomere repeat than it brings in, and may not come from a donor
-    // piece too short to place (--min-donor-fraction).  (unchecked, a flag on a
+    // already has, nor max_telomere_loss bp more telomere repeat than it brings in, must bring in at least
+    // min_telomere_graft bp of donor sequence (with less it only cuts the target's end back), and may not come from
+    // a donor piece too short to place (--min-donor-fraction).  (unchecked, a flag on a
     // contig's last few kb appended the donor's whole tail.)  one that fails is dropped -- the target keeps its
     // own end -- and gets a rejected row; one that passes gets an accepted gap-fill row
     {
@@ -2230,6 +2245,11 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                         to_string(max_telomere_loss);
                 }
             }
+            if (why.empty() && min_telomere_graft > 0 && added < min_telomere_graft) {
+                // it would only cut the target's end back, as a telomere graft under the minimum would
+                why = "adds " + to_string(added) + "bp of donor sequence for " + to_string(replaced) +
+                    "bp of the target's end, under --min-telomere-graft " + to_string(min_telomere_graft);
+            }
             PatchRecord pr;
             pr.type = "gap-fill"; pr.target = graph->get_path_name(P); pr.target_bp = L;
             pr.donor = graph->get_path_name(D); pr.donor_bp = path_bp(graph, D);
@@ -2258,7 +2278,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                  sample_names, telo_threshold, max_telomere_patch,
                                                  max_subtelomere_graft, max_telomere_loss, verbose,
                                                  report_telomere_failures, error_regions, telomere_error_regions,
-                                                 min_donor_fraction);
+                                                 min_donor_fraction, min_telomere_graft);
         check_intervals(graph, extended_intervals);
     }
 

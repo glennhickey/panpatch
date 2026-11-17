@@ -164,7 +164,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHan
 // than max_subtelomere bp of donor sequence ahead of the donor's telomere or beyond the target bp it
 // replaces (0: no limit), or taking off more than max_telomere_loss bp more telomere repeat than it
 // brings in, is not taken.  nor is one from a donor path shorter than min_donor_fraction of the target
-// contig (0: no limit): that cover is skipped.
+// contig (0: no limit): that cover is skipped.  nor is one that brings in fewer than min_graft bp of donor
+// sequence (0: no limit): it would only cut the target's end back, and the end is left as it is.
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const PathHandleGraph* graph,
                                                                       const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                                                       const unordered_map<string, vector<path_handle_t>>& sample_covers,
@@ -179,7 +180,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
                                                                       // if given, the intervals a graft respects
                                                                       // instead, by the end of the donor it runs to
                                                                       const TelomereErrorRegions* telomere_regions=nullptr,
-                                                                      double min_donor_fraction=0.0);
+                                                                      double min_donor_fraction=0.0,
+                                                                      int64_t min_graft=0);
 
 // one row of the patch report: a candidate patch (telomere completion, gap-fill, or scaffold join),
 // with its similarity metrics and the accept/reject decision.  Accumulated in g_patch_records during a
@@ -273,7 +275,11 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                // chance match of at most this many bp, out of line
                                                                // with it, joins where they share a node in line
                                                                // instead (--max-chance-anchor; 0: off)
-                                                               int64_t max_chance_anchor = 0);
+                                                               int64_t max_chance_anchor = 0,
+                                                               // no telomere or tip graft that brings in fewer than
+                                                               // this many bp of donor sequence, which would only cut
+                                                               // the target's end back (--min-telomere-graft; 0: off)
+                                                               int64_t min_telomere_graft = 0);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
