@@ -95,7 +95,6 @@ void help(char** argv) {
        << "        --bed FILE               Write the patched-assembly intervals (BED) to FILE (default: none);" << endl
        << "                                 written only on full success. The report still goes to stdout" << endl
        << "    -w, --window SIZE            Size of window used for computing identity for haplotype matching [1000]" << endl
-       << "    -e, --default-sample STRING  If unable to patch, use contig from this sample (if diploid, haplotypes must be consistent with first sample!)" << endl
        << "    -t, --threads N              Number of threads to use [default: all available]" << endl
        << "        --patch-types LIST       Which of {gap,telomere} to attempt, comma-separated [default: both]; scaffolding is always attempted" << endl
        << "    -T, --require-telomeres      Require a telomere at both ends (revert a contig that isn't); not with a" << endl
@@ -188,7 +187,6 @@ int main(int argc, char** argv) {
     bool progress = false;
     string out_fasta_filename;
     string out_bed_filename;
-    string default_sample;
     string exclude_bed_filename;
     string error_bed_filename;
     string telomere_report_filename;
@@ -229,7 +227,6 @@ int main(int argc, char** argv) {
             {"sample", required_argument, 0, 's'},
             {"fasta", required_argument, 0, 'f'},
             {"window", required_argument, 0, 'w'},
-            {"default-sample", required_argument, 0, 'e'},
             {"threads", required_argument, 0, 't'},
             {"require-telomeres", no_argument, 0, 'T'},
             {"patch-types", required_argument, 0, 1008},
@@ -264,7 +261,7 @@ int main(int argc, char** argv) {
 
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hpr:s:f:w:e:t:TM:b:",
+        c = getopt_long (argc, argv, "hpr:s:f:w:t:TM:b:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -291,9 +288,6 @@ int main(int argc, char** argv) {
                 cerr << "[panpatch] error: --window (-w) must be a positive integer" << endl;
                 return 1;
             }
-            break;
-        case 'e':
-            default_sample = optarg;
             break;
         case 't':
         {
@@ -777,7 +771,7 @@ int main(int argc, char** argv) {
         string revert_reason;
         bool reverted = revert_bad_patch(graph, ref_path, hap_tgts.second, sample_names,
                                          patched_intervals, input_intervals,
-                                         default_sample, fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN, revert_reason,
+                                         fail_threshold, graft_recovery, graft_min_bp, telo_threshold, excised_nonN, revert_reason,
                                          &dedup_ranges);
 
         // Also revert if the patch reuses sequence, telomere validation failed or a foreign-bridged scaffold
@@ -787,20 +781,10 @@ int main(int argc, char** argv) {
             revert_reason = bad_reuse ? reuse_detail : bad_bridge ? bridge_detail : telo_fail_reason;
             // Generate input intervals if not already done
             if (input_intervals.empty()) {
-                vector<path_handle_t> default_paths;
-                if (!default_sample.empty()) {
-                    default_paths = default_sample_paths(graph, default_sample, graph->get_haplotype(hap_tgts.second.front()));
-                }
-                // as in revert_bad_patch: the default sample stands in only with exactly one contig here;
-                // otherwise every one of the target's own contigs is kept (none may be dropped)
-                if (default_paths.size() == 1) {
-                    input_intervals.push_back(make_tuple(graph->path_begin(default_paths[0]),
-                                                        graph->path_back(default_paths[0]), false));
-                } else {
-                    for (const path_handle_t& tgt_path : hap_tgts.second) {
-                        input_intervals.push_back(make_tuple(graph->path_begin(tgt_path),
-                                                            graph->path_back(tgt_path), false));
-                    }
+                // as in revert_bad_patch: every one of the target's own contigs is kept (none may be dropped)
+                for (const path_handle_t& tgt_path : hap_tgts.second) {
+                    input_intervals.push_back(make_tuple(graph->path_begin(tgt_path),
+                                                        graph->path_back(tgt_path), false));
                 }
             }
         }
@@ -873,10 +857,8 @@ int main(int argc, char** argv) {
         if (reverted) {
             for (const auto& interval : patched_intervals) {
                 path_handle_t p = graph->get_path_handle_of_step(get<0>(interval));
-                string label = graph->get_sample_name(p) == sample_names.front()
-                    ? "Unpatched (input contig)" : "Default sample contig (" + graph->get_sample_name(p) + ")";
                 records.push_back({graph->get_path_name(p),
-                                   "#" + label + " on " + locus + " for " + sample_hap(hap_tgts.second.front()) + ":",
+                                   "#Unpatched (input contig) on " + locus + " for " + sample_hap(hap_tgts.second.front()) + ":",
                                    {interval}});
             }
         } else {

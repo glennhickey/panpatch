@@ -42,18 +42,6 @@ vector<path_handle_t> sample_paths(const PathHandleGraph* graph, const string& s
     return paths;
 }
 
-vector<path_handle_t> default_sample_paths(const PathHandleGraph* graph, const string& default_sample,
-                                           int64_t target_haplotype) {
-    vector<path_handle_t> paths;
-    for (const path_handle_t& p : sample_paths(graph, default_sample)) {
-        size_t hap = graph->get_haplotype(p);
-        if (hap == 0 || hap == PathMetadata::NO_HAPLOTYPE || hap == (size_t)target_haplotype) {
-            paths.push_back(p);
-        }
-    }
-    return paths;
-}
-
 // offset of a step along its path.  only used to put the steps of one path that visits a node more
 // than once in a stable order, so the slow walk (for a graph without positions) is rarely taken
 static int64_t step_offset(const PathHandleGraph* graph, const step_handle_t& step) {
@@ -1942,7 +1930,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
         cerr << "[panpatch] warning: unable to patch assembly on " << graph->get_locus_name(ref_path)
              << " for " << graph->get_sample_name(tgt_paths.front()) << "#"
          << graph->get_haplotype(tgt_paths.front()) << ":" << endl;
-        // say so in the report, whatever the revert then writes (the input, or with -e the default sample)
+        // say so in the report (the revert then writes the target's input contigs)
         PatchRecord pr;
         pr.type = "gap-fill"; pr.target = graph->get_path_name(tgt_paths.front()); pr.target_bp = path_bp(graph, tgt_paths.front());
         pr.accepted = false;
@@ -2935,7 +2923,6 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<string>& sample_names,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
-                      string default_sample,
                       double threshold,
                       double graft_recovery,
                       int64_t graft_min_bp,
@@ -3006,13 +2993,8 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     }
 
     // no-patch detection: the threaded output is just the target's own single contig (no foreign
-    // sequence spliced in, no second target contig scaffolded) -> nothing was actually patched.
-    // this runs even when -e/--default-sample is set: "nothing to patch" means the target contig is
-    // emitted untouched (native orientation) below, NOT replaced -- -e substitutes only on a real
-    // patch *failure* (the to_revert checks above), never here.  (gating this on !default_sample used
-    // to skip detection entirely with -e, leaving the reference-threaded path in place, which
-    // reverse-complements any target contig stored antisense to the reference.)
-    bool no_patch = false;
+    // sequence spliced in, no second target contig scaffolded) -> nothing was actually patched, and the
+    // target contig is emitted untouched, in its native orientation, below
     if (!to_revert) {
         bool patch_happened = false;
         unordered_set<path_handle_t> tgt_contigs_in_patch;
@@ -3035,7 +3017,6 @@ bool revert_bad_patch(const PathHandleGraph* graph,
         // we replace the patch with the target's own contig because there was no patch
         if (!patch_happened) {
             to_revert = true;
-            no_patch = true;
             // check if target paths have any gaps (N bases)
             bool has_gaps = false;
             for (const path_handle_t& tgt_path : first_tgt_paths) {
@@ -3058,24 +3039,9 @@ bool revert_bad_patch(const PathHandleGraph* graph,
     }
 
     if (to_revert) {
-        // -e/--default-sample substitutes its own contig only for a genuine patch *failure*; a
-        // no-patch revert always restores the target's own contig in native orientation.
-        if (!default_sample.empty() && !no_patch) {
-            vector<path_handle_t> default_paths = default_sample_paths(graph, default_sample,
-                                                                       graph->get_haplotype(first_tgt_paths.front()));
-            // the default sample stands in only where it has exactly one contig here; otherwise (none, or
-            // several to choose between) the target's own contigs are kept, rather than aborting the run
-            if (default_paths.size() == 1) {
-                out_intervals.push_back(make_tuple(graph->path_begin(default_paths[0]), graph->path_back(default_paths[0]), false));
-                return true;
-            }
-            cerr << "[panpatch] warning: -e " << default_sample << " has " << default_paths.size() << " contigs on "
-                 << graph->get_locus_name(ref_path) << ", not 1; keeping the target's own contigs" << endl;
-        }
-        {
-            for (const path_handle_t& tgt_path : first_tgt_paths) {
-                out_intervals.push_back(make_tuple(graph->path_begin(tgt_path), graph->path_back(tgt_path), false));
-            }
+        // a revert restores the target's own contigs, each in its native orientation
+        for (const path_handle_t& tgt_path : first_tgt_paths) {
+            out_intervals.push_back(make_tuple(graph->path_begin(tgt_path), graph->path_back(tgt_path), false));
         }
         return true;
     }

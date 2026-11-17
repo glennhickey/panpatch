@@ -81,7 +81,6 @@ Inputs and outputs:
 | `-s, --sample STR` | target to patch (first), then donors in priority order (required, repeatable) | |
 | `-f, --fasta FILE` | write the patched assembly, one FASTA per target haplotype (`FILE.hap1.fa`, ...) | |
 | `--bed FILE` | write the patched-assembly intervals (BED) | |
-| `-e, --default-sample STR` | when a patch fails, write this sample's contig instead of the target's (only where it has exactly one contig on the chromosome; a diploid sample's haplotypes must be consistent with the target's) | |
 | `-p, --progress` | print progress to stderr | |
 | `-t, --threads N` | threads | all |
 
@@ -165,7 +164,7 @@ PAN028-hifiasm#2#h2tg000032l#0	2	27	+
 PAN028-verkko#1#haplotype1-0000008#0	0	64821530	+
 ```
 
-A patched sequence is named `<chrom>_hap_<N>` in the FASTA. A reverted or passed-through contig keeps its own name, under a `#Unpatched (input contig)`, `#Default sample contig` or `#Passthrough` header in the BED.
+A patched sequence is named `<chrom>_hap_<N>` in the FASTA. A reverted or passed-through contig keeps its own name, under a `#Unpatched (input contig)` or `#Passthrough` header in the BED.
 
 ## Telomeres
 
@@ -230,7 +229,7 @@ panpatch chr22.full.vg -r PAN027-verkko-1 -s PAN027-verkko-1 -s PAN027-herro -b 
 
 ## Why a patch is rejected
 
-panpatch errs on the side of leaving the target as it is. A patch that fails a check is either dropped on its own, the rest of the contig's patches being kept, or reverts the whole contig to the target's input contig(s) (or `--default-sample`'s). Either way it is a report row with `decision` `rejected` and the cause in `reason`.
+panpatch errs on the side of leaving the target as it is. A patch that fails a check is either dropped on its own, the rest of the contig's patches being kept, or reverts the whole contig to the target's input contig(s). Either way it is a report row with `decision` `rejected` and the cause in `reason`.
 
 **A patch dropped on its own**
 

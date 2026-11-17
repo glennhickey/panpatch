@@ -1209,14 +1209,6 @@ rg_case('rg_rdna_bridge', rg_n, rg_w, '-r x -s frag -s donor', None,
         {'frag#1#ctgA#0': '+1 +2 +3', 'frag#1#ctgB#0': '+7 +8 +9'}, ['foreign bridge shares'])
 rg_case('rg_rdna_bridge_patch', rg_n, rg_w, '-r x -s frag -s donor --patch-rdna', None,
         {'chrX_hap_1': '+1 +2 +3 +4 +5 +6 +7 +8 +9'})
-# -e naming a sample with two contigs here: a failed patch aborted the run (assert) ...
-run('vg convert interior_splice.gfa > interior_splice.e.vg')
-run('panpatch interior_splice.e.vg -r x -s frag -e frag -f interior_splice.e.fa 2>/dev/null > interior_splice.e.rep && test $(grep -c "^>" interior_splice.e.hap1.fa) -eq 2')
-# ... and a telomere revert wrote only the first of them, dropping ctgB
-run('vg convert scaffold.gfa > scaffold.e.vg')
-run('panpatch scaffold.e.vg -r x -s frag -T -e frag -f scaffold.e.fa 2>/dev/null > scaffold.e.rep && test $(grep -c "^>" scaffold.e.hap1.fa) -eq 2')
-temp_files += ['interior_splice.e.vg', 'interior_splice.e.hap1.fa', 'scaffold.e.vg', 'scaffold.e.hap1.fa']
-
 temp_files += [f for f in os.listdir('.') if f.endswith('.int') or f.endswith('.rep')]
 for f in temp_files:
     if os.path.isfile(f):

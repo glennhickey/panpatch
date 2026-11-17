@@ -94,7 +94,6 @@ Sample names come from minigraph-cactus seqfile (first column, without `.1/.2` h
 - `--bed FILE`: Output the patched-assembly intervals (BED); atomic
 - `-b/--exclude-bed FILE`: BED file of target assembly regions to exclude from patching (coordinates in first `-s` sample space; input filter, distinct from `--bed`)
 - `-w/--window SIZE`: Window size for identity calculation (default: 1000)
-- `-e/--default-sample`: Fallback sample if patching fails
 - `-p/--progress`: Enable progress output
 
 ## Input Requirements

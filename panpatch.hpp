@@ -57,11 +57,6 @@ void sort_paths_by_name(const PathHandleGraph* graph, vector<path_handle_t>& pat
 // the paths of a sample, sorted by name
 vector<path_handle_t> sample_paths(const PathHandleGraph* graph, const string& sample);
 
-// the paths of the -e/--default-sample usable for a target haplotype (its own haplotype, or none),
-// sorted by name
-vector<path_handle_t> default_sample_paths(const PathHandleGraph* graph, const string& default_sample,
-                                           int64_t target_haplotype);
-
 // compute overlap identity between set of ref_paths (treated colletively) with each path in the
 // other_paths 
 // the identity is computed in windows of size w. for a given window the identity is
@@ -301,7 +296,6 @@ bool revert_bad_patch(const PathHandleGraph* graph,
                       const vector<string>& sample_names,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& in_intervals,                      
                       vector<tuple<step_handle_t, step_handle_t, bool>>& out_intervals,
-                      string default_sample,
                       double threshold,
                       double graft_recovery,
                       int64_t graft_min_bp,
