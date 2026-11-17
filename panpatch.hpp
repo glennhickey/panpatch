@@ -163,7 +163,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_intervals(const PathHan
 // the shared handoff node).  a handoff replacing more than max_handoff bp of target, grafting more
 // than max_subtelomere bp of donor sequence ahead of the donor's telomere or beyond the target bp it
 // replaces (0: no limit), or taking off more than max_telomere_loss bp more telomere repeat than it
-// brings in, is not taken.
+// brings in, is not taken.  nor is one from a donor path shorter than min_donor_fraction of the target
+// contig (0: no limit): that cover is skipped.
 vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const PathHandleGraph* graph,
                                                                       const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                                                                       const unordered_map<string, vector<path_handle_t>>& sample_covers,
@@ -177,7 +178,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(const Path
                                                                       const ErrorRegions* error_regions=nullptr,
                                                                       // if given, the intervals a graft respects
                                                                       // instead, by the end of the donor it runs to
-                                                                      const TelomereErrorRegions* telomere_regions=nullptr);
+                                                                      const TelomereErrorRegions* telomere_regions=nullptr,
+                                                                      double min_donor_fraction=0.0);
 
 // one row of the patch report: a candidate patch (telomere completion, gap-fill, or scaffold join),
 // with its similarity metrics and the accept/reject decision.  Accumulated in g_patch_records during a
@@ -218,12 +220,13 @@ bool patch_reuses_sequence(const PathHandleGraph* graph,
                            std::string& detail);
 
 // record scaffold joins (patch spanning >1 target contig) as report rows; flank-guard foreign-bridged
-// joins.  returns true (+ bridge_detail) if any foreign bridge is a wrong-locus misjoin -> revert.
+// joins.  returns true (+ bridge_detail) if any foreign bridge is a wrong-locus misjoin, or is from a
+// donor path shorter than min_donor_fraction of the target contig (0: no limit) -> revert.
 bool record_scaffolds(const PathHandleGraph* graph,
                       const std::vector<std::tuple<step_handle_t, step_handle_t, bool>>& intervals,
                       const std::string& target_sample, double min_flank, int64_t flank_window,
                       std::string& bridge_detail, int64_t max_graft_pieces = 0,
-                      const NoPatch* no_patch = nullptr);
+                      const NoPatch* no_patch = nullptr, double min_donor_fraction = 0.0);
 
 // a report row for every N gap of a target contig the patch uses that is still in the output and that no
 // row already covers (no donor could be threaded across it), so a gap left as it is is never silent
@@ -262,7 +265,10 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                const NoPatch* no_patch = nullptr,
                                                                // the --error-bed intervals telomere patching respects
                                                                // (error_regions if null)
-                                                               const TelomereErrorRegions* telomere_error_regions = nullptr);
+                                                               const TelomereErrorRegions* telomere_error_regions = nullptr,
+                                                               // no tip or telomere graft from a donor path shorter
+                                                               // than this fraction of the target contig (0: no limit)
+                                                               double min_donor_fraction = 0.0);
 
 // partial-patch cleanup: excise repeat-region-misjoin foreign interior grafts in place (merging the
 // flanking target pieces), keeping the rest of the patch.  reverts a graft on low k-mer recovery
@@ -287,7 +293,10 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 // keep a gap fill that removes a duplicate (--dedup-recovery; 0 disables), and
                                 // record the target range it replaced, per contig, for revert_bad_patch
                                 double min_dedup = 0.0,
-                                std::unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges = nullptr);
+                                std::unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges = nullptr,
+                                // excise a graft from a donor path shorter than this fraction of the target
+                                // contig (0: no limit)
+                                double min_donor_fraction = 0.0);
 
 // return the input intervals unmodified if it failed to find a reasonable patch
 bool revert_bad_patch(const PathHandleGraph* graph,

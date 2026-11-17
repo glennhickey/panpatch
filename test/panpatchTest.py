@@ -102,6 +102,8 @@ run('panpatch tiny.vg -r x -s verkko -s hifi --patch-types telomere 2>/dev/null 
 run('! panpatch tiny.vg -r x -s verkko -s hifi -T --patch-types gap 2>/dev/null')
 # a numeric option's value must be the whole argument (read as 2, "2kb" would quietly loosen the limit 1000-fold)
 run('! panpatch tiny.vg -r x -s verkko -s hifi --max-subtelomere-graft 2kb 2>/dev/null')
+# and a fraction must be one
+run('! panpatch tiny.vg -r x -s verkko -s hifi --min-donor-fraction 1.5 2>/dev/null')
 
 # No-gaps message test: hifi has no N bases, so should get friendly message
 run('panpatch tiny.vg -r x -s hifi -s verkko --bed tiny.nogaps.bed.int > tiny.nogaps.bed.rep && cat tiny.nogaps.bed.rep tiny.nogaps.bed.int > tiny.nogaps.bed')
@@ -451,6 +453,33 @@ for te_args, te_expect in te_truth.items():
     run('panpatch tip_extension.vg -r frag -s frag -s donor {1} --bed tip_extension.int 2>/dev/null | grep -v "^chrom" | {0} > tip_extension.rep ; cat tip_extension.rep tip_extension.int > tip_extension.out'.format(telo_filter, te_args))
     run('diff tip_extension.out tip_extension.truth')
 temp_files += ['tip_extension.gfa', 'tip_extension.vg', 'tip_extension.truth', 'tip_extension.out']
+# ... nor may a tip graft come from a donor too short to place (--min-donor-fraction): frag gets 200kb ahead of its 1
+# (0), and the donor is cut down to 2 4 5 6 (25kb: under a fifth of frag's 231kb, over a tenth).  The graft above
+# (--max-subtelomere-graft 5000) is dropped by default, and taken at 0.1
+ts_nodes = dict(te_nodes)
+ts_nodes[0] = ''.join(random.Random(29).choice('ACGT') for _ in range(200000))
+n_gfa('tip_short.gfa', ts_nodes, {'frag' : [0, 1, 2, 3, 5], 'donor' : [2, 4, 5, 6]})
+ts_truth = {
+    '' : ('ctg\t1\tgap-fill\tfrag#1#ctg#0\t231000\tdonor#1#ctg#0\t25000\t11000\t.\t.\t.\trejected\ttip graft comes from a '
+          "donor contig of 25000bp, under --min-donor-fraction 0.2 of the target contig's 231000bp (too short to place); "
+          'the target keeps its own end\t220000\t231000\n'
+          '#Unpatched (input contig) on ctg for frag#1:\n'
+          'frag#1#ctg#0\t0\t231000\t+\n'
+          '\n'),
+    '--min-donor-fraction 0.1' : (
+          'ctg\t1\tgap-fill\tfrag#1#ctg#0\t231000\tdonor#1#ctg#0\t25000\t11000\t.\t.\t.\taccepted\t.\t220000\t231000\n'
+          '#Patched assembly on ctg for frag#1:\n'
+          'frag#1#ctg#0\t0\t210000\t+\n'
+          'donor#1#ctg#0\t0\t25000\t+\n'
+          '\n'),
+}
+run('vg convert tip_short.gfa > tip_short.vg')
+for ts_args, ts_expect in ts_truth.items():
+    with open('tip_short.truth', 'w') as f:
+        f.write(ts_expect)
+    run('panpatch tip_short.vg -r frag -s frag -s donor --max-subtelomere-graft 5000 {1} --bed tip_short.int 2>/dev/null | grep -v "^chrom" | {0} > tip_short.rep ; cat tip_short.rep tip_short.int > tip_short.out'.format(telo_filter, ts_args))
+    run('diff tip_short.out tip_short.truth')
+temp_files += ['tip_short.gfa', 'tip_short.vg', 'tip_short.truth', 'tip_short.out']
 
 # A graft at a contig end may not grow it by more than --max-subtelomere-graft beyond the bp it replaces, nor take off
 # more than --max-telomere-loss bp of telomere repeat (TTAGGG/CCCTAA runs) beyond what it brings in.  (On the HPRC
@@ -467,6 +496,9 @@ temp_files += ['tip_extension.gfa', 'tip_extension.vg', 'tip_extension.truth', '
 #                   growth (or loss) limit leaves the end as it is, and is not passed to the next donor
 #   telo_loss_split   - telo_loss with frag's array split into 3 nodes (41-43) mid-unit: still 3000bp of repeat
 #   telo_loss_split_q - the same at the q end (frag's array 44-46 under junk 47, donor's 1kb array 48)
+#   telo_short_donor  - telo_growth_ok's donor cut down to its array and the node it shares with frag (27 24: 6kb, under
+#                   a fifth of frag's 85kb): the cover is too short to place (--min-donor-fraction), so it is skipped
+#                   and the end left as it is (telo_short_donor_off: at 0 it is taken)
 tl_rng = random.Random(23)
 tl_rnd = lambda n: ''.join(tl_rng.choice('ACGT') for _ in range(n))
 tl_nodes = {21: tl_rnd(2000), 22: 'CCCTAA' * 500, 23: 'CCCTAA' * 167, 24: tl_rnd(3000), 25: tl_rnd(80000),
@@ -528,6 +560,17 @@ tl_cases = {
                           "chrX\t1\ttelomere\tfrag#1#ctg#0\t88000\tdonor#1#ctg#0\t84002\t5000\t.\t.\t.\trejected\tdonor's graft takes off 3000bp of telomere repeat and brings in 1002bp, a loss of 1998bp, over --max-telomere-loss 1000\t83000\t88000\n"
                           '#Unpatched (input contig) on chrX for frag#1:\n'
                           'frag#1#ctg#0\t0\t88000\t+\n'
+                          '\n')),
+    'telo_short_donor' : (dict(tl_growth, donor=[27, 24]), '--max-subtelomere-graft 3000', (
+                          "chrX\t1\ttelomere\tfrag#1#ctg#0\t85004\tdonor#1#ctg#0\t6000\t0\t.\t.\t.\trejected\tdonor's contig is 6000bp, under --min-donor-fraction 0.2 of the target contig's 85004bp (too short to place)\t0\t0\n"
+                          '#Unpatched (input contig) on chrX for frag#1:\n'
+                          'frag#1#ctg#0\t0\t85004\t+\n'
+                          '\n')),
+    'telo_short_donor_off' : (dict(tl_growth, donor=[27, 24]), '--max-subtelomere-graft 3000 --min-donor-fraction 0', (
+                          'chrX\t1\ttelomere\tfrag#1#ctg#0\t85004\tdonor#1#ctg#0\t6000\t0\t0.0\t.\t.\taccepted\t.\t0\t0\n'
+                          '#Patched assembly on chrX for frag#1:\n'
+                          'donor#1#ctg#0\t0\t3000\t+\n'
+                          'frag#1#ctg#0\t0\t85004\t+\n'
                           '\n')),
 }
 for base, (walks, args, truth) in tl_cases.items():
@@ -1129,6 +1172,18 @@ rg_case('rg_near_identical_34', rg_n, rg_w, '-r frag -s frag -s donor --min-swap
 rg_n[7] = ''.join({'A': 'C', 'C': 'G', 'G': 'T', 'T': 'A'}.get(c, c) if i % 90 == 45 else c for i, c in enumerate(rg_n[3]))
 rg_case('rg_swap_change', rg_n, [('frag', 1, 'ctg', rg_fwd([1, 2, 3, 4, 5])), ('donor', 1, 'ctg', rg_fwd([1, 2, 7, 4, 5]))],
         '-r frag -s frag -s donor', 'frag#1#ctg\t20000\t30000\n', {'ctg_hap_1': '+1 +2 +7 +4 +5'})
+# --min-donor-fraction: no patch from a donor contig (or the piece of one the graph holds) shorter than that fraction of
+# the target contig it would patch.  frag gets 200kb more at each end (8, 9), so that swap's donor (50kb) is under a
+# fifth of frag (450kb) and over a tenth.  --flank-window 10000 keeps the flank test to the donor's 1 and 5
+rg_sd = dict(rg_n); rg_sd[8] = rg_rnd(1788, 200000); rg_sd[9] = rg_rnd(1789, 200000)
+rg_w = [('frag', 1, 'ctg', rg_fwd([8, 1, 2, 3, 4, 5, 9])), ('donor', 1, 'ctg', rg_fwd([1, 2, 7, 4, 5]))]
+rg_case('rg_short_donor', rg_sd, rg_w, '-r frag -s frag -s donor --flank-window 10000', 'frag#1#ctg\t220000\t230000\n',
+        {'frag#1#ctg#0': '+8 +1 +2 +3 +4 +5 +9'},
+        ["from a donor contig of 50000bp, under --min-donor-fraction 0.2 of the target contig's 450000bp (too short to place) (unverifiable)"])
+rg_case('rg_short_donor_ok', rg_sd, rg_w, '-r frag -s frag -s donor --flank-window 10000 --min-donor-fraction 0.1',
+        'frag#1#ctg\t220000\t230000\n', {'ctg_hap_1': '+8 +1 +2 +7 +4 +5 +9'})
+rg_case('rg_short_donor_off', rg_sd, rg_w, '-r frag -s frag -s donor --flank-window 10000 --min-donor-fraction 0',
+        'frag#1#ctg\t220000\t230000\n', {'ctg_hap_1': '+8 +1 +2 +7 +4 +5 +9'})
 # --error-bed-max-len: a target interval longer than it is ignored, as a QC call that long only says that something is
 # wrong somewhere in it.  That swap's 10kb flag goes with a limit of 9999 (also when split over two lines, which are
 # joined first) and stays with 10000.  A donor's flag is kept however long: a 10kb one over the donor's 7 still
@@ -1209,6 +1264,17 @@ rg_case('rg_rdna_bridge', rg_n, rg_w, '-r x -s frag -s donor', None,
         {'frag#1#ctgA#0': '+1 +2 +3', 'frag#1#ctgB#0': '+7 +8 +9'}, ['foreign bridge shares'])
 rg_case('rg_rdna_bridge_patch', rg_n, rg_w, '-r x -s frag -s donor --patch-rdna', None,
         {'chrX_hap_1': '+1 +2 +3 +4 +5 +6 +7 +8 +9'})
+# --min-donor-fraction: a scaffold bridge from a donor piece too short to place reverts the scaffold.  ctgA gets 500kb
+# ahead of its 1 (0), so the donor's 2-8 (70kb) is under a fifth of it (530kb), and over a tenth; --flank-window 10000
+# keeps the flank test to the donor's 2 and 8
+rg_n = rg_K({k: 2200 + k for k in range(1, 10)}, 10000); rg_n[0] = rg_rnd(2200, 500000)
+rg_w = [('x', 0, 'chrX', rg_fwd(range(0, 10))), ('frag', 1, 'ctgA', rg_fwd([0, 1, 2, 3])), ('frag', 1, 'ctgB', rg_fwd([7, 8, 9])),
+        ('donor', 1, 'ctg', rg_fwd([2, 3, 4, 5, 6, 7, 8]))]
+rg_case('rg_short_bridge', rg_n, rg_w, '-r x -s frag -s donor --flank-window 10000', None,
+        {'frag#1#ctgA#0': '+0 +1 +2 +3', 'frag#1#ctgB#0': '+7 +8 +9'},
+        ["foreign bridge from a donor contig of 70000bp, under --min-donor-fraction 0.2 of the target contig's 530000bp (too short to place)"])
+rg_case('rg_short_bridge_ok', rg_n, rg_w, '-r x -s frag -s donor --flank-window 10000 --min-donor-fraction 0.1', None,
+        {'chrX_hap_1': '+0 +1 +2 +3 +4 +5 +6 +7 +8 +9'})
 temp_files += [f for f in os.listdir('.') if f.endswith('.int') or f.endswith('.rep')]
 for f in temp_files:
     if os.path.isfile(f):
