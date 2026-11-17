@@ -104,6 +104,8 @@ run('! panpatch tiny.vg -r x -s verkko -s hifi -T --patch-types gap 2>/dev/null'
 run('! panpatch tiny.vg -r x -s verkko -s hifi --max-subtelomere-graft 2kb 2>/dev/null')
 # and a fraction must be one
 run('! panpatch tiny.vg -r x -s verkko -s hifi --min-donor-fraction 1.5 2>/dev/null')
+# and a length may not be negative
+run('! panpatch tiny.vg -r x -s verkko -s hifi --min-telomere-graft -1 2>/dev/null')
 
 # No-gaps message test: hifi has no N bases, so should get friendly message
 run('panpatch tiny.vg -r x -s hifi -s verkko --bed tiny.nogaps.bed.int > tiny.nogaps.bed.rep && cat tiny.nogaps.bed.rep tiny.nogaps.bed.int > tiny.nogaps.bed')
@@ -579,6 +581,67 @@ for base, (walks, args, truth) in tl_cases.items():
         f.write(truth)
     run('vg convert {0}.gfa > {0}.vg'.format(base))
     run('panpatch {0}.vg -r x -s frag -s donor {1} --bed {0}.int 2>/dev/null | grep -v "^chrom" | {2} > {0}.rep ; cat {0}.rep {0}.int > {0}.out'.format(base, args, telo_filter))
+    run('diff {0}.out {0}.truth'.format(base))
+    temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
+
+# A telomere or tip graft must bring in at least --min-telomere-graft bp of donor sequence (default 500).  Where the
+# target has its own array under a capless tail, the nearest handoff is inside the two arrays, and the graft is the few
+# bp from there to the donor's end: it only cuts the tail off, which is the assembler's to fix, so the end is left as
+# it is.  (On the HPRC pilot, 23 of 26 telomere grafts were such trims, bringing in 2-221bp.)  frag's p end is 1kb of
+# junk (60) over its own 3kb array (61), which donor shares:
+#   tg_trim       - donor's array runs 12bp further out (62): the graft is rejected, and the end left as it is
+#                   (tg_trim_off: at 0 it is taken, and only cuts the junk off)
+#   tg_graft_504  - donor's runs 504bp further out (63): taken at the default, and at 504 (the minimum is inclusive),
+#                   but not at 505
+#   tg_tip        - a tip graft, reference-free: frag's 1kb N gap (68) keeps it from its last 200bp (69); donor
+#                   bridges the gap with 100bp (70), shares those 200bp and runs 100bp past them (71).  it brings in
+#                   400bp in all, for 1200bp of frag's end: rejected, and frag keeps its own end (taken at 400)
+tg_rng = random.Random(43)
+tg_rnd = lambda n: ''.join(tg_rng.choice('ACGT') for _ in range(n))
+tg_nodes = {60: tg_rnd(1000), 61: 'CCCTAA' * 500, 62: 'CCCTAA' * 2, 63: 'CCCTAA' * 84, 64: tg_rnd(3000), 65: tg_rnd(80000),
+            66: 'TTAGGG' * 334, 67: tg_rnd(10000), 68: 'N' * 1000, 69: tg_rnd(200), 70: tg_rnd(100), 71: tg_rnd(100),
+            72: tg_rnd(10000)}
+tg_trim = {'x' : [64, 65, 66], 'frag' : [60, 61, 64, 65, 66], 'donor' : [62, 61, 64, 65, 66]}
+tg_504 = dict(tg_trim, donor=[63, 61, 64, 65, 66])
+tg_tip = {'frag' : [67, 72, 68, 69], 'donor' : [67, 72, 70, 69, 71]}
+tg_trim_rejected = lambda added, min_graft: (
+    "chrX\t1\ttelomere\tfrag#1#ctg#0\t89004\tdonor#1#ctg#0\t{}\t1000\t.\t.\t.\trejected\tdonor's graft adds {}bp for "
+    "1000bp of the target's end, under --min-telomere-graft {}\t0\t1000\n"
+    '#Unpatched (input contig) on chrX for frag#1:\n'
+    'frag#1#ctg#0\t0\t89004\t+\n'
+    '\n').format(88004 + added, added, min_graft)
+tg_trim_accepted = lambda added: (
+    'chrX\t1\ttelomere\tfrag#1#ctg#0\t89004\tdonor#1#ctg#0\t{}\t1000\t0.0\t.\t.\taccepted\t.\t0\t1000\n'
+    '#Patched assembly on chrX for frag#1:\n'
+    'donor#1#ctg#0\t0\t{}\t+\n'
+    'frag#1#ctg#0\t1000\t89004\t+\n'
+    '\n').format(88004 + added, added)
+tg_cases = {
+    'tg_trim'             : (tg_trim, '-r x', tg_trim_rejected(12, 500)),
+    'tg_trim_off'         : (tg_trim, '-r x --min-telomere-graft 0', tg_trim_accepted(12)),
+    'tg_graft_504'        : (tg_504, '-r x', tg_trim_accepted(504)),
+    'tg_graft_504_min504' : (tg_504, '-r x --min-telomere-graft 504', tg_trim_accepted(504)),
+    'tg_graft_504_min505' : (tg_504, '-r x --min-telomere-graft 505', tg_trim_rejected(504, 505)),
+    'tg_tip'              : (tg_tip, '-r frag', (
+                             "ctg\t1\tgap-fill\tfrag#1#ctg#0\t21200\tdonor#1#ctg#0\t20400\t1200\t.\t.\t.\trejected\ttip graft "
+                             "adds 400bp of donor sequence for 1200bp of the target's end, under --min-telomere-graft 500; "
+                             "the target keeps its own end\t20000\t21200\n"
+                             '#Unpatched (input contig) on ctg for frag#1:\n'
+                             'frag#1#ctg#0\t0\t21200\t+\n'
+                             '\n')),
+    'tg_tip_min400'       : (tg_tip, '-r frag --min-telomere-graft 400', (
+                             'ctg\t1\tgap-fill\tfrag#1#ctg#0\t21200\tdonor#1#ctg#0\t20400\t1200\t.\t.\t.\taccepted\t.\t20000\t21200\n'
+                             '#Patched assembly on ctg for frag#1:\n'
+                             'frag#1#ctg#0\t0\t10000\t+\n'
+                             'donor#1#ctg#0\t10000\t20400\t+\n'
+                             '\n')),
+}
+for base, (walks, args, truth) in tg_cases.items():
+    n_gfa(base + '.gfa', tg_nodes, walks)
+    with open(base + '.truth', 'w') as f:
+        f.write(truth)
+    run('vg convert {0}.gfa > {0}.vg'.format(base))
+    run('panpatch {0}.vg {1} -s frag -s donor --bed {0}.int 2>/dev/null | grep -v "^chrom" | {2} > {0}.rep ; cat {0}.rep {0}.int > {0}.out'.format(base, args, telo_filter))
     run('diff {0}.out {0}.truth'.format(base))
     temp_files += ['{0}.gfa'.format(base), '{0}.vg'.format(base), '{0}.truth'.format(base), '{0}.out'.format(base)]
 
