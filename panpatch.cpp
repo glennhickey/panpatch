@@ -24,6 +24,20 @@ int64_t path_bp(const PathHandleGraph* g, path_handle_t p) {
     return n;
 }
 
+// a donor path (a contig, or the piece of one the graph holds) shorter than min_fraction of the target contig it
+// would patch (--min-donor-fraction): one that short has too little sequence around the patch to be placed with
+// confidence.  On the HPRC pilot, a 6 Mb unplaced contig grafted chr13 short-arm sequence onto chr21's, where the
+// two chromosomes share it, and a 1 Mb one grew a chr21 telomere array past what ONT reads show.  "" if it is not;
+// else "<donor>bp, under --min-donor-fraction <F> of the target contig's <target>bp", for a report reason
+static string short_donor(const PathHandleGraph* g, path_handle_t donor, path_handle_t target, double min_fraction) {
+    if (min_fraction <= 0) return "";
+    int64_t d = path_bp(g, donor), t = path_bp(g, target);
+    if ((double)d >= min_fraction * (double)t) return "";
+    ostringstream s;
+    s << d << "bp, under --min-donor-fraction " << min_fraction << " of the target contig's " << t << "bp";
+    return s.str();
+}
+
 void sort_paths_by_name(const PathHandleGraph* graph, vector<path_handle_t>& paths) {
     // path names are unique, so this is a total order
     vector<pair<string, path_handle_t>> named;
@@ -1284,7 +1298,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         bool verbose,
         bool report_failures,
         const ErrorRegions* error_regions,
-        const TelomereErrorRegions* telomere_regions) {
+        const TelomereErrorRegions* telomere_regions,
+        double min_donor_fraction) {
 
     static const int64_t OUTER = 20000;            // inspect this many bp at a contig tip for a telomere
     static const int64_t TIP_CHECK = 50000;        // validate_telomeres' (-T) window at a patched contig's tip
@@ -1444,9 +1459,15 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
         unordered_set<path_handle_t> sub_tainted_fwd, sub_tainted_rev;
         PatchRecord sub_reject;
         bool have_sub_reject = false;
+        // covers too short to place (--min-donor-fraction), whichever way they are read: skipped at every
+        // handoff, and the first one that would have completed the end reported if nothing does
+        unordered_set<path_handle_t> short_tainted;
+        PatchRecord short_reject;
+        bool have_short_reject = false;
         auto report_skipped = [&]() {
             if (have_n_reject) g_patch_records.push_back(n_reject);
             if (have_sub_reject) g_patch_records.push_back(sub_reject);
+            if (have_short_reject) g_patch_records.push_back(short_reject);
         };
         // a rejected handoff to F that would replace the target's outermost `walked` bp
         auto rejected_handoff = [&](const path_handle_t& F, int64_t walked, const string& reason) {
@@ -1508,6 +1529,7 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                 if (n_tainted.count(F)) continue;
                 unordered_set<path_handle_t>& sub_tainted = f_forward ? sub_tainted_fwd : sub_tainted_rev;
                 if (sub_tainted.count(F)) continue;
+                if (short_tainted.count(F)) continue;
 
                 // `walked` is the length of the target's capless tail this handoff would replace.
                 bool within_cap = (walked <= max_handoff);
@@ -1573,6 +1595,21 @@ vector<tuple<step_handle_t, step_handle_t, bool>> extend_to_telomeres(
                                                                "bp, over --max-telomere-patch " + std::to_string(max_handoff)));
                     report_skipped();
                     return false;
+                }
+
+                // the donor must be long enough to place (--min-donor-fraction): a short one is skipped, here and at
+                // every later handoff, as a cover whose run out holds an N is
+                string short_why = short_donor(graph, F, P, min_donor_fraction);
+                if (!short_why.empty()) {
+                    short_tainted.insert(F);
+                    if (!have_short_reject) {
+                        short_reject = rejected_handoff(F, walked, "donor's contig is " + short_why + " (too short to place)");
+                        have_short_reject = true;
+                    }
+                    if (verbose) cerr << "[panpatch] telomere-patch " << (is_front ? "front" : "back")
+                                      << " handoff to " << graph->get_path_name(F) << " at " << walked
+                                      << "bp in: the donor's contig is " << short_why << "; skipping that cover" << endl;
+                    continue;
                 }
 
                 // the graft must be the donor's telomere array, not a subtelomere the target lacks: added_seq
@@ -1843,7 +1880,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
                                                                bool patch_gap,
                                                                int64_t max_graft_pieces,
                                                                const NoPatch* no_patch,
-                                                               const TelomereErrorRegions* telomere_error_regions) {
+                                                               const TelomereErrorRegions* telomere_error_regions,
+                                                               double min_donor_fraction) {
 
     size_t records_at_entry = g_patch_records.size();   // this call's report rows start here
 
@@ -1962,7 +2000,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
     // own end or its first N or flagged step.  nothing anchors the far end of such a graft, so it is held to
     // the limits of a telomere graft: it may replace at most max_telomere_patch (-M) bp of the target's end,
     // may add at most max_subtelomere_graft bp more than it replaces, may not take off a telomere the target
-    // already has, nor max_telomere_loss bp more telomere repeat than it brings in.  (unchecked, a flag on a
+    // already has, nor max_telomere_loss bp more telomere repeat than it brings in, and may not come from a donor
+    // piece too short to place (--min-donor-fraction).  (unchecked, a flag on a
     // contig's last few kb appended the donor's whole tail.)  one that fails is dropped -- the target keeps its
     // own end -- and gets a rejected row; one that passes gets an accepted gap-fill row
     {
@@ -2009,6 +2048,12 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
             }
             double np_added = no_patch_fraction(tip_seq, no_patch), np_replaced = no_patch_fraction(tail, no_patch);
             double np = max(np_added, np_replaced);
+            // a donor piece of the tip too short to place (--min-donor-fraction)
+            string tip_short;
+            for (const auto& piece : tip) {
+                tip_short = short_donor(graph, graph->get_path_handle_of_step(get<0>(piece)), P, min_donor_fraction);
+                if (!tip_short.empty()) break;
+            }
             string why;
             if (np >= 0 && np >= no_patch->fraction) {
                 ostringstream ws; ws << fixed << setprecision(1) << (np_replaced > np_added ? "replaces" : "adds")
@@ -2021,6 +2066,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
             } else if (max_graft_pieces > 0 && (int64_t)tip.size() > max_graft_pieces) {
                 why = "is spliced from " + to_string(tip.size()) + " pieces of donor sequence, over --max-graft-pieces " +
                     to_string(max_graft_pieces) + " (no donor has it in one piece)";
+            } else if (!tip_short.empty()) {
+                why = "comes from a donor contig of " + tip_short + " (too short to place)";
             } else if (replaced > max_telomere_patch) {   // (as for a telomere graft, 0 lets it replace nothing)
                 why = "replaces " + to_string(replaced) + "bp of the target's end, over --max-telomere-patch " +
                     to_string(max_telomere_patch);
@@ -2071,7 +2118,8 @@ vector<tuple<step_handle_t, step_handle_t, bool>> greedy_patch(const PathHandleG
         extended_intervals = extend_to_telomeres(graph, extended_intervals, sample_covers,
                                                  sample_names, telo_threshold, max_telomere_patch,
                                                  max_subtelomere_graft, max_telomere_loss, verbose,
-                                                 report_telomere_failures, error_regions, telomere_error_regions);
+                                                 report_telomere_failures, error_regions, telomere_error_regions,
+                                                 min_donor_fraction);
         check_intervals(graph, extended_intervals);
     }
 
@@ -2511,7 +2559,8 @@ static double flank_fraction(const PathHandleGraph* g, step_handle_t start, bool
 bool record_scaffolds(const PathHandleGraph* graph,
                       const vector<tuple<step_handle_t, step_handle_t, bool>>& intervals,
                       const string& target_sample, double min_flank, int64_t flank_window,
-                      string& bridge_detail, int64_t max_graft_pieces, const NoPatch* no_patch) {
+                      string& bridge_detail, int64_t max_graft_pieces, const NoPatch* no_patch,
+                      double min_donor_fraction) {
     bool bad = false;
     unordered_set<path_handle_t> seen;   // target contigs already recorded (so [A|B|A] splices give one row)
     int prev_tgt = -1;       // index of the most recent target-sample interval
@@ -2535,6 +2584,12 @@ bool record_scaffolds(const PathHandleGraph* graph,
                     double fr = flank_fraction(graph, get<0>(intervals[i]), !get<2>(intervals[i]), dn_r, flank_window);
                     pr.donor = graph->get_path_name(donor); pr.donor_bp = path_bp(graph, donor);
                     pr.flankL = fl; pr.flankR = fr;
+                    // a piece of the bridge from a donor too short to place (--min-donor-fraction)
+                    string bridge_short;
+                    for (int k = foreign_start; k < i && bridge_short.empty(); ++k) {
+                        bridge_short = short_donor(graph, graph->get_path_handle_of_step(get<0>(intervals[k])), pc,
+                                                   min_donor_fraction);
+                    }
                     pr.accepted = (fl >= min_flank && fr >= min_flank);
                     if (!pr.accepted) {
                         ostringstream rs; rs << fixed << setprecision(1)
@@ -2548,6 +2603,11 @@ bool record_scaffolds(const PathHandleGraph* graph,
                         pr.accepted = false;
                         pr.reason = "foreign bridge spliced from " + to_string(i - foreign_start) +
                             " pieces of donor sequence, over --max-graft-pieces " + to_string(max_graft_pieces);
+                        bridge_detail = "contig " + pr.target + " scaffolded to " + graph->get_path_name(p) + ": " + pr.reason;
+                        bad = true;
+                    } else if (!bridge_short.empty()) {
+                        pr.accepted = false;
+                        pr.reason = "foreign bridge from a donor contig of " + bridge_short + " (too short to place)";
                         bridge_detail = "contig " + pr.target + " scaffolded to " + graph->get_path_name(p) + ": " + pr.reason;
                         bad = true;
                     } else if (no_patch && !no_patch->kmers.empty()) {
@@ -2621,7 +2681,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                 int64_t max_size_change, double min_complexity, int64_t complexity_window,
                                 int64_t complexity_min_bp, int64_t max_graft_pieces, int64_t max_swap_size_change,
                                 int64_t min_swap_change, const NoPatch* no_patch, double min_dedup,
-                                unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges) {
+                                unordered_map<path_handle_t, vector<pair<int64_t, int64_t>>>* dedup_ranges,
+                                double min_donor_fraction) {
     unordered_map<path_handle_t, unordered_map<step_handle_t, int64_t>> posidx;   // step -> forward pos, per contig (path is stable)
     auto pos_of = [&](path_handle_t C) -> unordered_map<step_handle_t, int64_t>& {
         auto it = posidx.find(C);
@@ -2799,6 +2860,12 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // piece, and that neither test above can vouch for: each piece is anchored where it switches
             int64_t n_pieces = j - i - 1;
             bool chimeric = max_graft_pieces > 0 && n_pieces > max_graft_pieces;
+            // nor can they vouch for where a donor too short to place (--min-donor-fraction) was put
+            string graft_short;
+            for (int k = i + 1; k < j && graft_short.empty(); ++k) {
+                graft_short = short_donor(graph, graph->get_path_handle_of_step(get<0>(intervals[k])), C, min_donor_fraction);
+            }
+            bool short_graft = !graft_short.empty();
             // a donor run that spells exactly the target sequence it replaces changes nothing (judged first, so
             // that neither the tests above nor the guards below count a no-op as a rejected patch).  in a graph
             // built from unmasked assemblies, a donor that agrees with the target across an --error-bed
@@ -2839,7 +2906,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             bool no_patch_hit = (np_removed >= 0 && np_removed >= no_patch->fraction) ||
                                 (np_inserted >= 0 && np_inserted >= no_patch->fraction);
             bool unverifiable = !bad && !same_seq && !near_identical && (no_patch_hit || too_big || swap_too_big || fill_drops_real ||
-                                                                         low_cx || chimeric);
+                                                                         low_cx || chimeric || short_graft);
             if (unverifiable || same_seq || near_identical) bad = true;
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
@@ -2875,6 +2942,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                                       << "% of its k-mers with the no-patch sequences (rDNA, --no-patch-fasta) (unverifiable)";
                 else if (unverifiable && chimeric) rs << "spliced from " << n_pieces << " pieces of donor sequence, over --max-graft-pieces "
                                       << max_graft_pieces << " (no donor has it in one piece) (unverifiable)";
+                else if (unverifiable && short_graft) rs << "from a donor contig of " << graft_short
+                                      << " (too short to place) (unverifiable)";
                 else if (unverifiable && too_big && dedup && shrink > max_size_change) rs << "removes a duplicate (" << dup_note.str() << "), but fills "
                                       << (removed.size() - nonN) << "bp of N gap with " << inserted.size() << "bp, " << shrink
                                       << "bp less, over --max-graft-size-change " << max_size_change << " (unverifiable)";

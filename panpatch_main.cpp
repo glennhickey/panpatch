@@ -174,6 +174,11 @@ void help(char** argv) {
        << "        --max-graft-pieces N     Excise a graft (interior, tip or scaffold bridge) spliced from more than N" << endl
        << "                                 pieces of donor sequence: two donor contigs, or one on both strands or out of" << endl
        << "                                 its order, which no donor has in one piece.  0 disables [1]" << endl
+       << "        --min-donor-fraction F   Make no patch (interior, telomere, tip or scaffold bridge) from a donor contig," << endl
+       << "                                 or the piece of one the graph holds, shorter than F of the target contig it" << endl
+       << "                                 would patch: one that short has too little sequence around the patch to be" << endl
+       << "                                 placed with confidence, as with an unplaced piece of a region several" << endl
+       << "                                 chromosomes share.  0 disables [0.2]" << endl
        << "        --telomere-report FILE   Standalone: print per-contig telomere cap status (#Contig lines) for" << endl
        << "                                 a finished FASTA and exit. No graph or -r/-s needed. Use this to" << endl
        << "                                 measure an assembly that was post-processed after panpatch ran" << endl
@@ -212,6 +217,7 @@ int main(int argc, char** argv) {
     int64_t max_graft_pieces = 1;
     int64_t max_swap_size_change = 10000;
     int64_t min_swap_change = 100;
+    double min_donor_fraction = 0.2;
     int64_t error_bed_end_slop = 1000;
     int64_t error_bed_max_len = 1000000;
     string no_patch_fasta;
@@ -251,6 +257,7 @@ int main(int argc, char** argv) {
             {"max-graft-pieces", required_argument, 0, 1016},
             {"max-swap-size-change", required_argument, 0, 1017},
             {"min-swap-change", required_argument, 0, 1022},
+            {"min-donor-fraction", required_argument, 0, 1026},
             {"error-bed-end-slop", required_argument, 0, 1021},
             {"error-bed-max-len", required_argument, 0, 1023},
             {"no-patch-fasta", required_argument, 0, 1018},
@@ -381,6 +388,9 @@ int main(int argc, char** argv) {
         case 1022:
             min_swap_change = int_arg("--min-swap-change", optarg);
             break;
+        case 1026:
+            min_donor_fraction = num_arg("--min-donor-fraction", optarg);
+            break;
         case 1018:
             no_patch_fasta = optarg;
             break;
@@ -453,6 +463,7 @@ int main(int argc, char** argv) {
     if (error_bed_max_len < 0) { cerr << "[panpatch] error: --error-bed-max-len must be >= 0" << endl; return 1; }
     if (max_swap_size_change < 0) { cerr << "[panpatch] error: --max-swap-size-change must be >= 0" << endl; return 1; }
     if (min_swap_change < 0) { cerr << "[panpatch] error: --min-swap-change must be >= 0" << endl; return 1; }
+    if (min_donor_fraction < 0 || min_donor_fraction > 1) { cerr << "[panpatch] error: --min-donor-fraction must be in [0,1]" << endl; return 1; }
     if (max_telomere_patch < 0) { cerr << "[panpatch] error: --max-telomere-patch (-M) must be >= 0" << endl; return 1; }
     if (max_subtelomere_graft < 0) { cerr << "[panpatch] error: --max-subtelomere-graft must be >= 0" << endl; return 1; }
     if (max_telomere_loss < 0) { cerr << "[panpatch] error: --max-telomere-loss must be >= 0" << endl; return 1; }
@@ -726,7 +737,8 @@ int main(int argc, char** argv) {
             graph, ref_path, hap_tgts.second, sample_names, sample_covers, bed_regions,
             patch_telomere, telo_threshold, max_telomere_patch, max_subtelomere_graft, max_telomere_loss, progress,
             require_telomeres,
-            &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces, no_patch_p, telomere_error_regions_p);
+            &threaded_tgt_paths, &error_regions, patch_gap, max_graft_pieces, no_patch_p, telomere_error_regions_p,
+            min_donor_fraction);
 
         // Partial-patch cleanup: drop repeat-region-misjoin foreign interior grafts (low k-mer recovery
         // or low flank anchoring), restoring the target's own sequence, while keeping good sub-patches.
@@ -738,7 +750,7 @@ int main(int argc, char** argv) {
                                    min_flank, flank_window, patch_gap, excised_nonN,
                                    max_graft_size_change, min_graft_complexity, graft_complexity_window,
                                    graft_complexity_min_bp, max_graft_pieces, max_swap_size_change, min_swap_change,
-                                   no_patch_p, dedup_recovery, &dedup_ranges);
+                                   no_patch_p, dedup_recovery, &dedup_ranges, min_donor_fraction);
 
         // final consistency guard: a patch that would write any sequence twice or out of order (see
         // patch_reuses_sequence) reverts the contig, whatever else passed
@@ -750,7 +762,7 @@ int main(int argc, char** argv) {
         // joins: a bridge whose donor doesn't anchor to both contigs' flanks is a wrong-locus misjoin.
         string bridge_detail;
         bool bad_bridge = record_scaffolds(graph, patched_intervals, sample_names[0], min_flank, flank_window, bridge_detail,
-                                           max_graft_pieces, no_patch_p);
+                                           max_graft_pieces, no_patch_p, min_donor_fraction);
 
         // Check telomere validation.  -T requires a telomere at both ends (and no internal one); telomere
         // patching alone (on by default) only rejects an internal-telomere scaffold misjoin (missing ends are kept).
