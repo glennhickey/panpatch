@@ -80,14 +80,14 @@ BedRegions parse_bed_file(const string& bed_filename);
 // map --error-bed regions onto the paths of one graph.  a BED contig names a path as SAMPLE#HAP#CONTIG
 // (PanSN, as the graph names it: HAP is 0 for a haploid sample) or by its full path name; a path's
 // subrange, if it has one, shifts the coordinates.  intervals are merged and clipped to the path.
-// a contig-end flag -- a merged interval that starts within end_slop bp of its contig's start, or ends within
-// end_slop bp of its end (0: none is) -- is flagged mostly because read coverage falls off there.  on a path of
+// a contig-end flag -- a merged interval that starts within end_margin bp of its contig's start, or ends within
+// end_margin bp of its end (0: none is) -- is flagged mostly because read coverage falls off there.  on a path of
 // target_sample it is dropped, however far in it runs, leaving the end to telomere patching.  on a donor it is
 // kept, but left out of telomere_regions (if given) for a graft that runs to that end: telomere patching takes
 // only a donor's telomere-capped end, and little ahead of the telomere.  a donor interval that runs from end to
 // end (the whole contig is flagged) is kept for every patch.  a target interval longer than max_target_len bp
 // (0: none is) is dropped too: a QC call that long says only that something is wrong somewhere in it
-ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed, int64_t end_slop,
+ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed, int64_t end_margin,
                                 int64_t max_target_len, const string& target_sample,
                                 TelomereErrorRegions* telomere_regions = nullptr);
 

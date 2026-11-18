@@ -122,10 +122,11 @@ void help(char** argv) {
        << "                                 where none can); a donor's never go into a patch (contig ends aside: see below)." << endl
        << "                                 The assemblies are aligned unmasked, so a patch differs from the target only" << endl
        << "                                 where the donor does" << endl
-       << "        --error-bed-end-slop N   An --error-bed interval within N bp of either end of its contig is a contig-end" << endl
+       << "        --error-bed-end-margin N Make an --error-bed interval within N bp of either end of its contig a contig-end" << endl
        << "                                 flag (nearly every end has one: read coverage falls off there).  On the target it" << endl
-       << "                                 is ignored, however far in it runs; on a donor, only a telomere graft from that" << endl
-       << "                                 end ignores it.  0 keeps them all [1000]" << endl
+       << "                                 is then ignored, however far in it runs; on a donor, only a telomere graft from" << endl
+       << "                                 that end ignores it.  0 keeps them all: no telomere graft takes a donor's flagged" << endl
+       << "                                 end, and a target's flagged end is patched as other flagged sequence is [0]" << endl
        << "        --error-bed-max-len N    Ignore a target --error-bed interval longer than N bp (intervals that touch or" << endl
        << "                                 overlap are joined first): a QC call that long only says that something is" << endl
        << "                                 wrong somewhere in it, and a swap that size cannot be verified.  Donor" << endl
@@ -153,10 +154,12 @@ void help(char** argv) {
        << "        --min-graft-complexity F  Excise a foreign interior graft that replaces or inserts >= --graft-complexity-min-bp of" << endl
        << "                                 low-complexity sequence (distinct k-mer fraction, every k-mer counted, < F over all of it, or in" << endl
        << "                                 some --graft-complexity-window), which k-mer recovery cannot check (tandem" << endl
-       << "                                 satellites).  0 disables [0.5]" << endl
+       << "                                 satellites), or whose flank (the target's --graft-complexity-window beside" << endl
+       << "                                 either end of it) is under F against a full window: a tandem repeat such as a" << endl
+       << "                                 telomere, or cut short by the contig's end, cannot anchor it.  0 disables [0.5]" << endl
        << "        --graft-complexity-window N  Also measure --min-graft-complexity in windows of N bp, so a satellite" << endl
-       << "                                 array inside a larger graft is not diluted by the sequence around it.  0" << endl
-       << "                                 measures the whole graft only [10000]" << endl
+       << "                                 array inside a larger graft is not diluted by the sequence around it, and over" << endl
+       << "                                 the N bp of each flank.  0 measures the whole graft only [10000]" << endl
        << "        --graft-complexity-min-bp N  Apply --min-graft-complexity only when at least this many non-N bp are" << endl
        << "                                 replaced or inserted [2000]" << endl
        << "        --max-swap-size-change N  Excise a swap (a graft over sequence with no N gap, or an insertion) that" << endl
@@ -230,7 +233,7 @@ int main(int argc, char** argv) {
     int64_t min_swap_change = 100;
     double min_donor_fraction = 0.2;
     int64_t max_chance_anchor = 100;
-    int64_t error_bed_end_slop = 1000;
+    int64_t error_bed_end_margin = 0;
     int64_t error_bed_max_len = 1000000;
     string no_patch_fasta;
     double no_patch_kmer_fraction = 0.3;
@@ -272,7 +275,7 @@ int main(int argc, char** argv) {
             {"min-swap-change", required_argument, 0, 1022},
             {"min-donor-fraction", required_argument, 0, 1026},
             {"max-chance-anchor", required_argument, 0, 1027},
-            {"error-bed-end-slop", required_argument, 0, 1021},
+            {"error-bed-end-margin", required_argument, 0, 1021},
             {"error-bed-max-len", required_argument, 0, 1023},
             {"no-patch-fasta", required_argument, 0, 1018},
             {"no-patch-kmer-fraction", required_argument, 0, 1019},
@@ -394,7 +397,7 @@ int main(int argc, char** argv) {
             max_graft_pieces = int_arg("--max-graft-pieces", optarg);
             break;
         case 1021:
-            error_bed_end_slop = int_arg("--error-bed-end-slop", optarg);
+            error_bed_end_margin = int_arg("--error-bed-end-margin", optarg);
             break;
         case 1023:
             error_bed_max_len = int_arg("--error-bed-max-len", optarg);
@@ -479,7 +482,7 @@ int main(int argc, char** argv) {
     if (graft_complexity_window < 0) { cerr << "[panpatch] error: --graft-complexity-window must be >= 0" << endl; return 1; }
     if (graft_complexity_min_bp < 0) { cerr << "[panpatch] error: --graft-complexity-min-bp must be >= 0" << endl; return 1; }
     if (max_graft_pieces < 0) { cerr << "[panpatch] error: --max-graft-pieces must be >= 0" << endl; return 1; }
-    if (error_bed_end_slop < 0) { cerr << "[panpatch] error: --error-bed-end-slop must be >= 0" << endl; return 1; }
+    if (error_bed_end_margin < 0) { cerr << "[panpatch] error: --error-bed-end-margin must be >= 0" << endl; return 1; }
     if (error_bed_max_len < 0) { cerr << "[panpatch] error: --error-bed-max-len must be >= 0" << endl; return 1; }
     if (max_swap_size_change < 0) { cerr << "[panpatch] error: --max-swap-size-change must be >= 0" << endl; return 1; }
     if (min_swap_change < 0) { cerr << "[panpatch] error: --min-swap-change must be >= 0" << endl; return 1; }
@@ -663,7 +666,7 @@ int main(int argc, char** argv) {
     // contig-end flag at the end a graft runs to).  with no --max-subtelomere-graft limit, nothing bounds how
     // much of a flagged donor end a graft would take, so telomere patching then respects them all too
     TelomereErrorRegions telomere_error_regions;
-    ErrorRegions error_regions = error_bed_to_paths(graph, error_bed, error_bed_end_slop, error_bed_max_len,
+    ErrorRegions error_regions = error_bed_to_paths(graph, error_bed, error_bed_end_margin, error_bed_max_len,
                                                     sample_names.front(), &telomere_error_regions);
     const TelomereErrorRegions* telomere_error_regions_p = max_subtelomere_graft > 0 ? &telomere_error_regions : nullptr;
     if (progress && !error_bed.empty()) {

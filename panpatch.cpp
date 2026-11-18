@@ -70,7 +70,7 @@ static int64_t step_offset(const PathHandleGraph* graph, const step_handle_t& st
     return offset;
 }
 
-ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed, int64_t end_slop,
+ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& error_bed, int64_t end_margin,
                                 int64_t max_target_len, const string& target_sample, TelomereErrorRegions* telomere_regions) {
     ErrorRegions regions;
     if (telomere_regions) { telomere_regions->to_start.clear(); telomere_regions->to_end.clear(); }
@@ -111,8 +111,8 @@ ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& 
         vector<pair<int64_t, int64_t>> ivs, to_start, to_end;
         for (const auto& iv : merged) {
             // a contig-end flag (the far end is known only for a whole-contig path).  the target's is dropped
-            bool at_start = end_slop > 0 && iv.first <= end_slop;
-            bool at_end = end_slop > 0 && whole && iv.second >= len - end_slop;
+            bool at_start = end_margin > 0 && iv.first <= end_margin;
+            bool at_end = end_margin > 0 && whole && iv.second >= len - end_margin;
             if ((at_start || at_end) && target) continue;
             // so is a target interval longer than max_target_len: a QC call that long only says that something is
             // wrong somewhere in it, and a swap that size cannot be verified (a donor of the same haplotype passes
@@ -124,8 +124,8 @@ ErrorRegions error_bed_to_paths(const PathHandleGraph* graph, const BedRegions& 
             // a donor's is left out only for a telomere graft that runs to that end (to the path's start only if
             // that is the contig's), and not at all if it runs from end to end (on a piece of a contig, from the
             // contig's start to the end of the piece)
-            bool piece_end = !whole && iv.second - offset >= len - end_slop;
-            if (!(at_start && !at_end && !piece_end && offset <= end_slop)) to_start.push_back(make_pair(s, e));
+            bool piece_end = !whole && iv.second - offset >= len - end_margin;
+            if (!(at_start && !at_end && !piece_end && offset <= end_margin)) to_start.push_back(make_pair(s, e));
             if (!(at_end && !at_start)) to_end.push_back(make_pair(s, e));
         }
         if (!ivs.empty()) regions[p] = ivs;
@@ -1243,6 +1243,20 @@ static double min_window_distinct_fraction(const string& s, int64_t window) {
         if (start + window >= (int64_t)s.size()) break;
     }
     return lowest;
+}
+
+// the distinct canonical 31-mers of a graft's flank (the target's sequence beside a junction, at most `window` bp of
+// it), as a fraction of the k-mers a full window holds: near 1 for unique sequence the window long, near 0 for a
+// tandem array (a telomere), and lower in proportion where the contig ends before the window does.  -1 if window is
+// no longer than a k-mer
+static double flank_distinct_fraction(const string& flank, int64_t window) {
+    const int64_t K = 31;
+    if (window <= K) return -1.0;
+    vector<uint64_t> codes;
+    for_each_canonical_kmer(flank, 0, flank.size(), [&](int64_t, uint64_t code) { codes.push_back(code); });
+    sort(codes.begin(), codes.end());
+    int64_t distinct = unique(codes.begin(), codes.end()) - codes.begin();
+    return (double)distinct / (double)(window - K + 1);
 }
 
 // percent of the distinct (sampled) k-mers in `removed` that also occur in `added` (or in any of `kept`). a
@@ -2896,10 +2910,15 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // hi == lo: the pieces are adjacent, so nothing of C was replaced.  the donor run between them
             // either only passes through the anchor nodes it shares with C (handled below: folded back
             // into C), or inserts sequence C lacks there, which is judged and reported like any graft
-            string removed; int64_t p = 0;
+            // (and, for the flank complexity test below, up to complexity_window bp of C either side of it)
+            string removed, flank_lo, flank_hi; int64_t p = 0;
+            int64_t fw = (min_complexity > 0 && complexity_window > 0) ? complexity_window : 0;
             graph->for_each_step_in_path(C, [&](step_handle_t s) {
                 handle_t h = graph->get_handle_of_step(s); int64_t l = graph->get_length(h);
-                int64_t oa = max(p, lo), ob = min(p + l, hi); if (oa < ob) removed += graph->get_sequence(h).substr(oa - p, ob - oa); p += l; });
+                int64_t oa = max(p, lo), ob = min(p + l, hi); if (oa < ob) removed += graph->get_sequence(h).substr(oa - p, ob - oa);
+                int64_t la = max(p, lo - fw), lb = min(p + l, lo); if (la < lb) flank_lo += graph->get_sequence(h).substr(la - p, lb - la);
+                int64_t ra = max(p, hi), rb = min(p + l, hi + fw); if (ra < rb) flank_hi += graph->get_sequence(h).substr(ra - p, rb - ra);
+                p += l; });
             int64_t nonN = 0; for (char c : removed) if (c != 'N' && c != 'n') ++nonN;
 
             // Metrics for the report and the decision: k-mer recovery (CONTENT, when real sequence was replaced)
@@ -3032,6 +3051,17 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             }
             auto low = [&](double cx) { return cx >= 0 && cx < min_complexity; };
             bool low_cx = low(cx_removed) || low(cx_added) || low(cxw_removed) || low(cxw_added);
+            // nor can they vouch for a graft one of whose flanks is too repetitive, or too short, to anchor it: the
+            // complexity_window bp of the target beside each end of it must be as complex as a graft must be.  flank
+            // anchoring counts the nodes a flank shares with the donor, and a telomere array shares its nodes with every
+            // haplotype's array at that end (cactus aligns each to a synthetic telomere for its chromosome arm), but a
+            // tandem array pins no position: nothing says where along it the donor's sequence joins the target's.  (on
+            // the HPRC pilot, with no contig-end exemption, 30 swaps of flagged subtelomere were anchored on their outer
+            // side only by the telomere, and the reads contradicted 7 of the 27 they could check.)  a subtelomere swap
+            // needs unique sequence between it and the telomere
+            double cxf_lo = fw > 0 ? flank_distinct_fraction(flank_lo, fw) : -1.0;
+            double cxf_hi = fw > 0 ? flank_distinct_fraction(flank_hi, fw) : -1.0;
+            bool low_flank_cx = low(cxf_lo) || low(cxf_hi);
             // reported as unverifiable only when the content/locus tests above passed it, so a graft they
             // reject keeps its own reason
             // a graft spliced from more than one piece of donor sequence (pieces of two donor contigs, or of
@@ -3085,7 +3115,7 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             bool no_patch_hit = (np_removed >= 0 && np_removed >= no_patch->fraction) ||
                                 (np_inserted >= 0 && np_inserted >= no_patch->fraction);
             bool unverifiable = !bad && !same_seq && !near_identical && (no_patch_hit || too_big || swap_too_big || fill_drops_real ||
-                                                                         low_cx || chimeric || short_graft || chance_join);
+                                                                         low_cx || low_flank_cx || chimeric || short_graft || chance_join);
             if (unverifiable || same_seq || near_identical) bad = true;
 
             // record this graft for the report.  A kept graft goes to kept_this_call (the loop rescans
@@ -3139,6 +3169,13 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
                 else if (unverifiable && fill_drops_real) rs << "fills " << nN << "bp of N gap and replaces " << nonN
                                       << "bp of sequence with " << inserted.size() << "bp, dropping at least " << real_shrink
                                       << "bp of it, over --max-swap-size-change " << max_swap_size_change << " (unverifiable)";
+                else if (unverifiable && low_flank_cx && !low_cx) {
+                    bool at_lo = low(cxf_lo);
+                    rs << setprecision(2) << "the target beside it toward its contig's " << (at_lo ? "start" : "end")
+                       << " is too repetitive or short to anchor it (distinct k-mer fraction " << (at_lo ? cxf_lo : cxf_hi)
+                       << " in the " << complexity_window << "bp beside it < --min-graft-complexity " << min_complexity
+                       << ") (unverifiable)";
+                }
                 else if (unverifiable) {
                     // the whole-sequence fraction when it is the low one, else the lowest window's
                     bool whole = low(cx_removed) || low(cx_added);
