@@ -3057,8 +3057,8 @@ void excise_bad_interior_grafts(const PathHandleGraph* graph,
             // haplotype's array at that end (cactus aligns each to a synthetic telomere for its chromosome arm), but a
             // tandem array pins no position: nothing says where along it the donor's sequence joins the target's.  (on
             // the HPRC pilot, with no contig-end exemption, 30 swaps of flagged subtelomere were anchored on their outer
-            // side only by the telomere, and the reads contradicted 7 of the 27 they could check.)  a subtelomere swap
-            // needs unique sequence between it and the telomere
+            // side only by the telomere, and the reads contradicted 10 of them.)  a subtelomere swap needs unique
+            // sequence between it and the telomere
             double cxf_lo = fw > 0 ? flank_distinct_fraction(flank_lo, fw) : -1.0;
             double cxf_hi = fw > 0 ? flank_distinct_fraction(flank_hi, fw) : -1.0;
             bool low_flank_cx = low(cxf_lo) || low(cxf_hi);
